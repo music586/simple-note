@@ -28,8 +28,6 @@ const notesList = document.getElementById('notesList');
 const editor = createCodeEditor(document.getElementById('editor'));
 const preview = document.getElementById('preview');
 const noteTitle = document.getElementById('noteTitle');
-const newNoteBtn = document.getElementById('newNoteBtn');
-const newFolderBtn = document.getElementById('newFolderBtn');
 const settingsBtn = document.getElementById('settingsBtn');
 const notesDirInfo = document.getElementById('notesDirInfo');
 const notesDirDisplay = document.getElementById('notesDirDisplay');
@@ -44,8 +42,6 @@ const leftPanel = document.getElementById('leftPanel');
 const panelDivider = document.getElementById('panelDivider');
 const closeRightBtn = document.getElementById('closeRightBtn');
 const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
-const togglePreviewBtnLeft = document.getElementById('togglePreviewBtnLeft');
-const themeToggleBtn = document.getElementById('themeToggleBtn');
 
 function scheduleEditorDecorations(editorAdapter, getNote) {
   if (editorAdapter.decorationFrame) return;
@@ -132,9 +128,6 @@ let colorTheme = localStorage.getItem('color-theme') || 'dark';
 function applyColorTheme(theme) {
   colorTheme = theme;
   document.documentElement.dataset.theme = theme;
-  const nextThemeName = theme === 'dark' ? '浅色' : '深色';
-  themeToggleBtn.title = `切换到${nextThemeName}主题`;
-  themeToggleBtn.setAttribute('aria-label', `切换到${nextThemeName}主题`);
 }
 
 function toggleColorTheme() {
@@ -142,8 +135,6 @@ function toggleColorTheme() {
   applyColorTheme(nextTheme);
   localStorage.setItem('color-theme', nextTheme);
 }
-
-themeToggleBtn.addEventListener('click', toggleColorTheme);
 
 applyColorTheme(colorTheme);
 
@@ -154,21 +145,12 @@ let previewHiddenLeft = localStorage.getItem('preview-hidden-left') === 'true';
 function togglePreviewLeft() {
   previewHiddenLeft = !previewHiddenLeft;
   editorContainer.classList.toggle('preview-hidden', previewHiddenLeft);
-  togglePreviewBtnLeft.title = previewHiddenLeft ? '显示预览' : '隐藏预览';
-  togglePreviewBtnLeft.classList.toggle('active', !previewHiddenLeft);
   localStorage.setItem('preview-hidden-left', previewHiddenLeft);
   if (!previewHiddenLeft) updatePreview(true);
 }
 
-togglePreviewBtnLeft.addEventListener('click', togglePreviewLeft);
-
 if (previewHiddenLeft) {
   editorContainer.classList.add('preview-hidden');
-  togglePreviewBtnLeft.title = '显示预览';
-  togglePreviewBtnLeft.classList.remove('active');
-} else {
-  togglePreviewBtnLeft.title = '隐藏预览';
-  togglePreviewBtnLeft.classList.add('active');
 }
 
 let sidebarHidden = localStorage.getItem('sidebar-hidden') === 'true';
@@ -186,10 +168,19 @@ ipcRenderer.on('zen-mode-changed', (event, enabled) => {
   setTimeout(refreshEditors, 260);
 });
 
+ipcRenderer.on('reading-mode-changed', (event, enabled) => {
+  app.classList.toggle('reading-mode', enabled);
+  if (enabled) updatePreview(true);
+  requestAnimationFrame(() => editor.codeMirror.refresh());
+});
+
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && app.classList.contains('zen-mode')) {
     event.preventDefault();
     ipcRenderer.invoke('exit-zen-mode');
+  } else if (event.key === 'Escape' && app.classList.contains('reading-mode')) {
+    event.preventDefault();
+    ipcRenderer.invoke('exit-reading-mode');
   }
 });
 
@@ -220,6 +211,10 @@ const confirmTitle = document.getElementById('confirmTitle');
 const confirmMessage = document.getElementById('confirmMessage');
 const confirmCancel = document.getElementById('confirmCancel');
 const confirmOk = document.getElementById('confirmOk');
+const locationsModal = document.getElementById('locationsModal');
+const locationsList = document.getElementById('locationsList');
+const locationsClose = document.getElementById('locationsClose');
+const locationsAdd = document.getElementById('locationsAdd');
 
 let modalCallback = null;
 let confirmCallback = null;
@@ -278,7 +273,7 @@ async function loadTree() {
   tree = await ipcRenderer.invoke('get-tree');
   const notesInfo = await ipcRenderer.invoke('get-notes-info');
   notesDirDisplay.textContent = notesInfo.alias || notesInfo.name;
-  notesDirInfo.title = `${notesInfo.path}\n点击设置别名`;
+  notesDirInfo.title = `${notesInfo.path}\n点击管理存储目录`;
   notesDirInfo.dataset.alias = notesInfo.alias;
   renderTree();
 }
@@ -466,7 +461,7 @@ let previewTimeout = null;
 
 function updatePreview(immediate = false) {
   scheduleEditorDecorations(editor, () => currentNote);
-  if (previewHiddenLeft) return;
+  if (previewHiddenLeft && !app.classList.contains('reading-mode')) return;
   if (previewTimeout) clearTimeout(previewTimeout);
   if (!immediate) {
     previewTimeout = setTimeout(() => updatePreview(true), 150);
@@ -495,6 +490,68 @@ function resolvePreviewImages(container, note) {
 function getImageUrl(source, note) {
   if (/^(?:https?:|data:|file:|\/\/)/i.test(source)) return source;
   return pathToFileURL(path.resolve(path.dirname(note.path), decodeURI(source))).href;
+}
+
+function parseMarkdownTableRow(line) {
+  let value = line.trim();
+  if (!value.includes('|')) return null;
+  if (value.startsWith('|')) value = value.slice(1);
+  if (value.endsWith('|') && !value.endsWith('\\|')) value = value.slice(0, -1);
+
+  const cells = [];
+  let cell = '';
+  let escaped = false;
+  for (const character of value) {
+    if (escaped) {
+      cell += character;
+      escaped = false;
+    } else if (character === '\\') {
+      escaped = true;
+    } else if (character === '|') {
+      cells.push(cell.trim());
+      cell = '';
+    } else {
+      cell += character;
+    }
+  }
+  if (escaped) cell += '\\';
+  cells.push(cell.trim());
+  return cells;
+}
+
+function getTableAlignments(line) {
+  const cells = parseMarkdownTableRow(line);
+  if (!cells || !cells.length) return null;
+  if (!cells.every(cell => /^:?-{3,}:?$/.test(cell))) return null;
+  return cells.map(cell => {
+    if (cell.startsWith(':') && cell.endsWith(':')) return 'center';
+    if (cell.endsWith(':')) return 'right';
+    return 'left';
+  });
+}
+
+function createEditorTableWidget(rows, alignments) {
+  const widget = document.createElement('span');
+  widget.className = 'cm-table-widget';
+  widget.title = '点击编辑表格 Markdown';
+  widget.style.setProperty('--cm-table-source-lines', rows.length + 1);
+  const table = document.createElement('table');
+
+  rows.forEach((row, rowIndex) => {
+    const section = rowIndex === 0 ? table.createTHead() : table.tBodies[0] || table.createTBody();
+    const tableRow = section.insertRow();
+    row.forEach((content, columnIndex) => {
+      const cell = rowIndex === 0
+        ? document.createElement('th')
+        : document.createElement('td');
+      cell.textContent = content;
+      cell.style.textAlign = alignments[columnIndex] || 'left';
+      tableRow.appendChild(cell);
+    });
+  });
+
+  widget.appendChild(table);
+  return widget;
 }
 
 function renderEditorDecorations(editorAdapter, note) {
@@ -550,11 +607,82 @@ function renderEditorDecorations(editorAdapter, note) {
   }
 
   codeMirror.operation(() => {
+    const renderedTableLines = new Set();
+    const fencedLines = new Set();
+    let scanningFence = false;
+    for (let lineNumber = 0; lineNumber < lastLine; lineNumber += 1) {
+      const lineText = codeMirror.getLine(lineNumber);
+      if (/^\s*```/.test(lineText)) {
+        fencedLines.add(lineNumber);
+        scanningFence = !scanningFence;
+      } else if (scanningFence) {
+        fencedLines.add(lineNumber);
+      }
+    }
+
+    for (let lineNumber = firstLine; lineNumber < lastLine - 1; lineNumber += 1) {
+      if (fencedLines.has(lineNumber) || renderedTableLines.has(lineNumber)) continue;
+      const header = parseMarkdownTableRow(codeMirror.getLine(lineNumber));
+      const alignments = getTableAlignments(codeMirror.getLine(lineNumber + 1));
+      if (!header || !alignments || header.length !== alignments.length) continue;
+
+      const rows = [header];
+      let endLine = lineNumber + 1;
+      while (endLine + 1 < codeMirror.lineCount()) {
+        const row = parseMarkdownTableRow(codeMirror.getLine(endLine + 1));
+        if (!row || row.length !== header.length || fencedLines.has(endLine + 1)) break;
+        rows.push(row);
+        endLine += 1;
+      }
+      if (activeLine >= lineNumber && activeLine <= endLine) {
+        lineNumber = endLine;
+        continue;
+      }
+
+      const widget = createEditorTableWidget(rows, alignments);
+      const from = { line: lineNumber, ch: 0 };
+      const to = { line: endLine, ch: codeMirror.getLine(endLine).length };
+      addMark(from, to, {
+        replacedWith: widget,
+        atomic: true,
+        handleMouseEvents: true
+      });
+      widget.addEventListener('mousedown', event => {
+        event.preventDefault();
+        codeMirror.focus();
+        codeMirror.setCursor(from);
+      });
+      for (let tableLine = lineNumber; tableLine <= endLine; tableLine += 1) {
+        renderedTableLines.add(tableLine);
+      }
+      lineNumber = endLine;
+    }
+
     codeMirror.eachLine(firstLine, lastLine, lineHandle => {
       const lineNumber = codeMirror.getLineNumber(lineHandle);
     const lineText = lineHandle.text;
+    if (renderedTableLines.has(lineNumber)) return;
     const fenceLine = /^\s*```/.test(lineText);
     if (lineNumber === activeLine) {
+      const activeHeading = lineText.match(/^(#{1,6})\s+/);
+      const activeQuote = lineText.match(/^\s*>\s?/);
+      let editingClassName = 'cm-editing-source-line';
+      if (activeHeading) {
+        addLineStyle(lineNumber, 'cm-rendered-heading-line');
+        addLineStyle(lineNumber, `cm-rendered-heading-line-${activeHeading[1].length}`);
+        editingClassName += ` cm-editing-heading cm-rendered-h${activeHeading[1].length}`;
+      }
+      if (activeQuote) {
+        addLineStyle(lineNumber, 'cm-rendered-quote-line');
+        editingClassName += ' cm-editing-quote';
+      }
+      if (lineText && !inCodeFence && !fenceLine) {
+        addMark(
+          { line: lineNumber, ch: 0 },
+          { line: lineNumber, ch: lineText.length },
+          { className: editingClassName }
+        );
+      }
       if (fenceLine) inCodeFence = !inCodeFence;
       return;
     }
@@ -798,6 +926,29 @@ async function saveCurrentNote() {
   if (renamed) await loadTree();
 }
 
+async function exportCurrentNoteToPdf() {
+  if (!currentNote) {
+    showConfirm('无法导出', '请先选择要导出的笔记', () => {});
+    return;
+  }
+
+  await saveCurrentNote();
+  const wasReadingMode = app.classList.contains('reading-mode');
+  app.classList.add('reading-mode', 'exporting-pdf');
+  updatePreview(true);
+
+  try {
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const result = await ipcRenderer.invoke('export-current-pdf', currentNote.name);
+    if (!result.success && !result.canceled) {
+      showConfirm('导出失败', result.error || '无法生成 PDF 文件', () => {});
+    }
+  } finally {
+    app.classList.remove('exporting-pdf');
+    if (!wasReadingMode) app.classList.remove('reading-mode');
+  }
+}
+
 async function createNewNote(folderPath = null) {
   showModal('新建笔记', '请输入笔记名称', '', async (name) => {
     if (name) {
@@ -869,23 +1020,103 @@ async function deleteItem(data) {
 }
 
 async function changeNotesDir() {
+  if (currentNote) await saveCurrentNote();
+  if (currentNoteRight) await saveCurrentNoteRight();
   const newDir = await ipcRenderer.invoke('select-notes-dir');
   if (newDir) {
-    currentNote = null;
-    noteTitle.value = '';
-    editor.value = '';
-    updatePreview(true);
-    expandedFolders.clear();
+    resetCurrentLibrary();
     await loadTree();
+    await renderLocationsManager();
   }
 }
 
-function editNotesAlias() {
-  const currentAlias = notesDirInfo.dataset.alias || '';
-  showModal('设置目录别名', '留空则显示文件夹名称', currentAlias, async (alias) => {
-    await ipcRenderer.invoke('set-notes-alias', alias);
-    await loadTree();
+function resetCurrentLibrary() {
+  currentNote = null;
+  currentNoteRight = null;
+  noteTitle.value = '';
+  noteTitleRight.value = '';
+  editor.value = '';
+  editorRight.value = '';
+  rightPanel.style.display = 'none';
+  updatePreview(true);
+  expandedFolders.clear();
+}
+
+async function switchNotesLocation(locationPath) {
+  if (currentNote) await saveCurrentNote();
+  if (currentNoteRight) await saveCurrentNoteRight();
+  const result = await ipcRenderer.invoke('switch-notes-dir', locationPath);
+  if (!result.success) {
+    showConfirm('切换失败', result.error, () => {});
+    return;
+  }
+  resetCurrentLibrary();
+  await loadTree();
+  locationsModal.classList.remove('active');
+}
+
+async function renderLocationsManager() {
+  const data = await ipcRenderer.invoke('get-notes-locations');
+  locationsList.innerHTML = '';
+  data.locations.forEach(location => {
+    const row = document.createElement('div');
+    row.className = 'location-row';
+    row.classList.toggle('active', location.path === data.activePath);
+
+    const selectButton = document.createElement('button');
+    selectButton.className = 'location-select';
+    selectButton.innerHTML = `
+      <span class="location-status"></span>
+      <span class="location-copy">
+        <strong>${escapeHtml(location.alias || location.name)}</strong>
+        <small>${escapeHtml(location.path)}</small>
+      </span>
+      ${location.path === data.activePath ? '<span class="location-badge">当前</span>' : ''}
+    `;
+    selectButton.addEventListener('click', () => switchNotesLocation(location.path));
+
+    const renameButton = document.createElement('button');
+    renameButton.className = 'location-action';
+    renameButton.textContent = '别名';
+    renameButton.addEventListener('click', () => {
+      locationsModal.classList.remove('active');
+      showModal('设置目录别名', '留空则显示文件夹名称', location.alias, async alias => {
+        await ipcRenderer.invoke('set-location-alias', {
+          locationPath: location.path,
+          alias
+        });
+        await loadTree();
+        await showLocationsManager();
+      });
+    });
+
+    const removeButton = document.createElement('button');
+    removeButton.className = 'location-action danger';
+    removeButton.textContent = '移除';
+    removeButton.disabled = data.locations.length <= 1;
+    removeButton.addEventListener('click', () => {
+      showConfirm('移除存储目录', `仅从列表移除“${location.alias || location.name}”，不会删除磁盘文件。`, async () => {
+        const result = await ipcRenderer.invoke('remove-notes-dir', location.path);
+        if (!result.success) {
+          showConfirm('移除失败', result.error, () => {});
+          return;
+        }
+        if (location.path === data.activePath) {
+          resetCurrentLibrary();
+          await loadTree();
+        }
+        await renderLocationsManager();
+      });
+    });
+
+    row.append(selectButton, renameButton, removeButton);
+    locationsList.appendChild(row);
   });
+}
+
+async function showLocationsManager() {
+  await renderLocationsManager();
+  locationsModal.classList.add('active');
 }
 
 async function moveItem(item, targetFolderPath) {
@@ -931,11 +1162,14 @@ editor.addEventListener('input', () => {
   }, 1000);
 });
 
-newNoteBtn.addEventListener('click', () => createNewNote(null));
-newFolderBtn.addEventListener('click', () => createNewFolder(null));
 
-settingsBtn.addEventListener('click', changeNotesDir);
-notesDirInfo.addEventListener('click', editNotesAlias);
+settingsBtn.addEventListener('click', showLocationsManager);
+notesDirInfo.addEventListener('click', showLocationsManager);
+locationsClose.addEventListener('click', () => locationsModal.classList.remove('active'));
+locationsAdd.addEventListener('click', changeNotesDir);
+locationsModal.addEventListener('click', event => {
+  if (event.target === locationsModal) locationsModal.classList.remove('active');
+});
 
 noteTitle.addEventListener('change', async () => {
   if (currentNote) {
@@ -976,6 +1210,7 @@ notesList.addEventListener('drop', (e) => {
 ipcRenderer.on('new-note', () => createNewNote(null));
 ipcRenderer.on('new-folder', () => createNewFolder(null));
 ipcRenderer.on('save-note', saveCurrentNote);
+ipcRenderer.on('export-pdf', exportCurrentNoteToPdf);
 ipcRenderer.on('change-dir', changeNotesDir);
 ipcRenderer.on('toggle-sidebar', toggleSidebar);
 ipcRenderer.on('toggle-preview', togglePreviewLeft);

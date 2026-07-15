@@ -2,11 +2,12 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { fileURLToPath } = require('url');
-const { app, BrowserWindow, ipcMain, dialog, Menu, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, clipboard, shell } = require('electron');
 
 let mainWindow;
 let aboutWindow;
 let zenMode = false;
+let readingMode = false;
 const iconPath = path.join(__dirname, 'icon.png');
 
 const appName = '简记';
@@ -14,21 +15,56 @@ process.title = appName;
 app.setName(appName);
 const configPath = path.join(app.getPath('userData'), 'config.json');
 
-function setZenMode(enabled, updateWindow = true) {
+function getActiveWindow(preferredWindow = null) {
+  if (preferredWindow && !preferredWindow.isDestroyed()) return preferredWindow;
+  const focusedWindow = BrowserWindow.getFocusedWindow();
+  if (focusedWindow && !focusedWindow.isDestroyed()) return focusedWindow;
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
+  return null;
+}
+
+function setZenMode(enabled, updateWindow = true, preferredWindow = null) {
+  const targetWindow = getActiveWindow(preferredWindow);
+  if (!targetWindow) return;
+  if (enabled && readingMode) setReadingMode(false, targetWindow);
   zenMode = enabled;
-  if (updateWindow && mainWindow.isFullScreen() !== enabled) {
-    mainWindow.setFullScreen(enabled);
+  if (updateWindow && targetWindow.isFullScreen() !== enabled) {
+    targetWindow.setFullScreen(enabled);
   }
-  mainWindow.webContents.send('zen-mode-changed', enabled);
+  targetWindow.webContents.send('zen-mode-changed', enabled);
   const menuItem = Menu.getApplicationMenu()?.getMenuItemById('zen-mode');
   if (menuItem) menuItem.checked = enabled;
 }
 
+function setReadingMode(enabled, preferredWindow = null) {
+  const targetWindow = getActiveWindow(preferredWindow);
+  if (!targetWindow) return;
+  if (enabled && zenMode) setZenMode(false, true, targetWindow);
+  readingMode = enabled;
+  targetWindow.webContents.send('reading-mode-changed', enabled);
+  const menuItem = Menu.getApplicationMenu()?.getMenuItemById('reading-mode');
+  if (menuItem) menuItem.checked = enabled;
+}
+
 function getConfig() {
+  const defaultDir = path.join(app.getPath('userData'), 'notes');
   if (fs.existsSync(configPath)) {
-    return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    const notesDir = config.notesDir || defaultDir;
+    const locations = Array.isArray(config.notesLocations) ? config.notesLocations : [];
+    if (!locations.some(location => location.path === notesDir)) {
+      locations.push({ path: notesDir, alias: config.notesAlias || '' });
+    }
+    config.notesDir = notesDir;
+    config.notesAlias = config.notesAlias || '';
+    config.notesLocations = locations;
+    return config;
   }
-  return { notesDir: path.join(app.getPath('userData'), 'notes'), notesAlias: '' };
+  return {
+    notesDir: defaultDir,
+    notesAlias: '',
+    notesLocations: [{ path: defaultDir, alias: '' }]
+  };
 }
 
 function saveConfig(config) {
@@ -46,6 +82,17 @@ function ensureNotesDir() {
   }
 }
 
+function showItemInFileManager(itemPath) {
+  const notesDir = path.resolve(getNotesDir());
+  const resolvedItemPath = path.resolve(itemPath || '');
+  const relativePath = path.relative(notesDir, resolvedItemPath);
+
+  if (!itemPath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) return;
+  if (!fs.existsSync(resolvedItemPath)) return;
+
+  shell.showItemInFolder(resolvedItemPath);
+}
+
 function getTree(dir, basePath = '') {
   const result = [];
   if (!fs.existsSync(dir)) return result;
@@ -58,6 +105,7 @@ function getTree(dir, basePath = '') {
   });
 
   for (const item of items) {
+    if (item.isDirectory() && item.name === '.obsidian') continue;
     if (!basePath && item.isDirectory() && item.name === 'assets') continue;
 
     const itemPath = path.join(dir, item.name);
@@ -125,8 +173,15 @@ function showAboutWindow() {
   });
 }
 
+function sendToActiveWindow(channel) {
+  const activeWindow = BrowserWindow.getFocusedWindow() || mainWindow;
+  if (activeWindow && !activeWindow.isDestroyed()) {
+    activeWindow.webContents.send(channel);
+  }
+}
+
 function createWindow() {
-  mainWindow = new BrowserWindow({
+  const newWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 800,
@@ -144,13 +199,19 @@ function createWindow() {
     icon: iconPath
   });
 
-  mainWindow.loadFile('index.html');
-  mainWindow.on('page-title-updated', event => {
+  mainWindow = newWindow;
+  newWindow.loadFile('index.html');
+  newWindow.on('page-title-updated', event => {
     event.preventDefault();
-    mainWindow.setTitle(appName);
+    newWindow.setTitle(appName);
   });
-  mainWindow.on('leave-full-screen', () => {
-    if (zenMode) setZenMode(false, false);
+  newWindow.on('leave-full-screen', () => {
+    if (zenMode) setZenMode(false, false, newWindow);
+  });
+  newWindow.on('closed', () => {
+    if (mainWindow === newWindow) {
+      mainWindow = BrowserWindow.getAllWindows().find(window => !window.isDestroyed()) || null;
+    }
   });
 
   const menuTemplate = [
@@ -172,24 +233,35 @@ function createWindow() {
       label: '文件',
       submenu: [
         {
+          label: '新建窗口',
+          accelerator: 'CmdOrCtrl+Alt+N',
+          click: createWindow
+        },
+        { type: 'separator' },
+        {
           label: '新建笔记',
           accelerator: 'CmdOrCtrl+N',
-          click: () => mainWindow.webContents.send('new-note')
+          click: () => sendToActiveWindow('new-note')
         },
         {
           label: '新建文件夹',
           accelerator: 'CmdOrCtrl+Shift+N',
-          click: () => mainWindow.webContents.send('new-folder')
+          click: () => sendToActiveWindow('new-folder')
         },
         {
           label: '保存',
           accelerator: 'CmdOrCtrl+S',
-          click: () => mainWindow.webContents.send('save-note')
+          click: () => sendToActiveWindow('save-note')
+        },
+        {
+          label: '导出 PDF…',
+          accelerator: 'CmdOrCtrl+Shift+E',
+          click: () => sendToActiveWindow('export-pdf')
         },
         { type: 'separator' },
         {
           label: '修改存储目录',
-          click: () => mainWindow.webContents.send('change-dir')
+          click: () => sendToActiveWindow('change-dir')
         },
         { type: 'separator' },
         {
@@ -218,24 +290,30 @@ function createWindow() {
         {
           label: '切换侧栏',
           accelerator: 'CmdOrCtrl+B',
-          click: () => mainWindow.webContents.send('toggle-sidebar')
+          click: () => sendToActiveWindow('toggle-sidebar')
         },
         {
           label: '切换预览',
           accelerator: 'CmdOrCtrl+Shift+P',
-          click: () => mainWindow.webContents.send('toggle-preview')
+          click: () => sendToActiveWindow('toggle-preview')
         },
         {
           label: '切换主题',
           accelerator: 'CmdOrCtrl+Shift+L',
-          click: () => mainWindow.webContents.send('toggle-theme')
+          click: () => sendToActiveWindow('toggle-theme')
+        },
+        {
+          id: 'reading-mode',
+          type: 'checkbox',
+          label: '纯阅读模式',
+          click: (menuItem, browserWindow) => setReadingMode(menuItem.checked, browserWindow)
         },
         {
           id: 'zen-mode',
           type: 'checkbox',
           label: '禅模式',
           accelerator: 'CmdOrCtrl+Shift+Z',
-          click: menuItem => setZenMode(menuItem.checked)
+          click: (menuItem, browserWindow) => setZenMode(menuItem.checked, true, browserWindow)
         },
         { type: 'separator' },
         { role: 'reload', label: '刷新' },
@@ -287,8 +365,42 @@ ipcMain.handle('get-notes-dir', async () => {
   return getNotesDir();
 });
 
-ipcMain.handle('exit-zen-mode', async () => {
-  if (zenMode) setZenMode(false);
+ipcMain.handle('export-current-pdf', async (event, suggestedName) => {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!sourceWindow || sourceWindow.isDestroyed()) {
+    return { success: false, error: '找不到要导出的窗口' };
+  }
+
+  const safeName = typeof suggestedName === 'string'
+    ? suggestedName.replace(/[\\/:*?"<>|]/g, '-').trim()
+    : '';
+  const result = await dialog.showSaveDialog(sourceWindow, {
+    title: '导出 PDF',
+    defaultPath: path.join(app.getPath('documents'), `${safeName || '未命名笔记'}.pdf`),
+    filters: [{ name: 'PDF 文件', extensions: ['pdf'] }],
+    properties: ['createDirectory', 'showOverwriteConfirmation']
+  });
+  if (result.canceled || !result.filePath) return { success: false, canceled: true };
+
+  try {
+    const pdfData = await sourceWindow.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      preferCSSPageSize: true
+    });
+    fs.writeFileSync(result.filePath, pdfData);
+    return { success: true, filePath: result.filePath };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('exit-zen-mode', async event => {
+  if (zenMode) setZenMode(false, true, BrowserWindow.fromWebContents(event.sender));
+});
+
+ipcMain.handle('exit-reading-mode', async event => {
+  if (readingMode) setReadingMode(false, BrowserWindow.fromWebContents(event.sender));
 });
 
 ipcMain.handle('get-notes-info', async () => {
@@ -303,12 +415,37 @@ ipcMain.handle('get-notes-info', async () => {
 ipcMain.handle('set-notes-alias', async (event, alias) => {
   const config = getConfig();
   config.notesAlias = typeof alias === 'string' ? alias.trim().slice(0, 60) : '';
+  const location = config.notesLocations.find(item => item.path === config.notesDir);
+  if (location) location.alias = config.notesAlias;
   saveConfig(config);
   return config.notesAlias;
 });
 
-ipcMain.handle('select-notes-dir', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
+ipcMain.handle('set-location-alias', async (event, { locationPath, alias }) => {
+  const config = getConfig();
+  const location = config.notesLocations.find(item => item.path === locationPath);
+  if (!location) return { success: false, error: '目录不存在' };
+  location.alias = typeof alias === 'string' ? alias.trim().slice(0, 60) : '';
+  if (config.notesDir === locationPath) config.notesAlias = location.alias;
+  saveConfig(config);
+  return { success: true };
+});
+
+ipcMain.handle('get-notes-locations', async () => {
+  const config = getConfig();
+  return {
+    activePath: config.notesDir,
+    locations: config.notesLocations.map(location => ({
+      path: location.path,
+      alias: location.alias || '',
+      name: path.basename(location.path)
+    }))
+  };
+});
+
+ipcMain.handle('select-notes-dir', async event => {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+  const result = await dialog.showOpenDialog(sourceWindow, {
     title: '选择笔记存储目录',
     properties: ['openDirectory', 'createDirectory'],
     defaultPath: getNotesDir()
@@ -317,11 +454,42 @@ ipcMain.handle('select-notes-dir', async () => {
   if (!result.canceled && result.filePaths.length > 0) {
     const config = getConfig();
     config.notesDir = result.filePaths[0];
-    config.notesAlias = '';
+    let location = config.notesLocations.find(item => item.path === config.notesDir);
+    if (!location) {
+      location = { path: config.notesDir, alias: '' };
+      config.notesLocations.push(location);
+    }
+    config.notesAlias = location.alias || '';
     saveConfig(config);
     return result.filePaths[0];
   }
   return null;
+});
+
+ipcMain.handle('switch-notes-dir', async (event, locationPath) => {
+  const config = getConfig();
+  const location = config.notesLocations.find(item => item.path === locationPath);
+  if (!location) return { success: false, error: '该目录不在已保存列表中' };
+  if (!fs.existsSync(location.path)) return { success: false, error: '目录不存在或已被移动' };
+  config.notesDir = location.path;
+  config.notesAlias = location.alias || '';
+  saveConfig(config);
+  return { success: true };
+});
+
+ipcMain.handle('remove-notes-dir', async (event, locationPath) => {
+  const config = getConfig();
+  if (config.notesLocations.length <= 1) {
+    return { success: false, error: '至少需要保留一个存储目录' };
+  }
+  config.notesLocations = config.notesLocations.filter(item => item.path !== locationPath);
+  if (config.notesDir === locationPath) {
+    const nextLocation = config.notesLocations[0];
+    config.notesDir = nextLocation.path;
+    config.notesAlias = nextLocation.alias || '';
+  }
+  saveConfig(config);
+  return { success: true, activePath: config.notesDir };
 });
 
 ipcMain.handle('get-tree', async () => {
@@ -531,6 +699,11 @@ ipcMain.on('show-context-menu', (event, data) => {
   
   if (type === 'file') {
     template.push({
+      label: '在访达中显示',
+      click: () => showItemInFileManager(itemPath)
+    });
+    template.push({ type: 'separator' });
+    template.push({
       label: '重命名',
       click: () => mainWindow.webContents.send('context-menu-rename', data)
     });
@@ -539,6 +712,11 @@ ipcMain.on('show-context-menu', (event, data) => {
       click: () => mainWindow.webContents.send('context-menu-delete', data)
     });
   } else if (type === 'folder') {
+    template.push({
+      label: '在访达中显示',
+      click: () => showItemInFileManager(itemPath)
+    });
+    template.push({ type: 'separator' });
     template.push({
       label: '新建笔记',
       click: () => mainWindow.webContents.send('context-menu-new-note', data)

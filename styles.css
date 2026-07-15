@@ -1897,8 +1897,10 @@ textarea,
 
 .storage-control .notes-dir-path {
   width: 100%;
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 600;
   line-height: 16px;
+  text-align: left;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1943,9 +1945,12 @@ textarea,
 
 .storage-control .notes-dir-info {
   height: 38px;
-  padding: 2px 4px;
+  padding: 2px 4px 2px 2px;
   border-radius: 0;
   background: transparent;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
 }
 
 .storage-control .notes-dir-info:hover {
@@ -1969,6 +1974,27 @@ textarea,
 }
 
 /* Zen mode: the editor is the entire interface. */
+.app.reading-mode #leftPanel > .toolbar,
+.app.reading-mode #rightPanel,
+.app.reading-mode .panel-divider,
+.app.reading-mode #editorContainer .editor-pane,
+.app.reading-mode #editorContainer .divider {
+  display: none !important;
+}
+
+.app.reading-mode #leftPanel,
+.app.reading-mode #editorContainer,
+.app.reading-mode #editorContainer .preview-pane {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  flex: 1 1 auto;
+}
+
+.app.reading-mode #editorContainer .preview-pane {
+  display: flex !important;
+}
+
 .app.zen-mode .sidebar,
 .app.zen-mode #leftPanel > .toolbar,
 .app.zen-mode #rightPanel,
@@ -2065,13 +2091,6 @@ textarea,
 }
 
 /* Minimal top-bar icon geometry and fixed center line. */
-#newNoteBtn svg,
-#newFolderBtn svg {
-  width: 18px;
-  height: 18px;
-  stroke-width: 1.6;
-}
-
 .sidebar-header-actions .btn-icon:hover svg,
 .toolbar .btn-icon:hover svg,
 .toolbar .toggle-sidebar-btn:hover svg,
@@ -2508,6 +2527,81 @@ textarea,
   background: var(--md-accent);
 }
 
+.cm-table-widget {
+  width: 100%;
+  margin: 0;
+  display: inline-block;
+  overflow-x: auto;
+  vertical-align: top;
+}
+
+.cm-table-widget table {
+  width: 100%;
+  border-spacing: 0;
+  border-collapse: separate;
+  border: 1px solid var(--md-rule);
+  border-radius: 8px;
+  color: var(--md-body);
+  font-family: var(--reading-font);
+  font-size: 1em;
+  line-height: 1.8;
+  height: calc(var(--cm-table-source-lines) * 1.8em);
+  overflow: hidden;
+}
+
+.cm-table-widget th,
+.cm-table-widget td {
+  min-width: 96px;
+  padding: 2px 12px;
+  border-right: 1px solid var(--md-rule);
+  border-bottom: 1px solid var(--md-rule);
+  white-space: normal;
+}
+
+.cm-table-widget th {
+  background: color-mix(in srgb, var(--md-code-bg) 74%, transparent);
+  color: var(--md-heading);
+  font-weight: 650;
+}
+
+.cm-editing-heading {
+  color: var(--md-heading);
+  font-family: var(--reading-font);
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+.cm-editing-source-line {
+  color: var(--md-body);
+  font-family: var(--reading-font);
+  font-size: 16px;
+  line-height: 1.8;
+  letter-spacing: 0.015em;
+}
+
+.cm-editing-source-line.cm-editing-heading {
+  letter-spacing: -0.015em;
+}
+
+.cm-editing-source-line.cm-editing-quote {
+  color: var(--md-muted);
+  font-style: italic;
+}
+
+.cm-editing-source-line .cm-comment.cm-code,
+.cm-editing-source-line .cm-inline-code {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+}
+
+.cm-table-widget tr:last-child td {
+  border-bottom: 0;
+}
+
+.cm-table-widget th:last-child,
+.cm-table-widget td:last-child {
+  border-right: 0;
+}
+
 .preview-content {
   color: var(--md-body);
 }
@@ -2625,6 +2719,11 @@ textarea,
   line-height: 1.85;
 }
 
+.app.zen-mode .cm-editing-source-line {
+  font-size: 17px;
+  line-height: 1.85;
+}
+
 .app.zen-mode .cm-image-widget {
   max-width: min(720px, 100%);
 }
@@ -2640,4 +2739,323 @@ textarea,
     padding-right: 28px;
     padding-left: 28px;
   }
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 18mm 17mm 20mm;
+  }
+
+  :root {
+    --bg-primary: #ffffff;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #f3f4f6;
+    --text-primary: #202124;
+    --text-secondary: #5f6368;
+    --border-color: #d8dbe2;
+    --md-body: #30343b;
+    --md-heading: #17191d;
+    --md-muted: #666d78;
+    --md-code: #343946;
+    --md-code-bg: #f1f2f4;
+  }
+
+  html,
+  body,
+  .app,
+  .main-content,
+  .editors-wrapper,
+  #leftPanel,
+  #editorContainer,
+  #editorContainer .preview-pane {
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    display: block !important;
+    background: #ffffff !important;
+  }
+
+  .sidebar,
+  #leftPanel > .toolbar,
+  #rightPanel,
+  .panel-divider,
+  #editorContainer .editor-pane,
+  #editorContainer .divider {
+    display: none !important;
+  }
+
+  .preview-content {
+    width: 100% !important;
+    max-width: none !important;
+    padding: 0 !important;
+    color: var(--md-body) !important;
+    font-size: 11pt;
+    line-height: 1.7;
+  }
+
+  .preview-content pre,
+  .preview-content blockquote,
+  .preview-content table,
+  .preview-content img {
+    break-inside: avoid;
+  }
+
+  .preview-content a {
+    color: inherit;
+    text-decoration: underline;
+  }
+}
+
+/* Storage library manager */
+#modal,
+#confirmModal {
+  z-index: 1010;
+}
+
+.locations-modal-content {
+  width: min(560px, calc(100vw - 40px));
+  min-width: 0;
+  max-height: min(600px, calc(100vh - 48px));
+  border: 1px solid color-mix(in srgb, var(--text-secondary) 22%, transparent);
+  border-radius: 14px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28), 0 2px 10px rgba(0, 0, 0, 0.16);
+}
+
+.locations-modal-header {
+  min-height: 52px;
+  padding: 0 16px;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 72px;
+  align-items: center;
+  gap: 8px;
+  background: color-mix(in srgb, var(--bg-tertiary) 46%, var(--bg-secondary));
+}
+
+.locations-heading {
+  min-width: 0;
+  text-align: center;
+}
+
+.locations-heading .modal-title {
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.locations-window-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mac-window-control {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 0.5px solid rgba(0, 0, 0, 0.15);
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+button.mac-window-control {
+  background: #ff5f57;
+  color: rgba(87, 0, 0, 0.72);
+  cursor: pointer;
+}
+
+.mac-window-control.minimize {
+  background: #febc2e;
+}
+
+.mac-window-control.zoom {
+  background: #28c840;
+}
+
+.mac-window-control.close span {
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  opacity: 0;
+}
+
+.locations-window-controls:hover .mac-window-control.close span,
+.mac-window-control.close:focus-visible span {
+  opacity: 1;
+}
+
+.mac-window-control.close:active {
+  filter: brightness(0.88);
+}
+
+.locations-header-spacer {
+  width: 72px;
+  height: 1px;
+}
+
+.locations-intro {
+  padding: 22px 24px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.locations-intro strong {
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 680;
+}
+
+.locations-intro span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.locations-list {
+  min-height: 120px;
+  padding: 8px 16px 14px;
+  overflow-y: auto;
+}
+
+.location-row {
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.location-row + .location-row {
+  margin-top: 3px;
+}
+
+.location-row:hover,
+.location-row.active {
+  background: color-mix(in srgb, var(--bg-tertiary) 72%, transparent);
+}
+
+.location-row.active {
+  border-color: color-mix(in srgb, var(--accent-color) 30%, transparent);
+}
+
+.location-select {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.location-status {
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--text-secondary);
+  border-radius: 50%;
+  flex: 0 0 8px;
+}
+
+.location-row.active .location-status {
+  border-color: var(--accent-color);
+  background: var(--accent-color);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-color) 17%, transparent);
+}
+
+.location-copy {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.location-copy strong {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.location-copy small {
+  color: var(--text-secondary);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.location-badge {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-color) 15%, transparent);
+  color: var(--md-accent);
+  font-size: 10px;
+}
+
+.location-action {
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.location-action:hover {
+  background: var(--topbar-hover);
+  color: var(--text-primary);
+}
+
+.location-action.danger:hover {
+  background: color-mix(in srgb, var(--danger-color) 13%, transparent);
+  color: var(--danger-color);
+}
+
+.location-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.locations-footer {
+  min-height: 58px;
+  padding: 10px 20px;
+  align-items: center;
+  justify-content: space-between;
+  background: color-mix(in srgb, var(--bg-tertiary) 34%, var(--bg-secondary));
+}
+
+.locations-footer span {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+/* Read-only title bar labels preserve native macOS drag and double-click behavior. */
+.toolbar .note-title-input[readonly] {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  cursor: default;
+  pointer-events: none;
+  -webkit-app-region: drag;
+}
+
+.toolbar .note-title-input[readonly]:hover,
+.toolbar .note-title-input[readonly]:focus {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
