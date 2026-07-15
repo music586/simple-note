@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>简记</title>
+  <link rel="stylesheet" href="node_modules/codemirror/lib/codemirror.css">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="node_modules/highlight.js/styles/github-dark.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-header-actions">
+          <button id="newNoteBtn" class="btn-icon" title="新建笔记" aria-label="新建笔记"><svg viewBox="0 0 24 24"><path d="M7 3.5h7l3 3V20.5H7z"/><path d="M14 3.5v3h3M12 11v5M9.5 13.5h5"/></svg></button>
+          <button id="newFolderBtn" class="btn-icon" title="新建文件夹" aria-label="新建文件夹"><svg viewBox="0 0 24 24"><path d="M3.5 7h6l2-2h4l2 3h3v11.5h-17z"/><path d="M12 11v5M9.5 13.5h5"/></svg></button>
+        </div>
+      </div>
+      <div class="notes-list" id="notesList"></div>
+      <div class="sidebar-footer">
+        <div class="storage-control">
+          <button id="notesDirInfo" class="notes-dir-info" title="设置目录别名">
+            <span class="notes-dir-label">存储位置</span>
+            <span id="notesDirDisplay" class="notes-dir-path"></span>
+          </button>
+          <button id="settingsBtn" class="btn-settings" title="更换存储目录" aria-label="更换存储目录">
+            <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M15 12l3 3-3 3M18 15h-6"/></svg>
+          </button>
+        </div>
+      </div>
+    </aside>
+    
+    <main class="main-content">
+      <div class="editors-wrapper" id="editorsWrapper">
+        <div class="editor-panel" id="leftPanel">
+          <div class="toolbar">
+            <button class="toggle-sidebar-btn" id="toggleSidebarBtn" title="隐藏目录" aria-label="切换目录"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg></button>
+            <input type="text" id="noteTitle" class="note-title-input" placeholder="笔记标题...">
+            <div class="toolbar-actions">
+              <button id="themeToggleBtn" class="btn-icon theme-toggle" title="切换到浅色主题" aria-label="切换到浅色主题">
+                <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/></svg>
+                <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24"><path d="M20.5 14.2A8 8 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2z"/></svg>
+              </button>
+              <button class="toggle-preview-btn-left active" id="togglePreviewBtnLeft" title="隐藏预览" aria-label="切换预览"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
+            </div>
+          </div>
+          
+          <div class="editor-container view-both" id="editorContainer">
+            <div class="editor-pane" id="editorPane">
+              <textarea id="editor" placeholder="在此输入 Markdown 内容..."></textarea>
+            </div>
+            <div class="divider" id="divider"></div>
+            <div class="preview-pane" id="previewPane">
+              <div id="preview" class="preview-content"></div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="panel-divider" id="panelDivider"></div>
+        
+        <div class="editor-panel" id="rightPanel" style="display: none;">
+          <div class="toolbar">
+            <input type="text" id="noteTitleRight" class="note-title-input" placeholder="笔记标题...">
+            <div class="toolbar-actions">
+              <button class="toggle-preview-btn active" id="togglePreviewBtnRight" title="隐藏预览" aria-label="切换预览"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
+              <button id="closeRightBtn" class="btn-icon small" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+            </div>
+          </div>
+          
+          <div class="editor-container view-both" id="editorContainerRight">
+            <div class="editor-pane" id="editorPaneRight">
+              <textarea id="editorRight" placeholder="在此输入 Markdown 内容..."></textarea>
+            </div>
+            <div class="divider" id="dividerRight"></div>
+            <div class="preview-pane" id="previewPaneRight">
+              <div id="previewRight" class="preview-content"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span id="modalTitle" class="modal-title"></span>
+      </div>
+      <div class="modal-body">
+        <input type="text" id="modalInput" class="modal-input" placeholder="">
+      </div>
+      <div class="modal-footer">
+        <button id="modalCancel" class="btn btn-secondary">取消</button>
+        <button id="modalConfirm" class="btn">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="confirmModal" class="modal">
+    <div class="modal-content modal-small">
+      <div class="modal-header">
+        <span id="confirmTitle" class="modal-title"></span>
+      </div>
+      <div class="modal-body">
+        <p id="confirmMessage"></p>
+      </div>
+      <div class="modal-footer">
+        <button id="confirmCancel" class="btn btn-secondary">取消</button>
+        <button id="confirmOk" class="btn btn-danger">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

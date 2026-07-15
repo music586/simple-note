@@ -1,0 +1,75 @@
+{
+  "name": "markdown-note",
+  "productName": "简记",
+  "version": "1.0.0",
+  "description": "简洁的桌面 Markdown 笔记应用",
+  "main": "main.js",
+  "scripts": {
+    "start": "node scripts/launch.js",
+    "dev": "node scripts/launch.js",
+    "dist:mac": "electron-builder --mac dmg --universal"
+  },
+  "keywords": [
+    "electron",
+    "markdown",
+    "note"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "codemirror": "^5.65.21",
+    "highlight.js": "^11.9.0",
+    "marked": "^11.0.0"
+  },
+  "build": {
+    "appId": "com.simple-notes.app",
+    "productName": "简记",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "renderer.js",
+      "index.html",
+      "styles.css",
+      "about.html",
+      "about.css",
+      "about.js",
+      "icon.png",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "简记 ${version}",
+      "artifactName": "简记-${version}-${arch}.${ext}",
+      "contents": [
+        {
+          "x": 140,
+          "y": 220
+        },
+        {
+          "x": 420,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  }
+}

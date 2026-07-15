@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>关于简记</title>
+  <link rel="stylesheet" href="about.css">
+</head>
+<body>
+  <main class="about-card">
+    <div class="paper-stack" aria-hidden="true">
+      <span></span>
+      <span></span>
+      <span></span>
+    </div>
+
+    <section class="brand-block">
+      <img class="app-icon" src="icon.png" alt="简记图标">
+      <div class="brand-copy">
+        <p class="eyebrow">MARKDOWN NOTES</p>
+        <h1>简记</h1>
+        <p class="tagline">让想法落下来，保持简单。</p>
+      </div>
+    </section>
+
+    <section class="version-panel" aria-label="版本信息">
+      <div class="version-primary">
+        <span>当前版本</span>
+        <strong id="appVersion">—</strong>
+      </div>
+      <dl class="runtime-list">
+        <div>
+          <dt>Electron</dt>
+          <dd id="electronVersion">—</dd>
+        </div>
+        <div>
+          <dt>Node.js</dt>
+          <dd id="nodeVersion">—</dd>
+        </div>
+      </dl>
+    </section>
+
+    <footer>
+      <span class="status-dot" aria-hidden="true"></span>
+      <span>桌面 Markdown 笔记应用</span>
+    </footer>
+  </main>
+  <script src="about.js"></script>
+</body>
+</html>
