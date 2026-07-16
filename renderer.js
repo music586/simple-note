@@ -23,6 +23,10 @@ let tree = [];
 let expandedFolders = new Set();
 let contextMenuData = null;
 let draggedItem = null;
+let tableContextActionHandler = null;
+let pendingTableFocusEditor = null;
+let pendingCodeFocusEditor = null;
+let pendingCodeFenceCompletion = null;
 
 const notesList = document.getElementById('notesList');
 const editor = createCodeEditor(document.getElementById('editor'));
@@ -34,6 +38,7 @@ const notesDirDisplay = document.getElementById('notesDirDisplay');
 const editorContainer = document.getElementById('editorContainer');
 
 const editorRight = createCodeEditor(document.getElementById('editorRight'));
+let lastActiveEditor = editor;
 const previewRight = document.getElementById('previewRight');
 const noteTitleRight = document.getElementById('noteTitleRight');
 const editorContainerRight = document.getElementById('editorContainerRight');
@@ -44,20 +49,23 @@ const closeRightBtn = document.getElementById('closeRightBtn');
 const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
 
 function scheduleEditorDecorations(editorAdapter, getNote) {
-  if (editorAdapter.decorationFrame) return;
+  if (editorAdapter.decorationFrame || editorAdapter.renderingDecorations) return;
   editorAdapter.decorationFrame = requestAnimationFrame(() => {
     editorAdapter.decorationFrame = null;
+    if (editorAdapter.renderingDecorations) return;
     renderEditorDecorations(editorAdapter, getNote());
   });
 }
 
 editor.codeMirror.on('cursorActivity', () => {
+  lastActiveEditor = editor;
   scheduleEditorDecorations(editor, () => currentNote);
 });
 editor.codeMirror.on('viewportChange', () => {
   scheduleEditorDecorations(editor, () => currentNote);
 });
 editorRight.codeMirror.on('cursorActivity', () => {
+  lastActiveEditor = editorRight;
   scheduleEditorDecorations(editorRight, () => currentNoteRight);
 });
 editorRight.codeMirror.on('viewportChange', () => {
@@ -67,6 +75,7 @@ editorRight.codeMirror.on('viewportChange', () => {
 function createCodeEditor(textarea) {
   let suppressChange = false;
   const inputHandlers = [];
+  let editorAdapter = null;
   const codeMirror = CodeMirror.fromTextArea(textarea, {
     mode: 'markdown',
     lineWrapping: true,
@@ -75,19 +84,49 @@ function createCodeEditor(textarea) {
     viewportMargin: 20,
     extraKeys: {
       'Cmd-A': 'selectAll',
-      'Ctrl-A': 'selectAll'
+      'Ctrl-A': 'selectAll',
+      Enter: cm => {
+        const cursor = cm.getCursor();
+        const lineText = cm.getLine(cursor.line);
+        const beforeCursor = lineText.slice(0, cursor.ch);
+        const afterCursor = lineText.slice(cursor.ch);
+        const openingFence = beforeCursor.match(/^(\s*)```[\w+-]*\s*$/);
+        let insideCodeFence = false;
+        for (let line = 0; line < cursor.line; line += 1) {
+          if (/^\s*```/.test(cm.getLine(line))) insideCodeFence = !insideCodeFence;
+        }
+
+        if (openingFence && !afterCursor.trim() && !insideCodeFence) {
+          pendingCodeFenceCompletion = {
+            editor: editorAdapter,
+            line: cursor.line,
+            indentation: openingFence[1]
+          };
+          const cursorPosition = cm.cursorCoords(cursor, 'window');
+          ipcRenderer.send('show-code-language-menu', {
+            x: cursorPosition.left,
+            y: cursorPosition.bottom
+          });
+          return;
+        }
+        cm.execCommand('newlineAndIndent');
+      }
     }
   });
 
   codeMirror.on('change', () => {
+    editorAdapter.decorationStructureDirty = true;
     if (!suppressChange) inputHandlers.forEach(handler => handler());
   });
 
-  return {
+  editorAdapter = {
     codeMirror,
     decorationMarks: [],
     decorationLines: [],
     decorationFrame: null,
+    renderingDecorations: false,
+    decorationStructureDirty: true,
+    codeBlocks: [],
     get value() {
       return codeMirror.getValue();
     },
@@ -107,6 +146,12 @@ function createCodeEditor(textarea) {
       codeMirror.replaceRange(content, from, codeMirror.posFromIndex(end));
       codeMirror.setCursor(codeMirror.posFromIndex(start + content.length));
     },
+    setCursorIndex(index) {
+      codeMirror.setCursor(codeMirror.posFromIndex(index));
+    },
+    hasFocus() {
+      return codeMirror.hasFocus();
+    },
     addEventListener(type, handler) {
       if (type === 'input') {
         inputHandlers.push(handler);
@@ -121,6 +166,7 @@ function createCodeEditor(textarea) {
       codeMirror.focus();
     }
   };
+  return editorAdapter;
 }
 
 let colorTheme = localStorage.getItem('color-theme') || 'dark';
@@ -154,6 +200,7 @@ if (previewHiddenLeft) {
 }
 
 let sidebarHidden = localStorage.getItem('sidebar-hidden') === 'true';
+let readingSidebarVisible = false;
 const app = document.querySelector('.app');
 
 ipcRenderer.on('zen-mode-changed', (event, enabled) => {
@@ -170,7 +217,16 @@ ipcRenderer.on('zen-mode-changed', (event, enabled) => {
 
 ipcRenderer.on('reading-mode-changed', (event, enabled) => {
   app.classList.toggle('reading-mode', enabled);
-  if (enabled) updatePreview(true);
+  readingSidebarVisible = false;
+  app.classList.remove('reading-sidebar-visible');
+  if (enabled) {
+    app.classList.remove('sidebar-hidden');
+    toggleSidebarBtn.title = '显示目录';
+    updatePreview(true);
+  } else {
+    app.classList.toggle('sidebar-hidden', sidebarHidden);
+    toggleSidebarBtn.title = sidebarHidden ? '显示目录' : '隐藏目录';
+  }
   requestAnimationFrame(() => editor.codeMirror.refresh());
 });
 
@@ -178,13 +234,38 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && app.classList.contains('zen-mode')) {
     event.preventDefault();
     ipcRenderer.invoke('exit-zen-mode');
-  } else if (event.key === 'Escape' && app.classList.contains('reading-mode')) {
-    event.preventDefault();
+  } else if (
+    app.classList.contains('reading-mode')
+    && !app.classList.contains('exporting-pdf')
+  ) {
+    if (event.key === 'Escape') event.preventDefault();
     ipcRenderer.invoke('exit-reading-mode');
   }
 });
 
+document.addEventListener('pointerdown', event => {
+  if (
+    !app.classList.contains('reading-mode')
+    || app.classList.contains('exporting-pdf')
+  ) return;
+
+  const target = event.target;
+  const isSidebarToggle = target.closest('#toggleSidebarBtn');
+  const isDirectoryNavigation = event.button === 0
+    && target.closest('.tree-folder');
+  const isReadingContent = event.button === 0
+    && target.closest('.preview-pane, .preview-content');
+  if (isSidebarToggle || isDirectoryNavigation || isReadingContent) return;
+  ipcRenderer.invoke('exit-reading-mode');
+}, true);
+
 function toggleSidebar() {
+  if (app.classList.contains('reading-mode')) {
+    readingSidebarVisible = !readingSidebarVisible;
+    app.classList.toggle('reading-sidebar-visible', readingSidebarVisible);
+    toggleSidebarBtn.title = readingSidebarVisible ? '隐藏目录' : '显示目录';
+    return;
+  }
   sidebarHidden = !sidebarHidden;
   app.classList.toggle('sidebar-hidden', sidebarHidden);
   toggleSidebarBtn.title = sidebarHidden ? '显示目录' : '隐藏目录';
@@ -530,11 +611,57 @@ function getTableAlignments(line) {
   });
 }
 
-function createEditorTableWidget(rows, alignments) {
+function serializeMarkdownTable(rows, alignments) {
+  const escapeCell = cell => String(cell).replace(/\|/g, '\\|');
+  const formatRow = row => `| ${row.map(escapeCell).join(' | ')} |`;
+  const separator = alignments.map(alignment => {
+    if (alignment === 'center') return ':---:';
+    if (alignment === 'right') return '---:';
+    return '---';
+  });
+  return [formatRow(rows[0]), formatRow(separator), ...rows.slice(1).map(formatRow)].join('\n');
+}
+
+function placeCaretInTableCell(cell, clientX, clientY) {
+  const selection = window.getSelection();
+  if (!selection) return;
+  let range = document.caretRangeFromPoint?.(clientX, clientY) || null;
+  if (!range || !cell.contains(range.startContainer)) {
+    range = document.createRange();
+    range.selectNodeContents(cell);
+    range.collapse(false);
+  }
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function focusEditableAtStart(element) {
+  if (!element || !element.isConnected) return false;
+  element.focus();
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  range.collapse(true);
+  const selection = window.getSelection();
+  if (!selection) return false;
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return true;
+}
+
+function createEditorTableWidget(
+  rows,
+  alignments,
+  onAddColumn,
+  onAddRow,
+  onContextMenu,
+  onCommit
+) {
   const widget = document.createElement('span');
   widget.className = 'cm-table-widget';
-  widget.title = '点击编辑表格 Markdown';
+  widget.title = '表格预览';
   widget.style.setProperty('--cm-table-source-lines', rows.length + 1);
+  const viewport = document.createElement('span');
+  viewport.className = 'cm-table-viewport';
   const table = document.createElement('table');
 
   rows.forEach((row, rowIndex) => {
@@ -545,17 +672,216 @@ function createEditorTableWidget(rows, alignments) {
         ? document.createElement('th')
         : document.createElement('td');
       cell.textContent = content;
+      cell.contentEditable = 'plaintext-only';
+      cell.spellcheck = false;
       cell.style.textAlign = alignments[columnIndex] || 'left';
+      cell.addEventListener('mousedown', event => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        cell.focus();
+        placeCaretInTableCell(cell, event.clientX, event.clientY);
+      });
+      cell.addEventListener('click', event => {
+        event.stopPropagation();
+      });
+      cell.addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          cell.blur();
+        }
+      });
+      cell.addEventListener('contextmenu', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        onContextMenu(rowIndex, columnIndex);
+      });
       tableRow.appendChild(cell);
     });
   });
 
-  widget.appendChild(table);
+  const addColumnButton = document.createElement('button');
+  addColumnButton.className = 'cm-table-add cm-table-add-column';
+  addColumnButton.type = 'button';
+  addColumnButton.title = '添加列';
+  addColumnButton.setAttribute('aria-label', '添加列');
+  addColumnButton.textContent = '+';
+  addColumnButton.addEventListener('mousedown', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    onAddColumn();
+  });
+
+  const addRowButton = document.createElement('button');
+  addRowButton.className = 'cm-table-add cm-table-add-row';
+  addRowButton.type = 'button';
+  addRowButton.title = '添加行';
+  addRowButton.setAttribute('aria-label', '添加行');
+  addRowButton.textContent = '+';
+  addRowButton.addEventListener('mousedown', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    onAddRow();
+  });
+
+  viewport.appendChild(table);
+  widget.append(viewport, addColumnButton, addRowButton);
+  widget.addEventListener('mousemove', event => {
+    if (event.target === addColumnButton) {
+      widget.classList.add('show-add-column');
+      widget.classList.remove('show-add-row');
+      return;
+    }
+    if (event.target === addRowButton) {
+      widget.classList.add('show-add-row');
+      widget.classList.remove('show-add-column');
+      return;
+    }
+
+    const rect = widget.getBoundingClientRect();
+    const distanceRight = Math.abs(rect.right - event.clientX);
+    const distanceBottom = Math.abs(rect.bottom - event.clientY);
+    const nearRight = distanceRight <= 28;
+    const nearBottom = distanceBottom <= 28;
+    const showColumn = nearRight && (!nearBottom || distanceRight <= distanceBottom);
+    const showRow = nearBottom && (!nearRight || distanceBottom < distanceRight);
+    widget.classList.toggle('show-add-column', showColumn);
+    widget.classList.toggle('show-add-row', showRow);
+  });
+  widget.addEventListener('mouseleave', () => {
+    widget.classList.remove('show-add-column', 'show-add-row');
+  });
+  widget.addEventListener('focusout', () => {
+    setTimeout(() => {
+      if (widget.contains(document.activeElement)) return;
+      const nextRows = Array.from(table.rows).map(tableRow => {
+        return Array.from(tableRow.cells).map(cell => {
+          return (cell.textContent || '').replace(/\s*\n\s*/g, ' ').trim();
+        });
+      });
+      if (JSON.stringify(nextRows) !== JSON.stringify(rows)) onCommit(nextRows);
+    }, 0);
+  });
   return widget;
 }
 
-function renderEditorDecorations(editorAdapter, note) {
+const commonHighlightLanguages = [
+  'javascript', 'typescript', 'python', 'json', 'yaml', 'xml', 'css', 'sql',
+  'bash', 'shell', 'markdown', 'java', 'c', 'cpp', 'csharp', 'go', 'rust',
+  'swift', 'kotlin', 'php', 'ruby', 'dockerfile', 'ini', 'toml'
+];
+
+const highlightLanguageAliases = {
+  js: 'javascript',
+  jsx: 'javascript',
+  ts: 'typescript',
+  tsx: 'typescript',
+  py: 'python',
+  yml: 'yaml',
+  html: 'xml',
+  svg: 'xml',
+  sh: 'bash',
+  zsh: 'bash',
+  shell: 'bash',
+  md: 'markdown',
+  cs: 'csharp',
+  'c++': 'cpp',
+  rs: 'rust',
+  kt: 'kotlin',
+  rb: 'ruby',
+  docker: 'dockerfile',
+  conf: 'ini'
+};
+
+function createEditorCodeWidget(code, requestedLanguage, onCommit) {
+  const widget = document.createElement('span');
+  widget.className = 'cm-code-widget';
+  widget.title = '代码块预览';
+  widget.tabIndex = 0;
+  const pre = document.createElement('pre');
+  const codeElement = document.createElement('code');
+  const normalizedLanguage = String(requestedLanguage || '').trim().toLowerCase();
+  const language = highlightLanguageAliases[normalizedLanguage] || normalizedLanguage;
+  let highlighted;
+
+  if (language && hljs.getLanguage(language)) {
+    highlighted = hljs.highlight(code, { language });
+  } else {
+    const availableLanguages = commonHighlightLanguages.filter(item => hljs.getLanguage(item));
+    highlighted = hljs.highlightAuto(code, availableLanguages);
+  }
+
+  codeElement.className = 'hljs';
+  codeElement.innerHTML = highlighted.value;
+  codeElement.contentEditable = 'plaintext-only';
+  codeElement.spellcheck = false;
+  codeElement.addEventListener('mousedown', event => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    codeElement.focus();
+    placeCaretInTableCell(codeElement, event.clientX, event.clientY);
+  });
+  codeElement.addEventListener('click', event => event.stopPropagation());
+  pre.appendChild(codeElement);
+  widget.appendChild(pre);
+
+  const languageLabel = language && hljs.getLanguage(language)
+    ? normalizedLanguage || language
+    : highlighted.language;
+  if (languageLabel) {
+    const badge = document.createElement('span');
+    badge.className = 'cm-code-language';
+    badge.textContent = languageLabel;
+    widget.appendChild(badge);
+  }
+  codeElement.addEventListener('focusout', () => {
+    setTimeout(() => {
+      if (widget.contains(document.activeElement)) return;
+      const nextCode = (codeElement.innerText || codeElement.textContent || '')
+        .replace(/\r/g, '')
+        .replace(/\n$/, '');
+      if (nextCode !== code) onCommit(nextCode);
+    }, 0);
+  });
+  return widget;
+}
+
+function getCachedCodeBlocks(editorAdapter) {
+  if (!editorAdapter.decorationStructureDirty) return editorAdapter.codeBlocks;
   const codeMirror = editorAdapter.codeMirror;
+  const blocks = [];
+  let openBlock = null;
+
+  for (let lineNumber = 0; lineNumber < codeMirror.lineCount(); lineNumber += 1) {
+    const lineText = codeMirror.getLine(lineNumber);
+    if (!/^\s*```/.test(lineText)) continue;
+    if (!openBlock) {
+      openBlock = {
+        start: lineNumber,
+        end: codeMirror.lineCount() - 1,
+        language: lineText.replace(/^\s*```/, '').trim().split(/\s+/)[0] || '',
+        closed: false
+      };
+    } else {
+      openBlock.end = lineNumber;
+      openBlock.closed = true;
+      blocks.push(openBlock);
+      openBlock = null;
+    }
+  }
+  if (openBlock) blocks.push(openBlock);
+
+  editorAdapter.codeBlocks = blocks;
+  editorAdapter.decorationStructureDirty = false;
+  return blocks;
+}
+
+function renderEditorDecorations(editorAdapter, note) {
+  if (editorAdapter.renderingDecorations) return;
+  editorAdapter.renderingDecorations = true;
+  const codeMirror = editorAdapter.codeMirror;
+  try {
   codeMirror.operation(() => {
     editorAdapter.decorationMarks.forEach(mark => mark.clear());
     editorAdapter.decorationMarks = [];
@@ -564,18 +890,19 @@ function renderEditorDecorations(editorAdapter, note) {
     });
     editorAdapter.decorationLines = [];
   });
-  if (!note) return;
+  if (!note) {
+    return;
+  }
 
   const activeLine = codeMirror.getCursor().line;
   const viewport = codeMirror.getViewport();
   const firstLine = Math.max(0, viewport.from - 20);
   const lastLine = Math.min(codeMirror.lineCount(), viewport.to + 20);
   const imagePattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
-  let inCodeFence = false;
-
-  for (let lineNumber = 0; lineNumber < firstLine; lineNumber += 1) {
-    if (/^\s*```/.test(codeMirror.getLine(lineNumber))) inCodeFence = !inCodeFence;
-  }
+  const codeBlocks = getCachedCodeBlocks(editorAdapter);
+  let inCodeFence = codeBlocks.some(block => {
+    return block.start < firstLine && block.end >= firstLine;
+  });
 
   function addMark(from, to, options) {
     const mark = codeMirror.markText(from, to, options);
@@ -608,49 +935,168 @@ function renderEditorDecorations(editorAdapter, note) {
 
   codeMirror.operation(() => {
     const renderedTableLines = new Set();
+    const renderedCodeLines = new Set();
     const fencedLines = new Set();
-    let scanningFence = false;
-    for (let lineNumber = 0; lineNumber < lastLine; lineNumber += 1) {
-      const lineText = codeMirror.getLine(lineNumber);
-      if (/^\s*```/.test(lineText)) {
-        fencedLines.add(lineNumber);
-        scanningFence = !scanningFence;
-      } else if (scanningFence) {
+    codeBlocks.forEach(block => {
+      const rangeStart = Math.max(block.start, firstLine);
+      const rangeEnd = Math.min(block.end, lastLine - 1);
+      for (let lineNumber = rangeStart; lineNumber <= rangeEnd; lineNumber += 1) {
         fencedLines.add(lineNumber);
       }
-    }
+    });
+
+    codeBlocks.forEach(block => {
+      if (!block.closed) return;
+      if (block.end < firstLine || block.start >= lastLine) return;
+      if (block.end - block.start > 400) return;
+      const code = codeMirror.getRange(
+        { line: block.start + 1, ch: 0 },
+        { line: block.end, ch: 0 }
+      ).replace(/\n$/, '');
+      const from = { line: block.start, ch: 0 };
+      const to = { line: block.end, ch: codeMirror.getLine(block.end).length };
+      let codeMark;
+      const widget = createEditorCodeWidget(code, block.language, nextCode => {
+        if (codeMark) codeMark.clear();
+        const safeLanguage = String(block.language || '').replace(/[^\w+-]/g, '');
+        const fence = `\`\`\`${safeLanguage}\n${nextCode}\n\`\`\``;
+        codeMirror.replaceRange(fence, from, to);
+        scheduleEditorDecorations(editorAdapter, () => note);
+      });
+      codeMark = addMark(from, to, {
+        replacedWith: widget,
+        atomic: true,
+        handleMouseEvents: true
+      });
+      if (
+        pendingCodeFocusEditor?.editor === editorAdapter
+        && pendingCodeFocusEditor.line === block.start
+      ) {
+        const focusCodeEditor = () => {
+          const codeElement = widget.querySelector('code[contenteditable]');
+          if (!focusEditableAtStart(codeElement)) return;
+          if (
+            pendingCodeFocusEditor?.editor === editorAdapter
+            && pendingCodeFocusEditor.line === block.start
+          ) {
+            pendingCodeFocusEditor = null;
+          }
+        };
+        queueMicrotask(focusCodeEditor);
+        requestAnimationFrame(focusCodeEditor);
+      }
+      widget.addEventListener('mousedown', event => {
+        if (event.target.closest('code')) return;
+        event.preventDefault();
+        widget.focus();
+      });
+      const visibleStart = Math.max(block.start, firstLine);
+      const visibleEnd = Math.min(block.end, lastLine - 1);
+      for (let codeLine = visibleStart; codeLine <= visibleEnd; codeLine += 1) {
+        renderedCodeLines.add(codeLine);
+      }
+    });
 
     for (let lineNumber = firstLine; lineNumber < lastLine - 1; lineNumber += 1) {
-      if (fencedLines.has(lineNumber) || renderedTableLines.has(lineNumber)) continue;
+      if (
+        fencedLines.has(lineNumber)
+        || renderedTableLines.has(lineNumber)
+        || renderedCodeLines.has(lineNumber)
+      ) continue;
       const header = parseMarkdownTableRow(codeMirror.getLine(lineNumber));
       const alignments = getTableAlignments(codeMirror.getLine(lineNumber + 1));
       if (!header || !alignments || header.length !== alignments.length) continue;
 
       const rows = [header];
       let endLine = lineNumber + 1;
+      let tableTooLarge = false;
       while (endLine + 1 < codeMirror.lineCount()) {
         const row = parseMarkdownTableRow(codeMirror.getLine(endLine + 1));
         if (!row || row.length !== header.length || fencedLines.has(endLine + 1)) break;
+        if (rows.length >= 200) {
+          tableTooLarge = true;
+          break;
+        }
         rows.push(row);
         endLine += 1;
       }
-      if (activeLine >= lineNumber && activeLine <= endLine) {
+      if (tableTooLarge) {
         lineNumber = endLine;
         continue;
       }
-
-      const widget = createEditorTableWidget(rows, alignments);
       const from = { line: lineNumber, ch: 0 };
       const to = { line: endLine, ch: codeMirror.getLine(endLine).length };
-      addMark(from, to, {
+      let tableMark;
+      const replaceTable = (nextRows, nextAlignments) => {
+        if (tableMark) tableMark.clear();
+        codeMirror.replaceRange(
+          serializeMarkdownTable(nextRows, nextAlignments),
+          from,
+          to
+        );
+        scheduleEditorDecorations(editorAdapter, () => note);
+      };
+      const widget = createEditorTableWidget(
+        rows,
+        alignments,
+        () => {
+          const nextRows = rows.map(row => [...row, '']);
+          replaceTable(nextRows, [...alignments, 'left']);
+        },
+        () => {
+          const nextRows = [...rows, Array(header.length).fill('')];
+          replaceTable(nextRows, alignments);
+        },
+        (rowIndex, columnIndex) => {
+          tableContextActionHandler = action => {
+            const nextRows = rows.map(row => [...row]);
+            const nextAlignments = [...alignments];
+            if (action === 'add-row') {
+              nextRows.splice(rowIndex + 1, 0, Array(header.length).fill(''));
+            } else if (action === 'delete-row' && rowIndex > 0) {
+              nextRows.splice(rowIndex, 1);
+            } else if (action === 'add-column') {
+              nextRows.forEach(row => row.splice(columnIndex + 1, 0, ''));
+              nextAlignments.splice(columnIndex + 1, 0, 'left');
+            } else if (action === 'delete-column' && header.length > 1) {
+              nextRows.forEach(row => row.splice(columnIndex, 1));
+              nextAlignments.splice(columnIndex, 1);
+            } else {
+              return;
+            }
+            replaceTable(nextRows, nextAlignments);
+          };
+          ipcRenderer.send('show-table-context-menu', {
+            rowIndex,
+            columnIndex,
+            columnCount: header.length
+          });
+        },
+        nextRows => {
+          replaceTable(nextRows, alignments);
+        }
+      );
+      tableMark = addMark(from, to, {
         replacedWith: widget,
         atomic: true,
         handleMouseEvents: true
       });
+      if (
+        pendingTableFocusEditor?.editor === editorAdapter
+        && codeMirror.posFromIndex(pendingTableFocusEditor.index).line >= lineNumber
+        && codeMirror.posFromIndex(pendingTableFocusEditor.index).line <= endLine
+      ) {
+        requestAnimationFrame(() => {
+          const firstCell = widget.querySelector('th, td');
+          if (!focusEditableAtStart(firstCell)) return;
+          if (pendingTableFocusEditor?.editor === editorAdapter) {
+            pendingTableFocusEditor = null;
+          }
+        });
+      }
       widget.addEventListener('mousedown', event => {
+        if (event.target.closest('th, td, .cm-table-add')) return;
         event.preventDefault();
-        codeMirror.focus();
-        codeMirror.setCursor(from);
       });
       for (let tableLine = lineNumber; tableLine <= endLine; tableLine += 1) {
         renderedTableLines.add(tableLine);
@@ -661,6 +1107,7 @@ function renderEditorDecorations(editorAdapter, note) {
     codeMirror.eachLine(firstLine, lastLine, lineHandle => {
       const lineNumber = codeMirror.getLineNumber(lineHandle);
     const lineText = lineHandle.text;
+    if (renderedCodeLines.has(lineNumber)) return;
     if (renderedTableLines.has(lineNumber)) return;
     const fenceLine = /^\s*```/.test(lineText);
     if (lineNumber === activeLine) {
@@ -841,6 +1288,42 @@ function renderEditorDecorations(editorAdapter, note) {
     }
     });
   });
+  } finally {
+    editorAdapter.renderingDecorations = false;
+  }
+}
+
+function createFencedCodeBlock(code, language = '') {
+  const normalizedCode = String(code || '').replace(/\r/g, '').replace(/\n$/, '');
+  const backtickRuns = normalizedCode.match(/`+/g) || [];
+  const fenceLength = Math.max(3, ...backtickRuns.map(run => run.length + 1));
+  const fence = '`'.repeat(fenceLength);
+  const safeLanguage = String(language || '').replace(/[^\w+-]/g, '');
+  return `\n${fence}${safeLanguage}\n${normalizedCode}\n${fence}\n`;
+}
+
+function getClipboardEditorCode(event, html, text) {
+  const clipboardData = event.clipboardData;
+  if (!clipboardData || !text) return '';
+
+  try {
+    const vscodeData = clipboardData.getData('vscode-editor-data');
+    if (vscodeData) {
+      const metadata = JSON.parse(vscodeData);
+      return createFencedCodeBlock(text, metadata.mode || '');
+    }
+  } catch (err) {
+    // Ignore malformed editor metadata and continue with HTML detection.
+  }
+
+  const hasMonospaceStyle = /font-family\s*:[^;]*(?:monospace|menlo|monaco|consolas|courier)/i
+    .test(html);
+  const hasEditorMarkup = /<(?:div|span)\b[^>]*style=/i.test(html);
+  if (hasMonospaceStyle && hasEditorMarkup) {
+    const languageMatch = html.match(/(?:language-|data-language=["'])([\w+-]+)/i);
+    return createFencedCodeBlock(text, languageMatch?.[1] || '');
+  }
+  return '';
 }
 
 function clipboardHtmlToMarkdown(html, relativePaths) {
@@ -858,12 +1341,52 @@ function clipboardHtmlToMarkdown(html, relativePaths) {
       return relativePath ? `\n\n![图片](${relativePath})\n\n` : '';
     }
     if (tag === 'br') return '\n';
+    if (
+      ['ul', 'ol'].includes(tag)
+      && /(?:code[-_]?snippet.*line[-_]?index|line[-_]?numbers?)/i.test(node.className || '')
+    ) {
+      return '';
+    }
+    if (tag === 'pre') {
+      const directCodeNodes = Array.from(node.querySelectorAll(':scope > code'));
+      const codeNode = directCodeNodes[0] || node.querySelector('code');
+      const code = directCodeNodes.length > 1
+        ? directCodeNodes.map(line => line.textContent || '').join('\n')
+        : (codeNode || node).textContent || '';
+      const languageMatch = `${node.className || ''} ${codeNode?.className || ''}`
+        .match(/(?:^|\s)language-([\w+-]+)/);
+      const language = node.getAttribute('data-lang')
+        || node.getAttribute('data-language')
+        || languageMatch?.[1]
+        || '';
+      return createFencedCodeBlock(
+        code,
+        language
+      );
+    }
+    if (tag === 'table') {
+      const rows = Array.from(node.querySelectorAll('tr')).map(row => {
+        return Array.from(row.querySelectorAll(':scope > th, :scope > td')).map(cell => {
+          return (cell.textContent || '').replace(/\s+/g, ' ').trim();
+        });
+      }).filter(row => row.length > 0);
+      if (!rows.length) return '';
+      const columnCount = Math.max(...rows.map(row => row.length));
+      const normalizedRows = rows.map(row => {
+        return [...row, ...Array(columnCount - row.length).fill('')];
+      });
+      return `\n${serializeMarkdownTable(normalizedRows, Array(columnCount).fill('left'))}\n`;
+    }
     const content = Array.from(node.childNodes).map(convert).join('');
     if (/^h[1-6]$/.test(tag)) return `\n${'#'.repeat(Number(tag[1]))} ${content.trim()}\n`;
-    if (tag === 'li') return `\n- ${content.trim()}`;
+    if (tag === 'li') return content.trim() ? `\n- ${content.trim()}` : '';
     if (['p', 'div', 'section', 'article', 'ul', 'ol'].includes(tag)) return `\n${content.trim()}\n`;
     if (tag === 'strong' || tag === 'b') return `**${content}**`;
     if (tag === 'em' || tag === 'i') return `*${content}*`;
+    if (tag === 'code') {
+      const delimiter = content.includes('`') ? '``' : '`';
+      return `${delimiter}${content}${delimiter}`;
+    }
     if (tag === 'a') return `[${content}](${node.getAttribute('href') || ''})`;
     return content;
   }
@@ -871,9 +1394,23 @@ function clipboardHtmlToMarkdown(html, relativePaths) {
   return convert(documentNode.body).replace(/\n{3,}/g, '\n\n').trim();
 }
 
+function clipboardTextTableToMarkdown(text) {
+  const lines = String(text || '').replace(/\r/g, '').split('\n');
+  while (lines.length && !lines[lines.length - 1]) lines.pop();
+  if (!lines.length || !lines.some(line => line.includes('\t'))) return '';
+  const rows = lines.map(line => line.split('\t').map(cell => cell.trim()));
+  const columnCount = Math.max(...rows.map(row => row.length));
+  if (columnCount < 2) return '';
+  const normalizedRows = rows.map(row => {
+    return [...row, ...Array(columnCount - row.length).fill('')];
+  });
+  return serializeMarkdownTable(normalizedRows, Array(columnCount).fill('left'));
+}
+
 async function pasteImages(event, editorElement, getCurrentNote) {
   event.preventDefault();
   const clipboardText = event.clipboardData?.getData('text/plain') || '';
+  const clipboardHtml = event.clipboardData?.getData('text/html') || '';
   const note = getCurrentNote();
   const result = await ipcRenderer.invoke('paste-clipboard-content', {
     notePath: note?.path || null
@@ -897,7 +1434,23 @@ async function pasteImages(event, editorElement, getCurrentNote) {
     const clipboardContent = htmlContent || (text ? `${text}\n\n${imageMarkdown}` : imageMarkdown);
     pastedContent = `${needsLeadingBreak ? '\n' : ''}${clipboardContent}${needsTrailingBreak ? '\n' : ''}`;
   } else {
-    pastedContent = result.text || clipboardText;
+    const htmlSource = clipboardHtml || result.html || '';
+    const text = result.text || clipboardText;
+    const editorCode = getClipboardEditorCode(event, htmlSource, text);
+    const htmlBlock = /<(?:table|pre)[\s>]/i.test(htmlSource)
+      ? clipboardHtmlToMarkdown(htmlSource, [])
+      : '';
+    const textTable = clipboardTextTableToMarkdown(text);
+    const structuredContent = htmlBlock || editorCode || textTable;
+    if (structuredContent) {
+      const needsLeadingBreak = start > 0 && editorElement.value[start - 1] !== '\n';
+      const needsTrailingBreak = end < editorElement.value.length
+        && editorElement.value[end] !== '\n';
+      pastedContent = `${needsLeadingBreak ? '\n\n' : ''}${structuredContent}`
+        + `${needsTrailingBreak ? '\n\n' : ''}`;
+    } else {
+      pastedContent = text;
+    }
   }
   editorElement.setRangeText(pastedContent, start, end, 'end');
   editorElement.dispatchEvent(new Event('input', { bubbles: true }));
@@ -947,6 +1500,49 @@ async function exportCurrentNoteToPdf() {
     app.classList.remove('exporting-pdf');
     if (!wasReadingMode) app.classList.remove('reading-mode');
   }
+}
+
+function insertMarkdownTable() {
+  const useRightEditor = lastActiveEditor === editorRight && currentNoteRight;
+  const targetEditor = useRightEditor ? editorRight : editor;
+  const targetNote = useRightEditor ? currentNoteRight : currentNote;
+  if (!targetNote) {
+    showConfirm('无法插入表格', '请先选择一篇笔记', () => {});
+    return;
+  }
+
+  const start = targetEditor.selectionStart;
+  const end = targetEditor.selectionEnd;
+  const before = targetEditor.value.slice(0, start);
+  const after = targetEditor.value.slice(end);
+  const prefix = before && !before.endsWith('\n') ? '\n\n' : '';
+  const suffix = after && !after.startsWith('\n') ? '\n\n' : '';
+  const table = '|  |  |\n| --- | --- |\n|  |  |';
+  const insertion = `${prefix}${table}${suffix}`;
+
+  pendingTableFocusEditor = {
+    editor: targetEditor,
+    index: start + prefix.length + 2
+  };
+  targetEditor.setRangeText(insertion, start, end);
+  targetEditor.setCursorIndex(start + prefix.length + 2);
+  targetEditor.focus();
+}
+
+function insertMarkdownCodeFence() {
+  const useRightEditor = lastActiveEditor === editorRight && currentNoteRight;
+  const targetEditor = useRightEditor ? editorRight : editor;
+  const targetNote = useRightEditor ? currentNoteRight : currentNote;
+  if (!targetNote) {
+    showConfirm('无法插入代码块', '请先选择一篇笔记', () => {});
+    return;
+  }
+
+  const start = targetEditor.selectionStart;
+  const end = targetEditor.selectionEnd;
+  targetEditor.setRangeText('```', start, end);
+  targetEditor.setCursorIndex(start + 3);
+  targetEditor.focus();
 }
 
 async function createNewNote(folderPath = null) {
@@ -1211,6 +1807,37 @@ ipcRenderer.on('new-note', () => createNewNote(null));
 ipcRenderer.on('new-folder', () => createNewFolder(null));
 ipcRenderer.on('save-note', saveCurrentNote);
 ipcRenderer.on('export-pdf', exportCurrentNoteToPdf);
+ipcRenderer.on('insert-table', insertMarkdownTable);
+ipcRenderer.on('insert-code-block', insertMarkdownCodeFence);
+ipcRenderer.on('code-language-selected', (event, language) => {
+  const pending = pendingCodeFenceCompletion;
+  pendingCodeFenceCompletion = null;
+  if (!pending || language === null) return;
+
+  const safeLanguage = String(language || '').replace(/[^\w+-]/g, '');
+  const codeMirror = pending.editor.codeMirror;
+  const lineText = codeMirror.getLine(pending.line);
+  pendingCodeFocusEditor = {
+    editor: pending.editor,
+    line: pending.line
+  };
+  codeMirror.replaceRange(
+    `${pending.indentation}\`\`\`${safeLanguage}\n`
+      + `${pending.indentation}\n${pending.indentation}\`\`\``,
+    { line: pending.line, ch: 0 },
+    { line: pending.line, ch: lineText.length }
+  );
+  codeMirror.setCursor({
+    line: pending.line + 1,
+    ch: pending.indentation.length
+  });
+});
+ipcRenderer.on('table-context-action', (event, action) => {
+  if (!tableContextActionHandler) return;
+  const handler = tableContextActionHandler;
+  tableContextActionHandler = null;
+  handler(action);
+});
 ipcRenderer.on('change-dir', changeNotesDir);
 ipcRenderer.on('toggle-sidebar', toggleSidebar);
 ipcRenderer.on('toggle-preview', togglePreviewLeft);

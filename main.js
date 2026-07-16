@@ -8,6 +8,7 @@ let mainWindow;
 let aboutWindow;
 let zenMode = false;
 let readingMode = false;
+const readingWindowStates = new WeakMap();
 const iconPath = path.join(__dirname, 'icon.png');
 
 const appName = '简记';
@@ -40,8 +41,23 @@ function setReadingMode(enabled, preferredWindow = null) {
   const targetWindow = getActiveWindow(preferredWindow);
   if (!targetWindow) return;
   if (enabled && zenMode) setZenMode(false, true, targetWindow);
+  if (enabled && !readingWindowStates.has(targetWindow)) {
+    readingWindowStates.set(targetWindow, {
+      wasMaximized: targetWindow.isMaximized(),
+      bounds: targetWindow.getBounds()
+    });
+    if (!targetWindow.isMaximized()) targetWindow.maximize();
+  }
   readingMode = enabled;
   targetWindow.webContents.send('reading-mode-changed', enabled);
+  if (!enabled) {
+    const previousState = readingWindowStates.get(targetWindow);
+    if (previousState && !previousState.wasMaximized && !targetWindow.isDestroyed()) {
+      targetWindow.unmaximize();
+      targetWindow.setBounds(previousState.bounds);
+    }
+    readingWindowStates.delete(targetWindow);
+  }
   const menuItem = Menu.getApplicationMenu()?.getMenuItemById('reading-mode');
   if (menuItem) menuItem.checked = enabled;
 }
@@ -173,10 +189,10 @@ function showAboutWindow() {
   });
 }
 
-function sendToActiveWindow(channel) {
+function sendToActiveWindow(channel, ...args) {
   const activeWindow = BrowserWindow.getFocusedWindow() || mainWindow;
   if (activeWindow && !activeWindow.isDestroyed()) {
-    activeWindow.webContents.send(channel);
+    activeWindow.webContents.send(channel, ...args);
   }
 }
 
@@ -282,6 +298,21 @@ function createWindow() {
         { role: 'paste', label: '粘贴' },
         { type: 'separator' },
         { role: 'selectAll', label: '全选', accelerator: 'CmdOrCtrl+A' }
+      ]
+    },
+    {
+      label: '插入',
+      submenu: [
+        {
+          label: '表格',
+          accelerator: 'CmdOrCtrl+Alt+T',
+          click: () => sendToActiveWindow('insert-table')
+        },
+        {
+          label: '代码块',
+          accelerator: 'CmdOrCtrl+Alt+C',
+          click: () => sendToActiveWindow('insert-code-block')
+        }
       ]
     },
     {
@@ -516,7 +547,12 @@ ipcMain.handle('paste-clipboard-content', async (event, { notePath }) => {
     const imageSources = Array.from(clipboardHtml.matchAll(/<img[^>]+src=["']([^"']+)/gi))
       .map(match => match[1].replace(/&amp;/g, '&'));
     if (clipboardImage.isEmpty() && imageSources.length === 0) {
-      return { success: true, hasImage: false, text: clipboard.readText() };
+      return {
+        success: true,
+        hasImage: false,
+        text: clipboard.readText(),
+        html: clipboardHtml
+      };
     }
     if (imageSources.length > 20) throw new Error('一次最多粘贴 20 张图片');
 
@@ -747,4 +783,80 @@ ipcMain.on('show-context-menu', (event, data) => {
   
   const menu = Menu.buildFromTemplate(template);
   menu.popup({ window: mainWindow });
+});
+
+ipcMain.on('show-table-context-menu', (event, data) => {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!sourceWindow || sourceWindow.isDestroyed()) return;
+
+  const sendAction = action => event.sender.send('table-context-action', action);
+  const menu = Menu.buildFromTemplate([
+    {
+      label: '行',
+      submenu: [
+        { label: '新增行', click: () => sendAction('add-row') },
+        {
+          label: '删除行',
+          enabled: data.rowIndex > 0,
+          click: () => sendAction('delete-row')
+        }
+      ]
+    },
+    {
+      label: '列',
+      submenu: [
+        { label: '新增列', click: () => sendAction('add-column') },
+        {
+          label: '删除列',
+          enabled: data.columnCount > 1,
+          click: () => sendAction('delete-column')
+        }
+      ]
+    }
+  ]);
+  menu.popup({ window: sourceWindow });
+});
+
+ipcMain.on('show-code-language-menu', (event, position) => {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!sourceWindow || sourceWindow.isDestroyed()) return;
+  let selected = false;
+  const chooseLanguage = language => {
+    selected = true;
+    event.sender.send('code-language-selected', language);
+  };
+  const languages = [
+    ['纯文本', ''],
+    ['JavaScript', 'javascript'],
+    ['TypeScript', 'typescript'],
+    ['Python', 'python'],
+    ['JSON', 'json'],
+    ['YAML', 'yaml'],
+    ['HTML / XML', 'html'],
+    ['CSS', 'css'],
+    ['SQL', 'sql'],
+    ['Shell / Bash', 'bash'],
+    ['Java', 'java'],
+    ['C', 'c'],
+    ['C++', 'cpp'],
+    ['Go', 'go'],
+    ['Rust', 'rust'],
+    ['Swift', 'swift']
+  ];
+  const template = languages.map(([label, language]) => ({
+    label,
+    click: () => chooseLanguage(language)
+  }));
+  template.splice(1, 0, { type: 'separator' });
+  const menu = Menu.buildFromTemplate(template);
+  menu.popup({
+    window: sourceWindow,
+    x: Math.max(0, Math.round(position?.x || 0)),
+    y: Math.max(0, Math.round(position?.y || 0)),
+    callback: () => {
+      if (!selected && !event.sender.isDestroyed()) {
+        event.sender.send('code-language-selected', null);
+      }
+    }
+  });
 });
