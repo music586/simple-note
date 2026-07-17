@@ -37,3 +37,17 @@ test('context recognizes supported line structures', () => {
   assert.equal(analyzeLineContext(['> > quote'], { line: 0, ch: 9 }).type, 'quote');
   assert.equal(analyzeLineContext(['## title'], { line: 0, ch: 8 }).type, 'heading');
 });
+
+test('fence closes only with a valid run at least as long as its opener', () => {
+  assert.equal(analyzeLineContext(['````', '```', '/rw'], { line: 2, ch: 3 }).inFence, true);
+  assert.equal(
+    analyzeLineContext(['```', '```not-a-close', '/rw'], { line: 2, ch: 3 }).inFence,
+    true
+  );
+  assert.equal(analyzeLineContext(['````', '`````   ', '/rw'], { line: 2, ch: 3 }).inFence, false);
+});
+
+test('slash query requires only whitespace after the cursor', () => {
+  assert.equal(analyzeLineContext(['/rw remaining'], { line: 0, ch: 3 }).slashQuery, null);
+  assert.equal(analyzeLineContext(['/rw   '], { line: 0, ch: 3 }).slashQuery, 'rw');
+});
