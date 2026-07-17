@@ -188,16 +188,18 @@ function getEnterEdit(context) {
 function getIndentEdit(context, direction) {
   if (context.inFence || !['bullet', 'ordered', 'task'].includes(context.type)) return null;
   if (direction > 0) return createEdit(context, 0, 0, '  ', context.line, context.ch + 2);
-  if (context.indent.length < 2) return null;
+  if (!context.indent.startsWith('  ')) return null;
   return createEdit(context, 0, 2, '', context.line, Math.max(0, context.ch - 2));
 }
 
 function getBackspaceEdit(context) {
   if (context.inFence || context.ch !== context.contentStart) return null;
   if (!['heading', 'bullet', 'ordered', 'task', 'quote'].includes(context.type)) return null;
-  if (['bullet', 'ordered', 'task'].includes(context.type) && context.indent.length >= 2) {
+  const isList = ['bullet', 'ordered', 'task'].includes(context.type);
+  if (isList && context.indent.startsWith('  ')) {
     return createEdit(context, 0, 2, '', context.line, context.ch - 2);
   }
+  if (isList && context.indent) return null;
   return createEdit(context, 0, context.contentStart, '', context.line, 0);
 }
 
