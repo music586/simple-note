@@ -5,6 +5,13 @@ const { marked } = require('marked');
 const hljs = require('highlight.js');
 const CodeMirror = require('codemirror');
 require('codemirror/mode/markdown/markdown');
+const {
+  filterStructureCommands,
+  analyzeLineContext,
+  getEnterEdit,
+  getIndentEdit,
+  getBackspaceEdit
+} = require('./markdown-structure');
 
 marked.setOptions({
   highlight: function(code, lang) {
@@ -29,6 +36,14 @@ let pendingCodeFocusEditor = null;
 let pendingCodeFenceCompletion = null;
 
 const notesList = document.getElementById('notesList');
+const slashCommandMenuElement = document.getElementById('slashCommandMenu');
+const slashCommandState = {
+  editor: null,
+  query: '',
+  commands: [],
+  selectedIndex: 0,
+  composing: false
+};
 const editor = createCodeEditor(document.getElementById('editor'));
 const preview = document.getElementById('preview');
 const noteTitle = document.getElementById('noteTitle');
@@ -47,6 +62,156 @@ const leftPanel = document.getElementById('leftPanel');
 const panelDivider = document.getElementById('panelDivider');
 const closeRightBtn = document.getElementById('closeRightBtn');
 const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
+
+function applyCodeMirrorEdit(cm, edit) {
+  cm.replaceRange(edit.text, edit.from, edit.to);
+  cm.setCursor(edit.cursor);
+}
+
+function renderSlashCommandMenu() {
+  slashCommandMenuElement.replaceChildren();
+
+  const heading = document.createElement('div');
+  heading.className = 'slash-command-heading';
+  heading.textContent = 'Markdown 结构';
+  slashCommandMenuElement.appendChild(heading);
+
+  if (!slashCommandState.commands.length) {
+    const empty = document.createElement('div');
+    empty.className = 'slash-command-empty';
+    empty.textContent = '没有匹配的结构';
+    slashCommandMenuElement.appendChild(empty);
+  }
+
+  slashCommandState.commands.forEach((command, index) => {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.id = `slash-command-${command.id}`;
+    option.className = 'slash-command-option';
+    option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', String(index === slashCommandState.selectedIndex));
+
+    const icon = document.createElement('span');
+    icon.className = 'slash-command-icon';
+    icon.textContent = command.hint;
+    const label = document.createElement('span');
+    label.textContent = command.label;
+    const hint = document.createElement('span');
+    hint.className = 'slash-command-hint';
+    hint.textContent = command.prefix;
+    option.append(icon, label, hint);
+    option.addEventListener('mousedown', event => {
+      event.preventDefault();
+      slashCommandState.selectedIndex = index;
+      selectSlashCommand();
+    });
+    slashCommandMenuElement.appendChild(option);
+  });
+
+  const help = document.createElement('div');
+  help.className = 'slash-command-help';
+  help.textContent = '↑↓ 选择 · Enter 插入 · Esc 关闭';
+  slashCommandMenuElement.appendChild(help);
+
+  const selected = slashCommandState.commands[slashCommandState.selectedIndex];
+  if (selected) {
+    slashCommandMenuElement.setAttribute(
+      'aria-activedescendant',
+      `slash-command-${selected.id}`
+    );
+  } else {
+    slashCommandMenuElement.removeAttribute('aria-activedescendant');
+  }
+}
+
+function positionSlashCommandMenu(cm) {
+  const cursor = cm.cursorCoords(cm.getCursor(), 'window');
+  const panel = cm.getWrapperElement().closest('.editor-panel').getBoundingClientRect();
+  const menu = slashCommandMenuElement.getBoundingClientRect();
+  const left = Math.min(Math.max(cursor.left, panel.left + 8), panel.right - menu.width - 8);
+  const below = cursor.bottom + menu.height + 8 <= Math.min(panel.bottom, window.innerHeight);
+  const top = below ? cursor.bottom + 4 : Math.max(panel.top + 8, cursor.top - menu.height - 4);
+  slashCommandMenuElement.style.left = `${left}px`;
+  slashCommandMenuElement.style.top = `${top}px`;
+}
+
+function closeSlashCommandMenu() {
+  slashCommandState.editor = null;
+  slashCommandState.query = '';
+  slashCommandState.commands = [];
+  slashCommandState.selectedIndex = 0;
+  slashCommandMenuElement.hidden = true;
+  slashCommandMenuElement.replaceChildren();
+}
+
+function openSlashCommandMenu(editorAdapter, query) {
+  slashCommandState.editor = editorAdapter;
+  slashCommandState.query = query;
+  slashCommandState.commands = filterStructureCommands(query);
+  slashCommandState.selectedIndex = 0;
+  renderSlashCommandMenu();
+  slashCommandMenuElement.hidden = false;
+  positionSlashCommandMenu(editorAdapter.codeMirror);
+}
+
+function updateSlashCommandMenu(editorAdapter, query) {
+  openSlashCommandMenu(editorAdapter, query);
+}
+
+function moveSlashCommandSelection(delta) {
+  const count = slashCommandState.commands.length;
+  if (!count) return;
+  slashCommandState.selectedIndex = (slashCommandState.selectedIndex + delta + count) % count;
+  renderSlashCommandMenu();
+  const selected = slashCommandMenuElement.querySelector('[aria-selected="true"]');
+  selected?.scrollIntoView({ block: 'nearest' });
+}
+
+function selectSlashCommand() {
+  const command = slashCommandState.commands[slashCommandState.selectedIndex];
+  const editorAdapter = slashCommandState.editor;
+  if (!command || !editorAdapter) return;
+
+  const cm = editorAdapter.codeMirror;
+  const cursor = cm.getCursor();
+  cm.operation(() => {
+    applyCodeMirrorEdit(cm, {
+      from: { line: cursor.line, ch: 0 },
+      to: cursor,
+      text: command.prefix,
+      cursor: { line: cursor.line, ch: command.prefix.length }
+    });
+  });
+  editorAdapter.focus();
+  closeSlashCommandMenu();
+}
+
+const slashCommandMenu = {
+  open: openSlashCommandMenu,
+  update: updateSlashCommandMenu,
+  move: moveSlashCommandSelection,
+  select: selectSlashCommand,
+  close: closeSlashCommandMenu
+};
+
+function editorHasCurrentNote(editorAdapter) {
+  return editorAdapter === editor ? Boolean(currentNote) : Boolean(currentNoteRight);
+}
+
+function updateSlashCommandForEditor(editorAdapter) {
+  const cm = editorAdapter.codeMirror;
+  const cursor = cm.getCursor();
+  const context = analyzeLineContext(cm.getValue().split('\n'), cursor);
+  if (
+    context.slashQuery !== null
+    && editorHasCurrentNote(editorAdapter)
+    && !slashCommandState.composing
+  ) {
+    slashCommandMenu.update(editorAdapter, context.slashQuery);
+  } else if (slashCommandState.editor === editorAdapter) {
+    slashCommandMenu.close();
+  }
+}
 
 function scheduleEditorDecorations(editorAdapter, getNote) {
   if (editorAdapter.decorationFrame || editorAdapter.renderingDecorations) return;
@@ -85,7 +250,28 @@ function createCodeEditor(textarea) {
     extraKeys: {
       'Cmd-A': 'selectAll',
       'Ctrl-A': 'selectAll',
+      Up: cm => {
+        if (slashCommandState.editor === editorAdapter && !slashCommandState.composing) {
+          slashCommandMenu.move(-1);
+          return;
+        }
+        cm.execCommand('goLineUp');
+      },
+      Down: cm => {
+        if (slashCommandState.editor === editorAdapter && !slashCommandState.composing) {
+          slashCommandMenu.move(1);
+          return;
+        }
+        cm.execCommand('goLineDown');
+      },
+      Esc: () => {
+        if (slashCommandState.editor === editorAdapter) slashCommandMenu.close();
+      },
       Enter: cm => {
+        if (slashCommandState.editor === editorAdapter && !slashCommandState.composing) {
+          slashCommandMenu.select();
+          return;
+        }
         const cursor = cm.getCursor();
         const lineText = cm.getLine(cursor.line);
         const beforeCursor = lineText.slice(0, cursor.ch);
@@ -117,6 +303,19 @@ function createCodeEditor(textarea) {
   codeMirror.on('change', () => {
     editorAdapter.decorationStructureDirty = true;
     if (!suppressChange) inputHandlers.forEach(handler => handler());
+  });
+
+  codeMirror.on('inputRead', (cm, change) => {
+    if (change.origin === '+input') updateSlashCommandForEditor(editorAdapter);
+  });
+
+  const inputField = codeMirror.getInputField();
+  inputField.addEventListener('compositionstart', () => {
+    slashCommandState.composing = true;
+  });
+  inputField.addEventListener('compositionend', () => {
+    slashCommandState.composing = false;
+    updateSlashCommandForEditor(editorAdapter);
   });
 
   editorAdapter = {
