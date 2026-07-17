@@ -15,7 +15,8 @@ test('slash command menu has accessible listbox markup and safe option rendering
     /id="slashCommandMenu"[^>]*role="listbox"[^>]*aria-label="Markdown 结构"[^>]*hidden/
   );
   assert.match(renderer, /label\.textContent = command\.label/);
-  assert.match(renderer, /option\.addEventListener\('mouseenter'/);
+  assert.match(renderer, /option\.addEventListener\('mousemove'/);
+  assert.doesNotMatch(renderer, /option\.addEventListener\('mouseenter'/);
   assert.doesNotMatch(renderer, /slashCommandMenuElement\.innerHTML/);
   assert.match(styles, /--slash-command-selected-bg:/);
   assert.match(

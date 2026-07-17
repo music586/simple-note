@@ -113,7 +113,7 @@ function renderSlashCommandMenu() {
     hint.className = 'slash-command-hint';
     hint.textContent = command.prefix;
     option.append(icon, label, hint);
-    option.addEventListener('mouseenter', () => {
+    option.addEventListener('mousemove', () => {
       if (slashCommandState.selectedIndex === index) return;
       slashCommandState.selectedIndex = index;
       renderSlashCommandMenu();
