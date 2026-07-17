@@ -10,7 +10,9 @@ const {
   analyzeLineContext,
   getEnterEdit,
   getIndentEdit,
-  getBackspaceEdit
+  getBackspaceEdit,
+  getSlashMenuUpdate,
+  getSlashCommandEdit
 } = require('./markdown-structure');
 
 marked.setOptions({
@@ -44,6 +46,7 @@ const slashCommandState = {
   selectedIndex: 0,
   composing: false
 };
+let lastActiveEditor = null;
 const editor = createCodeEditor(document.getElementById('editor'));
 const preview = document.getElementById('preview');
 const noteTitle = document.getElementById('noteTitle');
@@ -53,7 +56,7 @@ const notesDirDisplay = document.getElementById('notesDirDisplay');
 const editorContainer = document.getElementById('editorContainer');
 
 const editorRight = createCodeEditor(document.getElementById('editorRight'));
-let lastActiveEditor = editor;
+lastActiveEditor = editor;
 const previewRight = document.getElementById('previewRight');
 const noteTitleRight = document.getElementById('noteTitleRight');
 const editorContainerRight = document.getElementById('editorContainerRight');
@@ -174,13 +177,20 @@ function selectSlashCommand() {
 
   const cm = editorAdapter.codeMirror;
   const cursor = cm.getCursor();
+  const edit = getSlashCommandEdit(cm.getValue().split('\n'), cursor, {
+    expectedQuery: slashCommandState.query,
+    prefix: command.prefix,
+    ownsMenu: slashCommandState.editor === editorAdapter && lastActiveEditor === editorAdapter,
+    hasCurrentNote: editorHasCurrentNote(editorAdapter),
+    selectionEmpty: !cm.somethingSelected()
+  });
+  if (!edit) {
+    closeSlashCommandMenu();
+    return;
+  }
+
   cm.operation(() => {
-    applyCodeMirrorEdit(cm, {
-      from: { line: cursor.line, ch: 0 },
-      to: cursor,
-      text: command.prefix,
-      cursor: { line: cursor.line, ch: command.prefix.length }
-    });
+    applyCodeMirrorEdit(cm, edit);
   });
   editorAdapter.focus();
   closeSlashCommandMenu();
@@ -201,13 +211,12 @@ function editorHasCurrentNote(editorAdapter) {
 function updateSlashCommandForEditor(editorAdapter) {
   const cm = editorAdapter.codeMirror;
   const cursor = cm.getCursor();
-  const context = analyzeLineContext(cm.getValue().split('\n'), cursor);
-  if (
-    context.slashQuery !== null
-    && editorHasCurrentNote(editorAdapter)
-    && !slashCommandState.composing
-  ) {
-    slashCommandMenu.update(editorAdapter, context.slashQuery);
+  const update = getSlashMenuUpdate(cm.getValue().split('\n'), cursor, {
+    hasCurrentNote: editorHasCurrentNote(editorAdapter),
+    composing: slashCommandState.composing
+  });
+  if (update) {
+    slashCommandMenu.update(editorAdapter, update.query);
   } else if (slashCommandState.editor === editorAdapter) {
     slashCommandMenu.close();
   }
@@ -224,14 +233,34 @@ function scheduleEditorDecorations(editorAdapter, getNote) {
 
 editor.codeMirror.on('cursorActivity', () => {
   lastActiveEditor = editor;
+  if (slashCommandState.editor && slashCommandState.editor !== editor) {
+    slashCommandMenu.close();
+  } else if (slashCommandState.editor === editor) {
+    updateSlashCommandForEditor(editor);
+  }
   scheduleEditorDecorations(editor, () => currentNote);
+});
+editor.codeMirror.on('focus', () => {
+  lastActiveEditor = editor;
+  if (slashCommandState.editor && slashCommandState.editor !== editor) slashCommandMenu.close();
 });
 editor.codeMirror.on('viewportChange', () => {
   scheduleEditorDecorations(editor, () => currentNote);
 });
 editorRight.codeMirror.on('cursorActivity', () => {
   lastActiveEditor = editorRight;
+  if (slashCommandState.editor && slashCommandState.editor !== editorRight) {
+    slashCommandMenu.close();
+  } else if (slashCommandState.editor === editorRight) {
+    updateSlashCommandForEditor(editorRight);
+  }
   scheduleEditorDecorations(editorRight, () => currentNoteRight);
+});
+editorRight.codeMirror.on('focus', () => {
+  lastActiveEditor = editorRight;
+  if (slashCommandState.editor && slashCommandState.editor !== editorRight) {
+    slashCommandMenu.close();
+  }
 });
 editorRight.codeMirror.on('viewportChange', () => {
   scheduleEditorDecorations(editorRight, () => currentNoteRight);
@@ -252,6 +281,7 @@ function createCodeEditor(textarea) {
       'Ctrl-A': 'selectAll',
       Up: cm => {
         if (slashCommandState.editor === editorAdapter && !slashCommandState.composing) {
+          if (!slashCommandState.commands.length) return CodeMirror.Pass;
           slashCommandMenu.move(-1);
           return;
         }
@@ -259,6 +289,7 @@ function createCodeEditor(textarea) {
       },
       Down: cm => {
         if (slashCommandState.editor === editorAdapter && !slashCommandState.composing) {
+          if (!slashCommandState.commands.length) return CodeMirror.Pass;
           slashCommandMenu.move(1);
           return;
         }
@@ -305,8 +336,8 @@ function createCodeEditor(textarea) {
     if (!suppressChange) inputHandlers.forEach(handler => handler());
   });
 
-  codeMirror.on('inputRead', (cm, change) => {
-    if (change.origin === '+input') updateSlashCommandForEditor(editorAdapter);
+  codeMirror.on('inputRead', () => {
+    if (!suppressChange) updateSlashCommandForEditor(editorAdapter);
   });
 
   const inputField = codeMirror.getInputField();

@@ -7,8 +7,86 @@ const {
   analyzeLineContext,
   getEnterEdit,
   getIndentEdit,
-  getBackspaceEdit
+  getBackspaceEdit,
+  getSlashMenuUpdate,
+  getSlashCommandEdit
 } = require('../markdown-structure');
+
+test('slash menu exposes pure update and guarded-selection helpers', () => {
+  assert.equal(typeof getSlashMenuUpdate, 'function');
+  assert.equal(typeof getSlashCommandEdit, 'function');
+});
+
+test('slash menu update refreshes deletion back to the six initial commands', () => {
+  const taskUpdate = getSlashMenuUpdate(['/任务'], { line: 0, ch: 3 }, {
+    hasCurrentNote: true,
+    composing: false
+  });
+  const initialUpdate = getSlashMenuUpdate(['/'], { line: 0, ch: 1 }, {
+    hasCurrentNote: true,
+    composing: false
+  });
+
+  assert.equal(taskUpdate.commands[0].id, 'task');
+  assert.equal(initialUpdate.query, '');
+  assert.equal(initialUpdate.commands.length, 6);
+});
+
+test('slash menu update is inactive without a note or during composition', () => {
+  assert.equal(getSlashMenuUpdate(['/'], { line: 0, ch: 1 }, {
+    hasCurrentNote: false,
+    composing: false
+  }), null);
+  assert.equal(getSlashMenuUpdate(['/'], { line: 0, ch: 1 }, {
+    hasCurrentNote: true,
+    composing: true
+  }), null);
+});
+
+test('slash selection edit requires the current query, owner, note, and empty selection', () => {
+  const options = {
+    expectedQuery: 'rw',
+    prefix: '- [ ] ',
+    ownsMenu: true,
+    hasCurrentNote: true,
+    selectionEmpty: true
+  };
+
+  assert.deepEqual(getSlashCommandEdit(['/rw'], { line: 0, ch: 3 }, options), {
+    from: { line: 0, ch: 0 },
+    to: { line: 0, ch: 3 },
+    text: '- [ ] ',
+    cursor: { line: 0, ch: 6 }
+  });
+  assert.equal(getSlashCommandEdit(['/other'], { line: 0, ch: 6 }, options), null);
+  assert.equal(getSlashCommandEdit(['/rw'], { line: 0, ch: 3 }, {
+    ...options,
+    ownsMenu: false
+  }), null);
+  assert.equal(getSlashCommandEdit(['/rw'], { line: 0, ch: 3 }, {
+    ...options,
+    hasCurrentNote: false
+  }), null);
+  assert.equal(getSlashCommandEdit(['/rw'], { line: 0, ch: 3 }, {
+    ...options,
+    selectionEmpty: false
+  }), null);
+});
+
+test('slash selection edit rejects moved cursors and invalid ranges', () => {
+  const options = {
+    expectedQuery: 'rw',
+    prefix: '- [ ] ',
+    ownsMenu: true,
+    hasCurrentNote: true,
+    selectionEmpty: true
+  };
+
+  assert.equal(getSlashCommandEdit(['/rw'], { line: 0, ch: 1 }, options), null);
+  assert.equal(getSlashCommandEdit(['text /rw'], { line: 0, ch: 8 }, options), null);
+  assert.equal(getSlashCommandEdit(['/rw'], { line: 1, ch: 0 }, options), null);
+  assert.equal(getSlashCommandEdit(['/rw'], { line: 0, ch: 4 }, options), null);
+});
 
 test('catalog contains headings and line structures', () => {
   assert.deepEqual(

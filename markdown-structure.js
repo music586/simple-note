@@ -203,11 +203,58 @@ function getBackspaceEdit(context) {
   return createEdit(context, 0, context.contentStart, '', context.line, 0);
 }
 
+function isValidCursor(lines, cursor) {
+  return Array.isArray(lines)
+    && cursor
+    && Number.isInteger(cursor.line)
+    && Number.isInteger(cursor.ch)
+    && cursor.line >= 0
+    && cursor.line < lines.length
+    && cursor.ch >= 0
+    && cursor.ch <= lines[cursor.line].length;
+}
+
+function getSlashMenuUpdate(lines, cursor, options) {
+  if (!options?.hasCurrentNote || options.composing || !isValidCursor(lines, cursor)) return null;
+  const context = analyzeLineContext(lines, cursor);
+  if (context.slashQuery === null) return null;
+  return {
+    query: context.slashQuery,
+    commands: filterStructureCommands(context.slashQuery)
+  };
+}
+
+function getSlashCommandEdit(lines, cursor, options) {
+  if (
+    !options?.ownsMenu
+    || !options.hasCurrentNote
+    || !options.selectionEmpty
+    || typeof options.expectedQuery !== 'string'
+    || typeof options.prefix !== 'string'
+    || !isValidCursor(lines, cursor)
+  ) {
+    return null;
+  }
+
+  const context = analyzeLineContext(lines, cursor);
+  if (context.slashQuery !== options.expectedQuery) return null;
+  return createEdit(
+    context,
+    0,
+    cursor.ch,
+    options.prefix,
+    cursor.line,
+    options.prefix.length
+  );
+}
+
 module.exports = {
   MARKDOWN_STRUCTURE_COMMANDS,
   filterStructureCommands,
   analyzeLineContext,
   getEnterEdit,
   getIndentEdit,
-  getBackspaceEdit
+  getBackspaceEdit,
+  getSlashMenuUpdate,
+  getSlashCommandEdit
 };
