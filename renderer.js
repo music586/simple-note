@@ -6,6 +6,10 @@ const hljs = require('highlight.js');
 const CodeMirror = require('codemirror');
 require('codemirror/mode/markdown/markdown');
 const {
+  applyCodeMirrorEdit,
+  createMarkdownKeyHandlers
+} = require('./markdown-keymap');
+const {
   filterStructureCommands,
   analyzeLineContext,
   getEnterEdit,
@@ -69,15 +73,6 @@ const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
 function getCodeMirrorContext(cm) {
   const lines = Array.from({ length: cm.lineCount() }, (_, line) => cm.getLine(line));
   return analyzeLineContext(lines, cm.getCursor());
-}
-
-function applyCodeMirrorEdit(cm, edit) {
-  if (!edit) return false;
-  cm.operation(() => {
-    cm.replaceRange(edit.text, edit.from, edit.to, '+markdown-structure');
-    cm.setCursor(edit.cursor);
-  });
-  return true;
 }
 
 function renderSlashCommandMenu() {
@@ -179,23 +174,6 @@ function moveSlashCommandSelection(delta) {
   selected?.scrollIntoView({ block: 'nearest' });
 }
 
-function handleMenuMove(cm, delta) {
-  if (
-    slashCommandMenuElement.hidden
-    || slashCommandState.editor?.codeMirror !== cm
-    || slashCommandState.composing
-    || !slashCommandState.commands.length
-  ) return CodeMirror.Pass;
-  moveSlashCommandSelection(delta);
-}
-
-function handleMenuEscape(cm) {
-  if (slashCommandMenuElement.hidden || slashCommandState.editor?.codeMirror !== cm) {
-    return CodeMirror.Pass;
-  }
-  closeSlashCommandMenu();
-}
-
 function selectSlashCommand() {
   const command = slashCommandState.commands[slashCommandState.selectedIndex];
   const editorAdapter = slashCommandState.editor;
@@ -294,6 +272,24 @@ function createCodeEditor(textarea) {
   let suppressChange = false;
   const inputHandlers = [];
   let editorAdapter = null;
+  const markdownKeyHandlers = createMarkdownKeyHandlers({
+    Pass: CodeMirror.Pass,
+    getMenuState: () => ({
+      hidden: slashCommandMenuElement.hidden,
+      editor: slashCommandState.editor,
+      composing: slashCommandState.composing,
+      commands: slashCommandState.commands
+    }),
+    selectSlashCommand,
+    moveSlashCommandSelection,
+    closeSlashCommandMenu,
+    handleOpeningCodeFence,
+    getContext: getCodeMirrorContext,
+    getEnterEdit,
+    getIndentEdit,
+    getBackspaceEdit,
+    applyEdit: applyCodeMirrorEdit
+  })(() => editorAdapter);
   const codeMirror = CodeMirror.fromTextArea(textarea, {
     mode: 'markdown',
     lineWrapping: true,
@@ -303,25 +299,7 @@ function createCodeEditor(textarea) {
     extraKeys: {
       'Cmd-A': 'selectAll',
       'Ctrl-A': 'selectAll',
-      Up: cm => handleMenuMove(cm, -1),
-      Down: cm => handleMenuMove(cm, 1),
-      Esc: cm => handleMenuEscape(cm),
-      Enter: cm => {
-        if (!slashCommandMenuElement.hidden && slashCommandState.editor === editorAdapter) {
-          selectSlashCommand();
-          return;
-        }
-        if (slashCommandState.composing) return CodeMirror.Pass;
-        if (handleOpeningCodeFence(cm, editorAdapter)) return;
-        if (applyCodeMirrorEdit(cm, getEnterEdit(getCodeMirrorContext(cm)))) return;
-        cm.execCommand('newlineAndIndent');
-      },
-      Tab: cm => applyCodeMirrorEdit(cm, getIndentEdit(getCodeMirrorContext(cm), 1))
-        || CodeMirror.Pass,
-      'Shift-Tab': cm => applyCodeMirrorEdit(cm, getIndentEdit(getCodeMirrorContext(cm), -1))
-        || CodeMirror.Pass,
-      Backspace: cm => applyCodeMirrorEdit(cm, getBackspaceEdit(getCodeMirrorContext(cm)))
-        || CodeMirror.Pass
+      ...markdownKeyHandlers
     }
   });
 
