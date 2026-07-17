@@ -5,7 +5,10 @@ const { marked } = require('marked');
 const hljs = require('highlight.js');
 const CodeMirror = require('codemirror');
 require('codemirror/mode/markdown/markdown');
-const { getEditorCursorAlignment } = require('./editor-cursor');
+const {
+  getEditorCursorAlignment,
+  getFallbackTextRect
+} = require('./editor-cursor');
 const {
   applyCodeMirrorEdit,
   createMarkdownKeyHandlers
@@ -1556,11 +1559,16 @@ function renderEditorDecorations(editorAdapter, note) {
     editorAdapter.cursorAlignmentFrame = requestAnimationFrame(() => {
       editorAdapter.cursorAlignmentFrame = null;
       const cursor = wrapper.querySelector('.CodeMirror-cursor');
-      const headingText = wrapper.querySelector('.cm-editing-heading');
-      if (!cursor || !headingText) return;
+      if (!cursor) return;
+      const cursorRect = cursor.getBoundingClientRect();
+      const activeText = wrapper.querySelector('.cm-editing-source-line');
+      const textRect = activeText?.getBoundingClientRect() || getFallbackTextRect(
+        cursorRect,
+        Number.parseFloat(getComputedStyle(wrapper).fontSize)
+      );
       const alignment = getEditorCursorAlignment(
-        cursor.getBoundingClientRect(),
-        headingText.getBoundingClientRect()
+        cursorRect,
+        textRect
       );
       if (!alignment) return;
       wrapper.style.setProperty('--editor-cursor-height', `${alignment.height}px`);

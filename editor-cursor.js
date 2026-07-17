@@ -7,4 +7,16 @@ function getEditorCursorAlignment(cursorRect, textRect) {
   };
 }
 
-module.exports = { getEditorCursorAlignment };
+function getFallbackTextRect(cursorRect, fontSize) {
+  if (!cursorRect || !Number.isFinite(fontSize) || fontSize <= 0) return null;
+  const height = fontSize * 1.4;
+  return {
+    top: cursorRect.top + (cursorRect.height - height) / 2,
+    height
+  };
+}
+
+module.exports = {
+  getEditorCursorAlignment,
+  getFallbackTextRect
+};
