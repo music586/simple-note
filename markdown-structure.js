@@ -152,8 +152,60 @@ function analyzeLineContext(lines, cursor) {
   };
 }
 
+function createEdit(context, fromCh, toCh, text, cursorLine, cursorCh) {
+  return {
+    from: { line: context.line, ch: fromCh },
+    to: { line: context.line, ch: toCh },
+    text,
+    cursor: { line: cursorLine, ch: cursorCh }
+  };
+}
+
+function getEnterEdit(context) {
+  if (context.inFence || context.ch < context.contentStart) return null;
+  if (!['heading', 'bullet', 'ordered', 'task', 'quote'].includes(context.type)) return null;
+  if (context.emptyItem && context.type !== 'heading') {
+    return createEdit(context, 0, context.text.length, '', context.line, 0);
+  }
+
+  let continuation = '';
+  if (context.type === 'heading') continuation = '\n';
+  if (context.type === 'bullet') continuation = `\n${context.indent}- `;
+  if (context.type === 'ordered') continuation = `\n${context.indent}${context.number + 1}. `;
+  if (context.type === 'task') continuation = `\n${context.indent}- [ ] `;
+  if (context.type === 'quote') continuation = `\n${context.marker}`;
+
+  return createEdit(
+    context,
+    context.ch,
+    context.ch,
+    continuation,
+    context.line + 1,
+    continuation.length - 1
+  );
+}
+
+function getIndentEdit(context, direction) {
+  if (context.inFence || !['bullet', 'ordered', 'task'].includes(context.type)) return null;
+  if (direction > 0) return createEdit(context, 0, 0, '  ', context.line, context.ch + 2);
+  if (context.indent.length < 2) return null;
+  return createEdit(context, 0, 2, '', context.line, Math.max(0, context.ch - 2));
+}
+
+function getBackspaceEdit(context) {
+  if (context.inFence || context.ch !== context.contentStart) return null;
+  if (!['heading', 'bullet', 'ordered', 'task', 'quote'].includes(context.type)) return null;
+  if (['bullet', 'ordered', 'task'].includes(context.type) && context.indent.length >= 2) {
+    return createEdit(context, 0, 2, '', context.line, context.ch - 2);
+  }
+  return createEdit(context, 0, context.contentStart, '', context.line, 0);
+}
+
 module.exports = {
   MARKDOWN_STRUCTURE_COMMANDS,
   filterStructureCommands,
-  analyzeLineContext
+  analyzeLineContext,
+  getEnterEdit,
+  getIndentEdit,
+  getBackspaceEdit
 };

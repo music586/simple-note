@@ -4,7 +4,10 @@ const assert = require('node:assert/strict');
 const {
   MARKDOWN_STRUCTURE_COMMANDS,
   filterStructureCommands,
-  analyzeLineContext
+  analyzeLineContext,
+  getEnterEdit,
+  getIndentEdit,
+  getBackspaceEdit
 } = require('../markdown-structure');
 
 test('catalog contains headings and line structures', () => {
@@ -50,4 +53,41 @@ test('fence closes only with a valid run at least as long as its opener', () => 
 test('slash query requires only whitespace after the cursor', () => {
   assert.equal(analyzeLineContext(['/rw remaining'], { line: 0, ch: 3 }).slashQuery, null);
   assert.equal(analyzeLineContext(['/rw   '], { line: 0, ch: 3 }).slashQuery, 'rw');
+});
+
+test('Enter continues supported structures', () => {
+  assert.equal(getEnterEdit(analyzeLineContext(['- item'], { line: 0, ch: 6 })).text, '\n- ');
+  assert.equal(getEnterEdit(analyzeLineContext(['3. item'], { line: 0, ch: 7 })).text, '\n4. ');
+  assert.equal(
+    getEnterEdit(analyzeLineContext(['- [x] done'], { line: 0, ch: 10 })).text,
+    '\n- [ ] '
+  );
+  assert.equal(
+    getEnterEdit(analyzeLineContext(['> > quote'], { line: 0, ch: 9 })).text,
+    '\n> > '
+  );
+  assert.equal(getEnterEdit(analyzeLineContext(['## title'], { line: 0, ch: 8 })).text, '\n');
+});
+
+test('Enter exits an empty structure item', () => {
+  const edit = getEnterEdit(analyzeLineContext(['  - '], { line: 0, ch: 4 }));
+  assert.deepEqual(edit.from, { line: 0, ch: 0 });
+  assert.deepEqual(edit.to, { line: 0, ch: 4 });
+  assert.equal(edit.text, '');
+});
+
+test('Tab and Shift+Tab change list indentation by two spaces', () => {
+  const context = analyzeLineContext(['- item'], { line: 0, ch: 2 });
+  assert.equal(getIndentEdit(context, 1).text, '  ');
+  const nested = analyzeLineContext(['  - item'], { line: 0, ch: 4 });
+  assert.equal(getIndentEdit(nested, -1).text, '');
+  assert.equal(getIndentEdit(analyzeLineContext(['plain'], { line: 0, ch: 2 }), 1), null);
+});
+
+test('Backspace outdents nested items before removing top-level markers', () => {
+  const nested = getBackspaceEdit(analyzeLineContext(['  - item'], { line: 0, ch: 4 }));
+  assert.deepEqual(nested.to, { line: 0, ch: 2 });
+  const top = getBackspaceEdit(analyzeLineContext(['- item'], { line: 0, ch: 2 }));
+  assert.deepEqual(top.to, { line: 0, ch: 2 });
+  assert.equal(getBackspaceEdit(analyzeLineContext(['- item'], { line: 0, ch: 4 })), null);
 });
