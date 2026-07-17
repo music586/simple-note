@@ -2549,26 +2549,9 @@ textarea,
   border-left-color: var(--md-accent);
 }
 
-.cm-active-heading-1 .CodeMirror-cursor {
-  height: 2.35em !important;
-  transform: translateY(1.1em);
-}
-
-.cm-active-heading-2 .CodeMirror-cursor {
-  height: 2em !important;
-  transform: translateY(0.85em);
-}
-
-.cm-active-heading-3 .CodeMirror-cursor {
-  height: 1.75em !important;
-  transform: translateY(0.65em);
-}
-
-.cm-active-heading-4 .CodeMirror-cursor,
-.cm-active-heading-5 .CodeMirror-cursor,
-.cm-active-heading-6 .CodeMirror-cursor {
-  height: 1.55em !important;
-  transform: translateY(0.5em);
+.editor-pane > .CodeMirror .CodeMirror-cursor {
+  height: var(--editor-cursor-height) !important;
+  transform: translateY(var(--editor-cursor-offset));
 }
 
 .CodeMirror-selected {

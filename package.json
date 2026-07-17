@@ -36,6 +36,7 @@
     "files": [
       "main.js",
       "renderer.js",
+      "editor-cursor.js",
       "markdown-keymap.js",
       "markdown-structure.js",
       "slash-command-ui.js",

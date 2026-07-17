@@ -5,6 +5,7 @@ const { marked } = require('marked');
 const hljs = require('highlight.js');
 const CodeMirror = require('codemirror');
 require('codemirror/mode/markdown/markdown');
+const { getEditorCursorAlignment } = require('./editor-cursor');
 const {
   applyCodeMirrorEdit,
   createMarkdownKeyHandlers
@@ -352,6 +353,7 @@ function createCodeEditor(textarea) {
     decorationMarks: [],
     decorationLines: [],
     decorationFrame: null,
+    cursorAlignmentFrame: null,
     renderingDecorations: false,
     decorationStructureDirty: true,
     codeBlocks: [],
@@ -1137,11 +1139,8 @@ function renderEditorDecorations(editorAdapter, note) {
   editorAdapter.renderingDecorations = true;
   const codeMirror = editorAdapter.codeMirror;
   const wrapper = codeMirror.getWrapperElement();
-  const headingCursorClasses = Array.from(
-    { length: 6 },
-    (_, index) => `cm-active-heading-${index + 1}`
-  );
-  wrapper.classList.remove(...headingCursorClasses);
+  wrapper.style.removeProperty('--editor-cursor-height');
+  wrapper.style.removeProperty('--editor-cursor-offset');
   try {
   codeMirror.operation(() => {
     editorAdapter.decorationMarks.forEach(mark => mark.clear());
@@ -1156,8 +1155,6 @@ function renderEditorDecorations(editorAdapter, note) {
   }
 
   const activeLine = codeMirror.getCursor().line;
-  const activeHeading = codeMirror.getLine(activeLine).match(/^(#{1,6})\s+/);
-  if (activeHeading) wrapper.classList.add(`cm-active-heading-${activeHeading[1].length}`);
   const viewport = codeMirror.getViewport();
   const firstLine = Math.max(0, viewport.from - 20);
   const lastLine = Math.min(codeMirror.lineCount(), viewport.to + 20);
@@ -1553,6 +1550,22 @@ function renderEditorDecorations(editorAdapter, note) {
   });
   } finally {
     editorAdapter.renderingDecorations = false;
+    if (editorAdapter.cursorAlignmentFrame) {
+      cancelAnimationFrame(editorAdapter.cursorAlignmentFrame);
+    }
+    editorAdapter.cursorAlignmentFrame = requestAnimationFrame(() => {
+      editorAdapter.cursorAlignmentFrame = null;
+      const cursor = wrapper.querySelector('.CodeMirror-cursor');
+      const headingText = wrapper.querySelector('.cm-editing-heading');
+      if (!cursor || !headingText) return;
+      const alignment = getEditorCursorAlignment(
+        cursor.getBoundingClientRect(),
+        headingText.getBoundingClientRect()
+      );
+      if (!alignment) return;
+      wrapper.style.setProperty('--editor-cursor-height', `${alignment.height}px`);
+      wrapper.style.setProperty('--editor-cursor-offset', `${alignment.offset}px`);
+    });
   }
 }
 
