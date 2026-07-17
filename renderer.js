@@ -10,6 +10,11 @@ const {
   createMarkdownKeyHandlers
 } = require('./markdown-keymap');
 const {
+  clearSlashCommandAccessibility,
+  getSlashCommandMenuLayout,
+  setSlashCommandAccessibility
+} = require('./slash-command-ui');
+const {
   filterStructureCommands,
   analyzeLineContext,
   getEnterEdit,
@@ -121,43 +126,51 @@ function renderSlashCommandMenu() {
   slashCommandMenuElement.appendChild(help);
 
   const selected = slashCommandState.commands[slashCommandState.selectedIndex];
-  if (selected) {
-    slashCommandMenuElement.setAttribute(
-      'aria-activedescendant',
-      `slash-command-${selected.id}`
+  if (slashCommandState.editor) {
+    setSlashCommandAccessibility(
+      slashCommandState.editor.codeMirror.getInputField(),
+      selected ? `slash-command-${selected.id}` : null
     );
-  } else {
-    slashCommandMenuElement.removeAttribute('aria-activedescendant');
   }
 }
 
 function positionSlashCommandMenu(cm) {
   const cursor = cm.cursorCoords(cm.getCursor(), 'window');
   const panel = cm.getWrapperElement().closest('.editor-panel').getBoundingClientRect();
+  slashCommandMenuElement.style.width = '';
+  slashCommandMenuElement.style.maxWidth = `${Math.max(panel.width - 16, 1)}px`;
   const menu = slashCommandMenuElement.getBoundingClientRect();
-  const left = Math.min(Math.max(cursor.left, panel.left + 8), panel.right - menu.width - 8);
-  const below = cursor.bottom + menu.height + 8 <= Math.min(panel.bottom, window.innerHeight);
-  const top = below ? cursor.bottom + 4 : Math.max(panel.top + 8, cursor.top - menu.height - 4);
-  slashCommandMenuElement.style.left = `${left}px`;
-  slashCommandMenuElement.style.top = `${top}px`;
+  const layout = getSlashCommandMenuLayout(panel, cursor, menu, window.innerHeight);
+  slashCommandMenuElement.style.maxWidth = `${layout.maxWidth}px`;
+  slashCommandMenuElement.style.left = `${layout.left}px`;
+  slashCommandMenuElement.style.top = `${layout.top}px`;
 }
 
 function closeSlashCommandMenu() {
+  const previousEditor = slashCommandState.editor;
+  if (previousEditor) {
+    clearSlashCommandAccessibility(previousEditor.codeMirror.getInputField());
+  }
   slashCommandState.editor = null;
   slashCommandState.query = '';
   slashCommandState.commands = [];
   slashCommandState.selectedIndex = 0;
   slashCommandMenuElement.hidden = true;
+  slashCommandMenuElement.style.width = '';
+  slashCommandMenuElement.style.maxWidth = '';
   slashCommandMenuElement.replaceChildren();
 }
 
 function openSlashCommandMenu(editorAdapter, query) {
+  if (slashCommandState.editor && slashCommandState.editor !== editorAdapter) {
+    clearSlashCommandAccessibility(slashCommandState.editor.codeMirror.getInputField());
+  }
   slashCommandState.editor = editorAdapter;
   slashCommandState.query = query;
   slashCommandState.commands = filterStructureCommands(query);
   slashCommandState.selectedIndex = 0;
-  renderSlashCommandMenu();
   slashCommandMenuElement.hidden = false;
+  renderSlashCommandMenu();
   positionSlashCommandMenu(editorAdapter.codeMirror);
 }
 

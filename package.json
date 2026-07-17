@@ -38,6 +38,7 @@
       "renderer.js",
       "markdown-keymap.js",
       "markdown-structure.js",
+      "slash-command-ui.js",
       "index.html",
       "styles.css",
       "about.html",

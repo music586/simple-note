@@ -51,11 +51,11 @@ function createMarkdownKeyHandlers(dependencies) {
         }
 
         const menuState = getMenuState();
+        if (menuState.composing) return Pass;
         if (menuIsOwned(menuState)) {
           selectSlashCommand();
           return;
         }
-        if (menuState.composing) return Pass;
         if (handleOpeningCodeFence(cm, getEditorAdapter())) return;
         if (applyEdit(cm, getEnterEdit(getContext(cm)))) return;
         cm.execCommand('newlineAndIndent');

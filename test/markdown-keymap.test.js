@@ -145,6 +145,19 @@ test('Enter dispatches owned menu, composition, opening fence, structure, then f
   assert.deepEqual(fallbackCm.calls, [['execCommand', 'newlineAndIndent']]);
 });
 
+test('composition passes through Enter even when this editor owns an open menu', () => {
+  const harness = createHarness();
+  harness.setMenuState({
+    hidden: false,
+    editor: harness.adapter,
+    composing: true,
+    commands: [{}]
+  });
+
+  assert.equal(harness.handlers.Enter(createCm()), Pass);
+  assert.deepEqual(harness.calls, []);
+});
+
 test('menu navigation requires ownership and results for either adapter', () => {
   const harness = createHarness();
   const cm = createCm();
@@ -187,4 +200,5 @@ test('packaged renderer includes its keymap and structure dependencies', () => {
 
   assert.ok(packageJson.build.files.includes('markdown-keymap.js'));
   assert.ok(packageJson.build.files.includes('markdown-structure.js'));
+  assert.ok(packageJson.build.files.includes('slash-command-ui.js'));
 });
