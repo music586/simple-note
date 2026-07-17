@@ -4,6 +4,10 @@ const assert = require('node:assert/strict');
 const {
   MARKDOWN_STRUCTURE_COMMANDS,
   filterStructureCommands,
+  getRenderedListPrefix,
+  getHeadingSectionRange,
+  getDocumentOutline,
+  getFencedCodeBlocks,
   analyzeLineContext,
   getEnterEdit,
   getIndentEdit,
@@ -17,7 +21,76 @@ test('slash menu exposes pure update and guarded-selection helpers', () => {
   assert.equal(typeof getSlashCommandEdit, 'function');
 });
 
-test('slash menu update refreshes deletion back to the six initial commands', () => {
+test('document outline returns headings outside fenced code', () => {
+  assert.deepEqual(getDocumentOutline([
+    '# Intro',
+    '```md',
+    '## ignored',
+    '```',
+    '### Details'
+  ]), [
+    { line: 0, level: 1, text: 'Intro' },
+    { line: 4, level: 3, text: 'Details' }
+  ]);
+});
+
+test('fenced code blocks support tilde markers and require matching closers', () => {
+  assert.deepEqual(getFencedCodeBlocks([
+    '~~~~js',
+    '# code',
+    '```',
+    '~~~~~',
+    '# prose'
+  ]), [{
+    start: 0,
+    end: 3,
+    language: 'js',
+    closed: true
+  }]);
+});
+
+test('document outline ignores headings in tilde fenced code', () => {
+  assert.deepEqual(getDocumentOutline([
+    '~~~',
+    '# ignored',
+    '~~~',
+    '# visible'
+  ]), [{ line: 3, level: 1, text: 'visible' }]);
+});
+
+test('heading section ends before the next same or higher heading', () => {
+  const lines = [
+    '# A',
+    'body',
+    '## child',
+    'child body',
+    '# B',
+    'tail'
+  ];
+
+  assert.deepEqual(getHeadingSectionRange(lines, 0), {
+    level: 1,
+    startLine: 1,
+    endLine: 3
+  });
+  assert.deepEqual(getHeadingSectionRange(lines, 2), {
+    level: 2,
+    startLine: 3,
+    endLine: 3
+  });
+  assert.equal(getHeadingSectionRange(lines, 1), null);
+});
+
+test('headings inside fenced code do not end a collapsible section', () => {
+  const lines = ['# A', '```', '# code', '```', 'body'];
+  assert.deepEqual(getHeadingSectionRange(lines, 0), {
+    level: 1,
+    startLine: 1,
+    endLine: 4
+  });
+});
+
+test('slash menu update refreshes deletion back to the full command catalog', () => {
   const taskUpdate = getSlashMenuUpdate(['/任务'], { line: 0, ch: 3 }, {
     hasCurrentNote: true,
     composing: false
@@ -91,7 +164,7 @@ test('slash selection edit rejects moved cursors and invalid ranges', () => {
 test('catalog contains headings and line structures', () => {
   assert.deepEqual(
     MARKDOWN_STRUCTURE_COMMANDS.map(command => command.id),
-    ['h1', 'h2', 'bullet', 'ordered', 'task', 'quote', 'h3', 'h4', 'h5', 'h6']
+    ['h1', 'h3', 'bullet', 'ordered', 'task', 'quote']
   );
 });
 
@@ -101,8 +174,26 @@ test('filter matches Chinese, pinyin initials, and Markdown markers', () => {
   assert.equal(filterStructureCommands('-')[0].id, 'bullet');
   assert.deepEqual(
     filterStructureCommands('标题').map(command => command.id),
-    ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']
+    ['h1', 'h3']
   );
+});
+
+test('rendered list prefixes preserve ordered numbers and task state', () => {
+  assert.deepEqual(getRenderedListPrefix('  12. item'), {
+    type: 'ordered',
+    label: '12.',
+    fromCh: 2,
+    toCh: 6
+  });
+  assert.equal(getRenderedListPrefix('3) item').label, '3)');
+  assert.equal(getRenderedListPrefix('- item').label, '•');
+  assert.deepEqual(getRenderedListPrefix('- [x] done'), {
+    type: 'task',
+    checked: true,
+    fromCh: 0,
+    toCh: 6,
+    toggleCh: 3
+  });
 });
 
 test('slash query exists only at empty-line start and outside fences', () => {

@@ -1,7 +1,7 @@
 {
   "name": "markdown-note",
   "productName": "简记",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "简洁的桌面 Markdown 笔记应用",
   "main": "main.js",
   "scripts": {
@@ -40,6 +40,10 @@
       "markdown-keymap.js",
       "markdown-structure.js",
       "slash-command-ui.js",
+      "table-ui.js",
+      "preview-task.js",
+      "preview-markdown.js",
+      "markdown-format.js",
       "index.html",
       "styles.css",
       "about.html",
@@ -61,8 +65,8 @@
       ]
     },
     "dmg": {
-      "title": "简记 ${version}",
-      "artifactName": "简记-${version}-${arch}.${ext}",
+      "title": "SimpleNote ${version}",
+      "artifactName": "SimpleNote-${version}-${arch}.${ext}",
       "contents": [
         {
           "x": 140,

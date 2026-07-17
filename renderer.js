@@ -7,7 +7,8 @@ const CodeMirror = require('codemirror');
 require('codemirror/mode/markdown/markdown');
 const {
   getEditorCursorAlignment,
-  getFallbackTextRect
+  getFallbackTextRect,
+  getCurrentLineTextRect
 } = require('./editor-cursor');
 const {
   applyCodeMirrorEdit,
@@ -19,9 +20,17 @@ const {
   getSlashCommandMenuLayout,
   setSlashCommandAccessibility
 } = require('./slash-command-ui');
+const { getTableAddControlState } = require('./table-ui');
+const { getTaskCheckboxEdit } = require('./preview-task');
+const { getMarkdownFormatEdit } = require('./markdown-format');
+const { normalizePreviewMarkdown } = require('./preview-markdown');
 const {
   filterStructureCommands,
   analyzeLineContext,
+  getRenderedListPrefix,
+  getHeadingSectionRange,
+  getDocumentOutline,
+  getFencedCodeBlocks,
   getEnterEdit,
   getIndentEdit,
   getBackspaceEdit,
@@ -38,6 +47,28 @@ marked.setOptions({
   },
   breaks: true,
   gfm: true
+});
+
+marked.use({
+  extensions: [{
+    name: 'highlight',
+    level: 'inline',
+    start(source) {
+      return source.indexOf('==');
+    },
+    tokenizer(source) {
+      const match = source.match(/^==([^=\n]+)==/);
+      if (!match) return undefined;
+      return {
+        type: 'highlight',
+        raw: match[0],
+        tokens: this.lexer.inlineTokens(match[1])
+      };
+    },
+    renderer(token) {
+      return `<mark>${this.parser.parseInline(token.tokens)}</mark>`;
+    }
+  }]
 });
 
 let currentNote = null;
@@ -68,17 +99,28 @@ const settingsBtn = document.getElementById('settingsBtn');
 const notesDirInfo = document.getElementById('notesDirInfo');
 const notesDirDisplay = document.getElementById('notesDirDisplay');
 const editorContainer = document.getElementById('editorContainer');
+const documentOutline = document.getElementById('documentOutline');
 
 const editorRight = createCodeEditor(document.getElementById('editorRight'));
 lastActiveEditor = editor;
 const previewRight = document.getElementById('previewRight');
 const noteTitleRight = document.getElementById('noteTitleRight');
 const editorContainerRight = document.getElementById('editorContainerRight');
+const documentOutlineRight = document.getElementById('documentOutlineRight');
 const rightPanel = document.getElementById('rightPanel');
 const leftPanel = document.getElementById('leftPanel');
 const panelDivider = document.getElementById('panelDivider');
 const closeRightBtn = document.getElementById('closeRightBtn');
 const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
+
+[preview, previewRight].forEach(container => {
+  container.addEventListener('click', event => {
+    const link = event.target.closest('a[href]');
+    if (!link || !container.contains(link)) return;
+    event.preventDefault();
+    ipcRenderer.invoke('open-external-url', link.href);
+  });
+});
 
 function getCodeMirrorContext(cm) {
   const lines = Array.from({ length: cm.lineCount() }, (_, line) => cm.getLine(line));
@@ -264,14 +306,14 @@ editor.codeMirror.on('cursorActivity', () => {
   lastActiveEditor = editor;
   if (slashCommandState.editor && slashCommandState.editor !== editor) {
     slashCommandMenu.close();
-  } else if (slashCommandState.editor === editor) {
-    updateSlashCommandForEditor(editor);
   }
+  updateSlashCommandForEditor(editor);
   scheduleEditorDecorations(editor, () => currentNote);
 });
 editor.codeMirror.on('focus', () => {
   lastActiveEditor = editor;
   if (slashCommandState.editor && slashCommandState.editor !== editor) slashCommandMenu.close();
+  updateSlashCommandForEditor(editor);
 });
 editor.codeMirror.on('viewportChange', () => {
   scheduleEditorDecorations(editor, () => currentNote);
@@ -280,9 +322,8 @@ editorRight.codeMirror.on('cursorActivity', () => {
   lastActiveEditor = editorRight;
   if (slashCommandState.editor && slashCommandState.editor !== editorRight) {
     slashCommandMenu.close();
-  } else if (slashCommandState.editor === editorRight) {
-    updateSlashCommandForEditor(editorRight);
   }
+  updateSlashCommandForEditor(editorRight);
   scheduleEditorDecorations(editorRight, () => currentNoteRight);
 });
 editorRight.codeMirror.on('focus', () => {
@@ -290,6 +331,7 @@ editorRight.codeMirror.on('focus', () => {
   if (slashCommandState.editor && slashCommandState.editor !== editorRight) {
     slashCommandMenu.close();
   }
+  updateSlashCommandForEditor(editorRight);
 });
 editorRight.codeMirror.on('viewportChange', () => {
   scheduleEditorDecorations(editorRight, () => currentNoteRight);
@@ -359,6 +401,7 @@ function createCodeEditor(textarea) {
     cursorAlignmentFrame: null,
     renderingDecorations: false,
     decorationStructureDirty: true,
+    collapsedHeadings: new Set(),
     codeBlocks: [],
     get value() {
       return codeMirror.getValue();
@@ -444,7 +487,7 @@ applyColorTheme(colorTheme);
 
 panelDivider.classList.add('hidden');
 
-let previewHiddenLeft = localStorage.getItem('preview-hidden-left') === 'true';
+let previewHiddenLeft = localStorage.getItem('preview-hidden-left') !== 'false';
 
 function togglePreviewLeft() {
   previewHiddenLeft = !previewHiddenLeft;
@@ -618,7 +661,7 @@ async function loadTree() {
   renderTree();
 }
 
-let previewHiddenRight = localStorage.getItem('preview-hidden-right') === 'true';
+let previewHiddenRight = localStorage.getItem('preview-hidden-right') !== 'false';
 const togglePreviewBtnRight = document.getElementById('togglePreviewBtnRight');
 
 function togglePreviewRight() {
@@ -800,8 +843,64 @@ async function selectNote(note) {
 
 let previewTimeout = null;
 
+function bindPreviewTaskCheckboxes(container, editorAdapter) {
+  const checkboxes = container.querySelectorAll('li > input[type="checkbox"]');
+  checkboxes.forEach((checkbox, taskIndex) => {
+    checkbox.disabled = false;
+    checkbox.setAttribute('aria-label', checkbox.checked ? '标记为未完成' : '标记为已完成');
+    checkbox.addEventListener('change', () => {
+      const edit = getTaskCheckboxEdit(editorAdapter.value, taskIndex, checkbox.checked);
+      if (!edit) {
+        checkbox.checked = !checkbox.checked;
+        return;
+      }
+      const codeMirror = editorAdapter.codeMirror;
+      codeMirror.replaceRange(
+        edit.text,
+        codeMirror.posFromIndex(edit.from),
+        codeMirror.posFromIndex(edit.to),
+        'preview-task-toggle'
+      );
+    });
+  });
+}
+
+function renderDocumentOutline(editorAdapter, container) {
+  const headings = getDocumentOutline(editorAdapter.value.split('\n'));
+  container.replaceChildren();
+  const title = document.createElement('div');
+  title.className = 'document-outline-title';
+  title.textContent = '大纲';
+  container.appendChild(title);
+  if (!headings.length) {
+    const empty = document.createElement('div');
+    empty.className = 'document-outline-empty';
+    empty.textContent = '暂无标题';
+    container.appendChild(empty);
+    return;
+  }
+  headings.forEach(heading => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'document-outline-item';
+    item.style.setProperty('--outline-level', heading.level - 1);
+    item.textContent = heading.text;
+    item.title = heading.text;
+    item.addEventListener('click', () => {
+      const codeMirror = editorAdapter.codeMirror;
+      codeMirror.setCursor({ line: heading.line, ch: 0 });
+      codeMirror.focus();
+      requestAnimationFrame(() => {
+        codeMirror.scrollTo(null, codeMirror.heightAtLine(heading.line, 'local'));
+      });
+    });
+    container.appendChild(item);
+  });
+}
+
 function updatePreview(immediate = false) {
   scheduleEditorDecorations(editor, () => currentNote);
+  renderDocumentOutline(editor, documentOutline);
   if (previewHiddenLeft && !app.classList.contains('reading-mode')) return;
   if (previewTimeout) clearTimeout(previewTimeout);
   if (!immediate) {
@@ -810,7 +909,8 @@ function updatePreview(immediate = false) {
   }
   previewTimeout = null;
   const content = editor.value;
-  preview.innerHTML = marked.parse(content);
+  preview.innerHTML = marked.parse(normalizePreviewMarkdown(content));
+  bindPreviewTaskCheckboxes(preview, editor);
   resolvePreviewImages(preview, currentNote);
 }
 
@@ -998,15 +1098,13 @@ function createEditorTableWidget(
       return;
     }
 
-    const rect = widget.getBoundingClientRect();
-    const distanceRight = Math.abs(rect.right - event.clientX);
-    const distanceBottom = Math.abs(rect.bottom - event.clientY);
-    const nearRight = distanceRight <= 28;
-    const nearBottom = distanceBottom <= 28;
-    const showColumn = nearRight && (!nearBottom || distanceRight <= distanceBottom);
-    const showRow = nearBottom && (!nearRight || distanceBottom < distanceRight);
-    widget.classList.toggle('show-add-column', showColumn);
-    widget.classList.toggle('show-add-row', showRow);
+    const control = getTableAddControlState(
+      widget.getBoundingClientRect(),
+      event.clientX,
+      event.clientY
+    );
+    widget.classList.toggle('show-add-column', control?.type === 'column');
+    widget.classList.toggle('show-add-row', control?.type === 'row');
   });
   widget.addEventListener('mouseleave', () => {
     widget.classList.remove('show-add-column', 'show-add-row');
@@ -1110,27 +1208,11 @@ function createEditorCodeWidget(code, requestedLanguage, onCommit) {
 function getCachedCodeBlocks(editorAdapter) {
   if (!editorAdapter.decorationStructureDirty) return editorAdapter.codeBlocks;
   const codeMirror = editorAdapter.codeMirror;
-  const blocks = [];
-  let openBlock = null;
-
-  for (let lineNumber = 0; lineNumber < codeMirror.lineCount(); lineNumber += 1) {
-    const lineText = codeMirror.getLine(lineNumber);
-    if (!/^\s*```/.test(lineText)) continue;
-    if (!openBlock) {
-      openBlock = {
-        start: lineNumber,
-        end: codeMirror.lineCount() - 1,
-        language: lineText.replace(/^\s*```/, '').trim().split(/\s+/)[0] || '',
-        closed: false
-      };
-    } else {
-      openBlock.end = lineNumber;
-      openBlock.closed = true;
-      blocks.push(openBlock);
-      openBlock = null;
-    }
-  }
-  if (openBlock) blocks.push(openBlock);
+  const lines = Array.from(
+    { length: codeMirror.lineCount() },
+    (_, line) => codeMirror.getLine(line)
+  );
+  const blocks = getFencedCodeBlocks(lines);
 
   editorAdapter.codeBlocks = blocks;
   editorAdapter.decorationStructureDirty = false;
@@ -1142,8 +1224,6 @@ function renderEditorDecorations(editorAdapter, note) {
   editorAdapter.renderingDecorations = true;
   const codeMirror = editorAdapter.codeMirror;
   const wrapper = codeMirror.getWrapperElement();
-  wrapper.style.removeProperty('--editor-cursor-height');
-  wrapper.style.removeProperty('--editor-cursor-offset');
   try {
   codeMirror.operation(() => {
     editorAdapter.decorationMarks.forEach(mark => mark.clear());
@@ -1154,6 +1234,8 @@ function renderEditorDecorations(editorAdapter, note) {
     editorAdapter.decorationLines = [];
   });
   if (!note) {
+    wrapper.style.removeProperty('--editor-cursor-height');
+    wrapper.style.removeProperty('--editor-cursor-offset');
     return;
   }
 
@@ -1161,6 +1243,10 @@ function renderEditorDecorations(editorAdapter, note) {
   const viewport = codeMirror.getViewport();
   const firstLine = Math.max(0, viewport.from - 20);
   const lastLine = Math.min(codeMirror.lineCount(), viewport.to + 20);
+  const documentLines = Array.from(
+    { length: codeMirror.lineCount() },
+    (_, line) => codeMirror.getLine(line)
+  );
   const imagePattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
   const codeBlocks = getCachedCodeBlocks(editorAdapter);
   let inCodeFence = codeBlocks.some(block => {
@@ -1173,10 +1259,31 @@ function renderEditorDecorations(editorAdapter, note) {
     return mark;
   }
 
+  function addBookmark(position, options) {
+    const mark = codeMirror.setBookmark(position, options);
+    editorAdapter.decorationMarks.push(mark);
+    return mark;
+  }
+
   function addLineStyle(lineNumber, className) {
     const line = codeMirror.addLineClass(lineNumber, 'wrap', className);
     editorAdapter.decorationLines.push({ line, className });
   }
+
+  Array.from(editorAdapter.collapsedHeadings).forEach(lineHandle => {
+    const headingLine = codeMirror.getLineNumber(lineHandle);
+    if (headingLine === null) {
+      editorAdapter.collapsedHeadings.delete(lineHandle);
+      return;
+    }
+    const section = getHeadingSectionRange(documentLines, headingLine);
+    if (!section || section.startLine > section.endLine) return;
+    addMark(
+      { line: section.startLine, ch: 0 },
+      { line: section.endLine, ch: codeMirror.getLine(section.endLine).length },
+      { collapsed: true }
+    );
+  });
 
   function hideDelimiters(lineNumber, match, openLength, closeStart, className) {
     addMark(
@@ -1372,7 +1479,37 @@ function renderEditorDecorations(editorAdapter, note) {
     const lineText = lineHandle.text;
     if (renderedCodeLines.has(lineNumber)) return;
     if (renderedTableLines.has(lineNumber)) return;
-    const fenceLine = /^\s*```/.test(lineText);
+    const fenceLine = codeBlocks.some(block => (
+      block.start === lineNumber || (block.closed && block.end === lineNumber)
+    ));
+    const headingPrefix = !inCodeFence && lineText.match(/^(#{1,6})\s+/);
+    if (headingPrefix) {
+      const section = getHeadingSectionRange(documentLines, lineNumber);
+      if (section && section.startLine <= section.endLine) {
+        const collapsed = editorAdapter.collapsedHeadings.has(lineHandle);
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = `cm-heading-toggle${collapsed ? ' is-collapsed' : ''}`;
+        toggle.title = collapsed ? '展开标题内容' : '收起标题内容';
+        toggle.setAttribute('aria-label', toggle.title);
+        toggle.setAttribute('aria-expanded', String(!collapsed));
+        toggle.innerHTML = '<svg viewBox="0 0 16 16"><path d="m5 3 5 5-5 5"/></svg>';
+        toggle.addEventListener('mousedown', event => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (collapsed) editorAdapter.collapsedHeadings.delete(lineHandle);
+          else editorAdapter.collapsedHeadings.add(lineHandle);
+          codeMirror.setCursor({ line: lineNumber, ch: headingPrefix[0].length });
+          codeMirror.focus();
+          scheduleEditorDecorations(editorAdapter, () => note);
+        });
+        addBookmark({ line: lineNumber, ch: 0 }, {
+          widget: toggle,
+          insertLeft: true,
+          handleMouseEvents: true
+        });
+      }
+    }
     if (lineNumber === activeLine) {
       const activeHeading = lineText.match(/^(#{1,6})\s+/);
       const activeQuote = lineText.match(/^\s*>\s?/);
@@ -1391,6 +1528,17 @@ function renderEditorDecorations(editorAdapter, note) {
           { line: lineNumber, ch: 0 },
           { line: lineNumber, ch: lineText.length },
           { className: editingClassName }
+        );
+      }
+      const activeListPrefix = getRenderedListPrefix(lineText);
+      if (activeListPrefix?.type === 'ordered') {
+        const marker = document.createElement('span');
+        marker.className = 'cm-rendered-list-marker cm-rendered-ordered';
+        marker.textContent = `${activeListPrefix.label} `;
+        addMark(
+          { line: lineNumber, ch: activeListPrefix.fromCh },
+          { line: lineNumber, ch: activeListPrefix.toCh },
+          { replacedWith: marker }
         );
       }
       if (fenceLine) inCodeFence = !inCodeFence;
@@ -1502,34 +1650,45 @@ function renderEditorDecorations(editorAdapter, note) {
       );
     }
 
-    const taskPrefix = lineText.match(/^(\s*)[-*+]\s+\[([ xX])\]\s+/);
-    if (taskPrefix) {
+    const listPrefix = getRenderedListPrefix(lineText);
+    if (listPrefix?.type === 'task') {
       const checkbox = document.createElement('span');
       checkbox.className = 'cm-rendered-checkbox';
-      checkbox.classList.toggle('is-checked', taskPrefix[2].toLowerCase() === 'x');
-      checkbox.setAttribute('aria-hidden', 'true');
+      checkbox.classList.toggle('is-checked', listPrefix.checked);
+      checkbox.setAttribute('role', 'checkbox');
+      checkbox.setAttribute('aria-checked', String(listPrefix.checked));
+      checkbox.setAttribute('aria-label', listPrefix.checked ? '标记为未完成' : '标记为已完成');
+      checkbox.title = listPrefix.checked ? '标记为未完成' : '标记为已完成';
+      checkbox.addEventListener('mousedown', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const from = { line: lineNumber, ch: listPrefix.toggleCh };
+        const to = { line: lineNumber, ch: listPrefix.toggleCh + 1 };
+        codeMirror.replaceRange(listPrefix.checked ? ' ' : 'x', from, to, 'task-toggle');
+        codeMirror.focus();
+      });
       addMark(
-        { line: lineNumber, ch: taskPrefix[1].length },
-        { line: lineNumber, ch: taskPrefix[0].length },
-        { replacedWith: checkbox }
+        { line: lineNumber, ch: listPrefix.fromCh },
+        { line: lineNumber, ch: listPrefix.toCh },
+        { replacedWith: checkbox, atomic: true, handleMouseEvents: true }
       );
-    } else {
-      const listPrefix = lineText.match(/^(\s*)(?:[-*+]\s+|\d+\.\s+)/);
-      if (listPrefix) {
-        const bullet = document.createElement('span');
-        bullet.className = 'cm-rendered-bullet';
-        bullet.textContent = '•';
-        addMark(
-          { line: lineNumber, ch: listPrefix[1].length },
-          { line: lineNumber, ch: listPrefix[0].length },
-          { replacedWith: bullet }
-        );
-      }
+    } else if (listPrefix) {
+      const marker = document.createElement('span');
+      marker.className = `cm-rendered-list-marker cm-rendered-${listPrefix.type}`;
+      marker.textContent = listPrefix.type === 'ordered'
+        ? `${listPrefix.label} `
+        : listPrefix.label;
+      addMark(
+        { line: lineNumber, ch: listPrefix.fromCh },
+        { line: lineNumber, ch: listPrefix.toCh },
+        { replacedWith: marker }
+      );
     }
 
     const patterns = [
       { regex: /\*\*([^*]+)\*\*/g, open: 2, close: 2, className: 'cm-rendered-strong' },
       { regex: /~~([^~]+)~~/g, open: 2, close: 2, className: 'cm-rendered-strike' },
+      { regex: /==([^=]+)==/g, open: 2, close: 2, className: 'cm-rendered-highlight' },
       { regex: /`([^`]+)`/g, open: 1, close: 1, className: 'cm-rendered-code' },
       { regex: /(?<!\*)\*([^*]+)\*(?!\*)/g, open: 1, close: 1, className: 'cm-rendered-em' }
     ];
@@ -1560,9 +1719,18 @@ function renderEditorDecorations(editorAdapter, note) {
       editorAdapter.cursorAlignmentFrame = null;
       const cursor = wrapper.querySelector('.CodeMirror-cursor');
       if (!cursor) return;
-      const cursorRect = cursor.getBoundingClientRect();
-      const activeText = wrapper.querySelector('.cm-editing-source-line');
-      const textRect = activeText?.getBoundingClientRect() || getFallbackTextRect(
+      const cursorPosition = codeMirror.cursorCoords(null, 'window');
+      const cursorRect = {
+        top: cursorPosition.top,
+        height: cursorPosition.bottom - cursorPosition.top
+      };
+      const activeTextRects = Array.from(
+        wrapper.querySelectorAll('.cm-editing-source-line')
+      ).flatMap(element => Array.from(element.getClientRects()));
+      const textRect = getCurrentLineTextRect(
+        cursorRect,
+        activeTextRects
+      ) || getFallbackTextRect(
         cursorRect,
         Number.parseFloat(getComputedStyle(wrapper).fontSize)
       );
@@ -1826,6 +1994,34 @@ function insertMarkdownCodeFence() {
   const end = targetEditor.selectionEnd;
   targetEditor.setRangeText('```', start, end);
   targetEditor.setCursorIndex(start + 3);
+  targetEditor.focus();
+}
+
+function formatActiveMarkdown(format) {
+  const useRightEditor = lastActiveEditor === editorRight && currentNoteRight;
+  const targetEditor = useRightEditor ? editorRight : editor;
+  const targetNote = useRightEditor ? currentNoteRight : currentNote;
+  if (!targetNote) return;
+  const edit = getMarkdownFormatEdit(
+    targetEditor.value,
+    targetEditor.selectionStart,
+    targetEditor.selectionEnd,
+    format
+  );
+  if (!edit) return;
+  const codeMirror = targetEditor.codeMirror;
+  codeMirror.operation(() => {
+    codeMirror.replaceRange(
+      edit.text,
+      codeMirror.posFromIndex(edit.from),
+      codeMirror.posFromIndex(edit.to),
+      'format-markdown'
+    );
+    codeMirror.setSelection(
+      codeMirror.posFromIndex(edit.selectionStart),
+      codeMirror.posFromIndex(edit.selectionEnd)
+    );
+  });
   targetEditor.focus();
 }
 
@@ -2093,6 +2289,7 @@ ipcRenderer.on('save-note', saveCurrentNote);
 ipcRenderer.on('export-pdf', exportCurrentNoteToPdf);
 ipcRenderer.on('insert-table', insertMarkdownTable);
 ipcRenderer.on('insert-code-block', insertMarkdownCodeFence);
+ipcRenderer.on('format-markdown', (event, format) => formatActiveMarkdown(format));
 ipcRenderer.on('code-language-selected', (event, language) => {
   const pending = pendingCodeFenceCompletion;
   pendingCodeFenceCompletion = null;
@@ -2176,6 +2373,7 @@ let previewTimeoutRight = null;
 
 function updatePreviewRight(immediate = false) {
   scheduleEditorDecorations(editorRight, () => currentNoteRight);
+  renderDocumentOutline(editorRight, documentOutlineRight);
   if (previewHiddenRight || rightPanel.style.display === 'none') return;
   if (previewTimeoutRight) clearTimeout(previewTimeoutRight);
   if (!immediate) {
@@ -2184,7 +2382,8 @@ function updatePreviewRight(immediate = false) {
   }
   previewTimeoutRight = null;
   const content = editorRight.value;
-  previewRight.innerHTML = marked.parse(content);
+  previewRight.innerHTML = marked.parse(normalizePreviewMarkdown(content));
+  bindPreviewTaskCheckboxes(previewRight, editorRight);
   resolvePreviewImages(previewRight, currentNoteRight);
 }
 

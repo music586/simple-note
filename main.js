@@ -109,6 +109,19 @@ function showItemInFileManager(itemPath) {
   shell.showItemInFolder(resolvedItemPath);
 }
 
+ipcMain.handle('open-external-url', async (event, href) => {
+  try {
+    const url = new URL(String(href));
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return { success: false, error: '不支持的链接协议' };
+    }
+    await shell.openExternal(url.href);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 function getTree(dir, basePath = '') {
   const result = [];
   if (!fs.existsSync(dir)) return result;
@@ -304,6 +317,19 @@ function createWindow() {
       label: '插入',
       submenu: [
         {
+          label: '超链接',
+          click: () => sendToActiveWindow('format-markdown', 'insert-link')
+        },
+        {
+          label: '图片',
+          click: () => sendToActiveWindow('format-markdown', 'insert-image')
+        },
+        {
+          label: '分割线',
+          click: () => sendToActiveWindow('format-markdown', 'insert-rule')
+        },
+        { type: 'separator' },
+        {
           label: '表格',
           accelerator: 'CmdOrCtrl+Alt+T',
           click: () => sendToActiveWindow('insert-table')
@@ -316,15 +342,52 @@ function createWindow() {
       ]
     },
     {
+      label: '格式',
+      submenu: [
+        ...Array.from({ length: 6 }, (_, index) => ({
+          label: `小标题 ${index + 1}`,
+          click: () => sendToActiveWindow('format-markdown', `heading-${index + 1}`)
+        })),
+        {
+          label: '无小标题',
+          click: () => sendToActiveWindow('format-markdown', 'heading-none')
+        },
+        { type: 'separator' },
+        {
+          label: '加粗',
+          accelerator: 'CmdOrCtrl+B',
+          click: () => sendToActiveWindow('format-markdown', 'bold')
+        },
+        {
+          label: '倾斜',
+          accelerator: 'CmdOrCtrl+I',
+          click: () => sendToActiveWindow('format-markdown', 'italic')
+        },
+        {
+          label: '代码块',
+          click: () => sendToActiveWindow('format-markdown', 'code-block')
+        },
+        {
+          label: '高亮',
+          click: () => sendToActiveWindow('format-markdown', 'highlight')
+        },
+        { type: 'separator' },
+        {
+          label: '删除线',
+          click: () => sendToActiveWindow('format-markdown', 'strikethrough')
+        }
+      ]
+    },
+    {
       label: '视图',
       submenu: [
         {
-          label: '切换侧栏',
-          accelerator: 'CmdOrCtrl+B',
+          label: '折叠/展开侧边栏',
+          accelerator: 'CmdOrCtrl+Shift+B',
           click: () => sendToActiveWindow('toggle-sidebar')
         },
         {
-          label: '切换预览',
+          label: '折叠/展开预览',
           accelerator: 'CmdOrCtrl+Shift+P',
           click: () => sendToActiveWindow('toggle-preview')
         },
@@ -749,17 +812,17 @@ ipcMain.on('show-context-menu', (event, data) => {
     });
   } else if (type === 'folder') {
     template.push({
-      label: '在访达中显示',
-      click: () => showItemInFileManager(itemPath)
-    });
-    template.push({ type: 'separator' });
-    template.push({
       label: '新建笔记',
       click: () => mainWindow.webContents.send('context-menu-new-note', data)
     });
     template.push({
       label: '新建文件夹',
       click: () => mainWindow.webContents.send('context-menu-new-folder', data)
+    });
+    template.push({ type: 'separator' });
+    template.push({
+      label: '在访达中显示',
+      click: () => showItemInFileManager(itemPath)
     });
     template.push({ type: 'separator' });
     template.push({

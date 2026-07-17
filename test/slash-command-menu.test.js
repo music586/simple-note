@@ -25,3 +25,22 @@ test('slash command menu has accessible listbox markup and safe option rendering
   );
   assert.doesNotMatch(styles, /var\(--bg-hover\)/);
 });
+
+test('cursor movement and focus re-evaluate a closed slash menu for both editors', () => {
+  const renderer = fs.readFileSync(path.join(projectRoot, 'renderer.js'), 'utf8');
+
+  for (const editorName of ['editor', 'editorRight']) {
+    const cursorStart = renderer.indexOf(`${editorName}.codeMirror.on('cursorActivity'`);
+    const focusStart = renderer.indexOf(`${editorName}.codeMirror.on('focus'`, cursorStart);
+    const viewportStart = renderer.indexOf(
+      `${editorName}.codeMirror.on('viewportChange'`,
+      focusStart
+    );
+    const cursorHandler = renderer.slice(cursorStart, focusStart);
+    const focusHandler = renderer.slice(focusStart, viewportStart);
+
+    const updateCall = `updateSlashCommandForEditor(${editorName});`;
+    assert.ok(cursorHandler.indexOf(updateCall) > cursorHandler.indexOf('\n  }\n'));
+    assert.ok(focusHandler.indexOf(updateCall) > focusHandler.indexOf('slashCommandMenu.close()'));
+  }
+});

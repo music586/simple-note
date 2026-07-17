@@ -7,11 +7,11 @@ const MARKDOWN_STRUCTURE_COMMANDS = [
     keywords: ['标题', 'bt', 'h1', '#']
   },
   {
-    id: 'h2',
-    label: '二级标题',
-    hint: '##',
-    prefix: '## ',
-    keywords: ['标题', 'bt', 'h2', '##']
+    id: 'h3',
+    label: '三级标题',
+    hint: '###',
+    prefix: '### ',
+    keywords: ['标题', 'bt', 'h3', '###']
   },
   {
     id: 'bullet',
@@ -34,40 +34,12 @@ const MARKDOWN_STRUCTURE_COMMANDS = [
     prefix: '- [ ] ',
     keywords: ['任务', '列表', 'rw', 'lb', '[]']
   },
-  { id: 'quote', label: '引用', hint: '>', prefix: '> ', keywords: ['引用', 'yy', '>'] },
-  {
-    id: 'h3',
-    label: '三级标题',
-    hint: '###',
-    prefix: '### ',
-    keywords: ['标题', 'bt', 'h3', '###']
-  },
-  {
-    id: 'h4',
-    label: '四级标题',
-    hint: '####',
-    prefix: '#### ',
-    keywords: ['标题', 'bt', 'h4', '####']
-  },
-  {
-    id: 'h5',
-    label: '五级标题',
-    hint: '#####',
-    prefix: '##### ',
-    keywords: ['标题', 'bt', 'h5', '#####']
-  },
-  {
-    id: 'h6',
-    label: '六级标题',
-    hint: '######',
-    prefix: '###### ',
-    keywords: ['标题', 'bt', 'h6', '######']
-  }
+  { id: 'quote', label: '引用', hint: '>', prefix: '> ', keywords: ['引用', 'yy', '>'] }
 ];
 
 function filterStructureCommands(query) {
   const normalized = String(query || '').trim().toLowerCase();
-  if (!normalized) return MARKDOWN_STRUCTURE_COMMANDS.slice(0, 6);
+  if (!normalized) return MARKDOWN_STRUCTURE_COMMANDS;
   return MARKDOWN_STRUCTURE_COMMANDS.filter(command => (
     command.label.includes(normalized)
       || command.id.includes(normalized)
@@ -75,25 +47,123 @@ function filterStructureCommands(query) {
   ));
 }
 
-function isInsideFence(lines, targetLine) {
-  let fence = null;
-  for (let index = 0; index < targetLine; index += 1) {
-    if (!fence) {
-      const opener = lines[index].match(/^\s*(`{3,}|~{3,})/);
-      if (opener) fence = { marker: opener[1][0], length: opener[1].length };
-      continue;
+function getRenderedListPrefix(lineText) {
+  const task = lineText.match(/^(\s*)[-*+]\s+\[([ xX])\]\s+/);
+  if (task) {
+    return {
+      type: 'task',
+      checked: task[2].toLowerCase() === 'x',
+      fromCh: task[1].length,
+      toCh: task[0].length,
+      toggleCh: task[0].indexOf('[') + 1
+    };
+  }
+
+  const ordered = lineText.match(/^(\s*)(\d+)([.)])\s+/);
+  if (ordered) {
+    return {
+      type: 'ordered',
+      label: `${ordered[2]}${ordered[3]}`,
+      fromCh: ordered[1].length,
+      toCh: ordered[0].length
+    };
+  }
+
+  const bullet = lineText.match(/^(\s*)[-*+]\s+/);
+  if (!bullet) return null;
+  return {
+    type: 'bullet',
+    label: '•',
+    fromCh: bullet[1].length,
+    toCh: bullet[0].length
+  };
+}
+
+function getFencedCodeBlocks(lines) {
+  const blocks = [];
+  let openBlock = null;
+
+  lines.forEach((line, lineNumber) => {
+    if (!openBlock) {
+      const opener = line.match(/^\s*(`{3,}|~{3,})(.*)$/);
+      if (!opener) return;
+      openBlock = {
+        start: lineNumber,
+        end: lines.length - 1,
+        language: opener[2].trim().split(/\s+/)[0] || '',
+        closed: false,
+        marker: opener[1][0],
+        length: opener[1].length
+      };
+      return;
     }
 
-    const closer = lines[index].match(/^\s*(`+|~+)\s*$/);
-    if (
-      closer
-      && closer[1][0] === fence.marker
-      && closer[1].length >= fence.length
-    ) {
-      fence = null;
+    const closer = line.match(/^\s*(`+|~+)\s*$/);
+    if (!closer
+      || closer[1][0] !== openBlock.marker
+      || closer[1].length < openBlock.length) return;
+    blocks.push({
+      start: openBlock.start,
+      end: lineNumber,
+      language: openBlock.language,
+      closed: true
+    });
+    openBlock = null;
+  });
+
+  if (openBlock) {
+    blocks.push({
+      start: openBlock.start,
+      end: openBlock.end,
+      language: openBlock.language,
+      closed: false
+    });
+  }
+  return blocks;
+}
+
+function isInsideFence(lines, targetLine) {
+  return getFencedCodeBlocks(lines).some(block => (
+    block.start < targetLine && block.end >= targetLine
+  ));
+}
+
+function getHeadingSectionRange(lines, headingLine) {
+  const fencedLines = new Set();
+  getFencedCodeBlocks(lines).forEach(block => {
+    for (let line = block.start; line <= block.end; line += 1) fencedLines.add(line);
+  });
+  const heading = lines[headingLine]?.match(/^(#{1,6})\s+/);
+  if (!heading || fencedLines.has(headingLine)) return null;
+  const level = heading[1].length;
+  let endLine = lines.length - 1;
+
+  for (let line = headingLine + 1; line < lines.length; line += 1) {
+    if (fencedLines.has(line)) continue;
+    const nextHeading = lines[line].match(/^(#{1,6})\s+/);
+    if (nextHeading && nextHeading[1].length <= level) {
+      endLine = line - 1;
+      break;
     }
   }
-  return Boolean(fence);
+
+  return { level, startLine: headingLine + 1, endLine };
+}
+
+function getDocumentOutline(lines) {
+  const outline = [];
+  const fencedLines = new Set();
+  getFencedCodeBlocks(lines).forEach(block => {
+    for (let line = block.start; line <= block.end; line += 1) fencedLines.add(line);
+  });
+  lines.forEach((line, lineNumber) => {
+    if (fencedLines.has(lineNumber)) return;
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (!heading) return;
+    const text = heading[2].replace(/\s+#+\s*$/, '').trim();
+    if (text) outline.push({ line: lineNumber, level: heading[1].length, text });
+  });
+  return outline;
 }
 
 function analyzeLineContext(lines, cursor) {
@@ -251,6 +321,10 @@ function getSlashCommandEdit(lines, cursor, options) {
 module.exports = {
   MARKDOWN_STRUCTURE_COMMANDS,
   filterStructureCommands,
+  getRenderedListPrefix,
+  getHeadingSectionRange,
+  getDocumentOutline,
+  getFencedCodeBlocks,
   analyzeLineContext,
   getEnterEdit,
   getIndentEdit,
