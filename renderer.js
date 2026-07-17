@@ -66,9 +66,18 @@ const panelDivider = document.getElementById('panelDivider');
 const closeRightBtn = document.getElementById('closeRightBtn');
 const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
 
+function getCodeMirrorContext(cm) {
+  const lines = Array.from({ length: cm.lineCount() }, (_, line) => cm.getLine(line));
+  return analyzeLineContext(lines, cm.getCursor());
+}
+
 function applyCodeMirrorEdit(cm, edit) {
-  cm.replaceRange(edit.text, edit.from, edit.to);
-  cm.setCursor(edit.cursor);
+  if (!edit) return false;
+  cm.operation(() => {
+    cm.replaceRange(edit.text, edit.from, edit.to, '+markdown-structure');
+    cm.setCursor(edit.cursor);
+  });
+  return true;
 }
 
 function renderSlashCommandMenu() {
@@ -170,6 +179,23 @@ function moveSlashCommandSelection(delta) {
   selected?.scrollIntoView({ block: 'nearest' });
 }
 
+function handleMenuMove(cm, delta) {
+  if (
+    slashCommandMenuElement.hidden
+    || slashCommandState.editor?.codeMirror !== cm
+    || slashCommandState.composing
+    || !slashCommandState.commands.length
+  ) return CodeMirror.Pass;
+  moveSlashCommandSelection(delta);
+}
+
+function handleMenuEscape(cm) {
+  if (slashCommandMenuElement.hidden || slashCommandState.editor?.codeMirror !== cm) {
+    return CodeMirror.Pass;
+  }
+  closeSlashCommandMenu();
+}
+
 function selectSlashCommand() {
   const command = slashCommandState.commands[slashCommandState.selectedIndex];
   const editorAdapter = slashCommandState.editor;
@@ -189,9 +215,7 @@ function selectSlashCommand() {
     return;
   }
 
-  cm.operation(() => {
-    applyCodeMirrorEdit(cm, edit);
-  });
+  applyCodeMirrorEdit(cm, edit);
   editorAdapter.focus();
   closeSlashCommandMenu();
 }
@@ -279,57 +303,30 @@ function createCodeEditor(textarea) {
     extraKeys: {
       'Cmd-A': 'selectAll',
       'Ctrl-A': 'selectAll',
-      Up: cm => {
-        if (slashCommandState.editor === editorAdapter && !slashCommandState.composing) {
-          if (!slashCommandState.commands.length) return CodeMirror.Pass;
-          slashCommandMenu.move(-1);
-          return;
-        }
-        cm.execCommand('goLineUp');
-      },
-      Down: cm => {
-        if (slashCommandState.editor === editorAdapter && !slashCommandState.composing) {
-          if (!slashCommandState.commands.length) return CodeMirror.Pass;
-          slashCommandMenu.move(1);
-          return;
-        }
-        cm.execCommand('goLineDown');
-      },
-      Esc: () => {
-        if (slashCommandState.editor === editorAdapter) slashCommandMenu.close();
-      },
+      Up: cm => handleMenuMove(cm, -1),
+      Down: cm => handleMenuMove(cm, 1),
+      Esc: cm => handleMenuEscape(cm),
       Enter: cm => {
-        if (slashCommandState.editor === editorAdapter && !slashCommandState.composing) {
-          slashCommandMenu.select();
+        if (!slashCommandMenuElement.hidden && slashCommandState.editor === editorAdapter) {
+          selectSlashCommand();
           return;
         }
-        const cursor = cm.getCursor();
-        const lineText = cm.getLine(cursor.line);
-        const beforeCursor = lineText.slice(0, cursor.ch);
-        const afterCursor = lineText.slice(cursor.ch);
-        const openingFence = beforeCursor.match(/^(\s*)```[\w+-]*\s*$/);
-        let insideCodeFence = false;
-        for (let line = 0; line < cursor.line; line += 1) {
-          if (/^\s*```/.test(cm.getLine(line))) insideCodeFence = !insideCodeFence;
-        }
-
-        if (openingFence && !afterCursor.trim() && !insideCodeFence) {
-          pendingCodeFenceCompletion = {
-            editor: editorAdapter,
-            line: cursor.line,
-            indentation: openingFence[1]
-          };
-          const cursorPosition = cm.cursorCoords(cursor, 'window');
-          ipcRenderer.send('show-code-language-menu', {
-            x: cursorPosition.left,
-            y: cursorPosition.bottom
-          });
-          return;
-        }
+        if (slashCommandState.composing) return CodeMirror.Pass;
+        if (handleOpeningCodeFence(cm, editorAdapter)) return;
+        if (applyCodeMirrorEdit(cm, getEnterEdit(getCodeMirrorContext(cm)))) return;
         cm.execCommand('newlineAndIndent');
-      }
+      },
+      Tab: cm => applyCodeMirrorEdit(cm, getIndentEdit(getCodeMirrorContext(cm), 1))
+        || CodeMirror.Pass,
+      'Shift-Tab': cm => applyCodeMirrorEdit(cm, getIndentEdit(getCodeMirrorContext(cm), -1))
+        || CodeMirror.Pass,
+      Backspace: cm => applyCodeMirrorEdit(cm, getBackspaceEdit(getCodeMirrorContext(cm)))
+        || CodeMirror.Pass
     }
   });
+
+  codeMirror.on('scroll', closeSlashCommandMenu);
+  codeMirror.on('blur', closeSlashCommandMenu);
 
   codeMirror.on('change', () => {
     editorAdapter.decorationStructureDirty = true;
@@ -399,6 +396,31 @@ function createCodeEditor(textarea) {
   return editorAdapter;
 }
 
+function handleOpeningCodeFence(cm, editorAdapter) {
+  const cursor = cm.getCursor();
+  const lineText = cm.getLine(cursor.line);
+  const beforeCursor = lineText.slice(0, cursor.ch);
+  const afterCursor = lineText.slice(cursor.ch);
+  const openingFence = beforeCursor.match(/^(\s*)```[\w+-]*\s*$/);
+  let insideCodeFence = false;
+  for (let line = 0; line < cursor.line; line += 1) {
+    if (/^\s*```/.test(cm.getLine(line))) insideCodeFence = !insideCodeFence;
+  }
+
+  if (!openingFence || afterCursor.trim() || insideCodeFence) return false;
+  pendingCodeFenceCompletion = {
+    editor: editorAdapter,
+    line: cursor.line,
+    indentation: openingFence[1]
+  };
+  const cursorPosition = cm.cursorCoords(cursor, 'window');
+  ipcRenderer.send('show-code-language-menu', {
+    x: cursorPosition.left,
+    y: cursorPosition.bottom
+  });
+  return true;
+}
+
 let colorTheme = localStorage.getItem('color-theme') || 'dark';
 
 function applyColorTheme(theme) {
@@ -450,6 +472,7 @@ ipcRenderer.on('reading-mode-changed', (event, enabled) => {
   readingSidebarVisible = false;
   app.classList.remove('reading-sidebar-visible');
   if (enabled) {
+    closeSlashCommandMenu();
     app.classList.remove('sidebar-hidden');
     toggleSidebarBtn.title = '显示目录';
     updatePreview(true);
@@ -760,6 +783,7 @@ async function selectNote(note) {
     closeRightPanel();
   }
   
+  closeSlashCommandMenu();
   currentNote = note;
   noteTitle.value = note.name;
   const content = await ipcRenderer.invoke('read-note', note.path);
@@ -2091,6 +2115,7 @@ ipcRenderer.on('context-menu-new-folder', (event, data) => {
 
 function openInRightPanel(note) {
   if (currentNote && currentNote.path === note.path) return;
+  closeSlashCommandMenu();
   currentNoteRight = note;
   noteTitleRight.value = note.name;
   editorRight.value = '';
@@ -2104,6 +2129,7 @@ function openInRightPanel(note) {
 }
 
 function closeRightPanel() {
+  closeSlashCommandMenu();
   if (currentNoteRight) {
     saveCurrentNoteRight();
   }

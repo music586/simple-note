@@ -15,4 +15,17 @@ test('slash command menu has accessible listbox markup and safe option rendering
   );
   assert.match(renderer, /label\.textContent = command\.label/);
   assert.doesNotMatch(renderer, /slashCommandMenuElement\.innerHTML/);
+
+  assert.match(renderer, /function getCodeMirrorContext\(cm\)/);
+  assert.match(renderer, /cm\.operation\(\(\) => \{[\s\S]*?['"]\+markdown-structure['"]/);
+  assert.match(renderer, /function handleOpeningCodeFence\(cm, editorAdapter\)/);
+  assert.match(renderer, /function handleMenuMove\(cm, delta\)/);
+  assert.match(renderer, /function handleMenuEscape\(cm\)/);
+  assert.match(renderer, /codeMirror\.on\('scroll', closeSlashCommandMenu\)/);
+  assert.match(renderer, /codeMirror\.on\('blur', closeSlashCommandMenu\)/);
+  const enterDispatch = /Enter: cm => \{[\s\S]*?handleOpeningCodeFence\(cm, editorAdapter\)/;
+  assert.match(renderer, enterDispatch);
+  assert.match(renderer, /getEnterEdit\(getCodeMirrorContext\(cm\)\)[\s\S]*?newlineAndIndent/);
+  assert.match(renderer, /['"]Shift-Tab['"]:\s*cm =>/);
+  assert.match(renderer, /Backspace:\s*cm =>/);
 });
