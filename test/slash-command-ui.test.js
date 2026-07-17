@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   clearSlashCommandAccessibility,
+  getNextSlashCommandIndex,
   getSlashCommandMenuLayout,
   setSlashCommandAccessibility
 } = require('../slash-command-ui');
@@ -63,4 +64,12 @@ test('slash menu flips above when it cannot fit below', () => {
   );
 
   assert.deepEqual(layout, { maxWidth: 384, left: 200, top: 46 });
+});
+
+test('slash menu selection wraps in both directions', () => {
+  assert.equal(getNextSlashCommandIndex(0, 1, 4), 1);
+  assert.equal(getNextSlashCommandIndex(3, 1, 4), 0);
+  assert.equal(getNextSlashCommandIndex(0, -1, 4), 3);
+  assert.equal(getNextSlashCommandIndex(2, -1, 4), 1);
+  assert.equal(getNextSlashCommandIndex(0, 1, 0), -1);
 });

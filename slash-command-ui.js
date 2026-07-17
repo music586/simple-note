@@ -1,5 +1,10 @@
 const slashCommandMenuId = 'slashCommandMenu';
 
+function getNextSlashCommandIndex(currentIndex, delta, count) {
+  if (count <= 0) return -1;
+  return (currentIndex + delta + count) % count;
+}
+
 function setSlashCommandAccessibility(input, activeDescendant) {
   input.setAttribute('aria-controls', slashCommandMenuId);
   input.setAttribute('aria-expanded', 'true');
@@ -32,6 +37,7 @@ function getSlashCommandMenuLayout(panel, cursor, menu, viewportHeight) {
 
 module.exports = {
   clearSlashCommandAccessibility,
+  getNextSlashCommandIndex,
   getSlashCommandMenuLayout,
   setSlashCommandAccessibility
 };

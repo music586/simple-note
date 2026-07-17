@@ -29,6 +29,8 @@
   --text-secondary: #8b93a7;
   --accent-color: #6c72ff;
   --accent-hover: #7d82ff;
+  --slash-command-selected-bg: rgba(108, 114, 255, 0.14);
+  --slash-command-selected-text: #f3f4ff;
   --border-color: rgba(255, 255, 255, 0.07);
   --danger-color: #e05261;
 }
@@ -699,7 +701,10 @@ body {
   background: transparent;
   text-align: left;
 }
-.slash-command-option[aria-selected='true'] { background: var(--bg-hover); }
+.slash-command-option[aria-selected='true'] {
+  color: var(--slash-command-selected-text);
+  background: var(--slash-command-selected-bg);
+}
 .slash-command-icon,
 .slash-command-hint { font-family: 'Monaco', 'Menlo', 'Consolas', monospace; }
 .slash-command-hint { color: var(--text-secondary); font-size: 11px; }
@@ -1367,6 +1372,8 @@ body,
   --text-primary: #252936;
   --text-secondary: #747b8d;
   --accent-color: #6268d9;
+  --slash-command-selected-bg: rgba(98, 104, 217, 0.12);
+  --slash-command-selected-text: #34386f;
   --accent-hover: #5158ca;
   --border-color: rgba(38, 44, 61, 0.1);
   --danger-color: #c94756;

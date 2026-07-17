@@ -11,6 +11,7 @@ const {
 } = require('./markdown-keymap');
 const {
   clearSlashCommandAccessibility,
+  getNextSlashCommandIndex,
   getSlashCommandMenuLayout,
   setSlashCommandAccessibility
 } = require('./slash-command-ui');
@@ -112,6 +113,11 @@ function renderSlashCommandMenu() {
     hint.className = 'slash-command-hint';
     hint.textContent = command.prefix;
     option.append(icon, label, hint);
+    option.addEventListener('mouseenter', () => {
+      if (slashCommandState.selectedIndex === index) return;
+      slashCommandState.selectedIndex = index;
+      renderSlashCommandMenu();
+    });
     option.addEventListener('mousedown', event => {
       event.preventDefault();
       slashCommandState.selectedIndex = index;
@@ -181,7 +187,11 @@ function updateSlashCommandMenu(editorAdapter, query) {
 function moveSlashCommandSelection(delta) {
   const count = slashCommandState.commands.length;
   if (!count) return;
-  slashCommandState.selectedIndex = (slashCommandState.selectedIndex + delta + count) % count;
+  slashCommandState.selectedIndex = getNextSlashCommandIndex(
+    slashCommandState.selectedIndex,
+    delta,
+    count
+  );
   renderSlashCommandMenu();
   const selected = slashCommandMenuElement.querySelector('[aria-selected="true"]');
   selected?.scrollIntoView({ block: 'nearest' });
