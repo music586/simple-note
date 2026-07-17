@@ -1136,6 +1136,12 @@ function renderEditorDecorations(editorAdapter, note) {
   if (editorAdapter.renderingDecorations) return;
   editorAdapter.renderingDecorations = true;
   const codeMirror = editorAdapter.codeMirror;
+  const wrapper = codeMirror.getWrapperElement();
+  const headingCursorClasses = Array.from(
+    { length: 6 },
+    (_, index) => `cm-active-heading-${index + 1}`
+  );
+  wrapper.classList.remove(...headingCursorClasses);
   try {
   codeMirror.operation(() => {
     editorAdapter.decorationMarks.forEach(mark => mark.clear());
@@ -1150,6 +1156,8 @@ function renderEditorDecorations(editorAdapter, note) {
   }
 
   const activeLine = codeMirror.getCursor().line;
+  const activeHeading = codeMirror.getLine(activeLine).match(/^(#{1,6})\s+/);
+  if (activeHeading) wrapper.classList.add(`cm-active-heading-${activeHeading[1].length}`);
   const viewport = codeMirror.getViewport();
   const firstLine = Math.max(0, viewport.from - 20);
   const lastLine = Math.min(codeMirror.lineCount(), viewport.to + 20);
