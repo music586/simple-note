@@ -661,10 +661,18 @@ function setSettingsBusy(busy) {
   imageDirectoryReset.disabled = busy || !settingsIsCustom;
 }
 
+function resetImageDirectorySettings() {
+  imageDirectoryPath.textContent = '';
+  imageDirectoryMode.textContent = '正在加载…';
+  settingsIsCustom = false;
+  imageDirectoryReset.disabled = true;
+}
+
 async function showSettingsDialog() {
   if (settingsModal.classList.contains('active')) return;
   settingsPreviousFocus = document.activeElement;
   settingsError.textContent = '';
+  resetImageDirectorySettings();
   settingsModal.classList.add('active');
   settingsDone.focus();
   const requestId = ++settingsRequestId;

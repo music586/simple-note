@@ -50,3 +50,11 @@ test('settings dialog prevents stale and duplicate directory requests', () => {
   assert.match(renderer, /setSettingsBusy\(true\)/);
   assert.match(renderer, /if \(settingsBusy\) return/);
 });
+
+test('settings dialog clears stale directory state before loading', () => {
+  assert.match(renderer, /function resetImageDirectorySettings\(\)/);
+  assert.match(renderer, /imageDirectoryPath\.textContent = ''/);
+  assert.match(renderer, /imageDirectoryMode\.textContent = '正在加载…'/);
+  assert.match(renderer, /settingsIsCustom = false/);
+  assert.match(renderer, /resetImageDirectorySettings\(\);[\s\S]*get-image-directory/);
+});
