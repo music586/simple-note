@@ -3,6 +3,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { fileURLToPath } = require('url');
 const { app, BrowserWindow, ipcMain, dialog, Menu, clipboard, shell } = require('electron');
+const { getImageDirectoryState } = require('./image-directory');
 
 let mainWindow;
 let aboutWindow;
@@ -89,6 +90,15 @@ function saveConfig(config) {
 
 function getNotesDir() {
   return getConfig().notesDir;
+}
+
+function getCurrentImageDirectoryState() {
+  const config = getConfig();
+  const state = getImageDirectoryState(config, getNotesDir());
+  return {
+    ...state,
+    exists: fs.existsSync(state.effectivePath)
+  };
 }
 
 function ensureNotesDir() {
@@ -248,6 +258,8 @@ function createWindow() {
       label: appName,
       submenu: [
         { label: `关于${appName}`, click: showAboutWindow },
+        { type: 'separator' },
+        { label: '设置…', click: () => sendToActiveWindow('open-settings') },
         { type: 'separator' },
         { role: 'services', label: '服务' },
         { type: 'separator' },
@@ -459,6 +471,44 @@ ipcMain.handle('get-notes-dir', async () => {
   return getNotesDir();
 });
 
+ipcMain.handle('get-image-directory', async () => {
+  return { success: true, ...getCurrentImageDirectoryState() };
+});
+
+ipcMain.handle('select-image-directory', async event => {
+  try {
+    const sourceWindow = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+    const state = getCurrentImageDirectoryState();
+    const result = await dialog.showOpenDialog(sourceWindow, {
+      title: '选择图片文件目录',
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: state.effectivePath
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: true, canceled: true, ...getCurrentImageDirectoryState() };
+    }
+
+    const config = getConfig();
+    config.imageDirectory = path.resolve(result.filePaths[0]);
+    saveConfig(config);
+    return { success: true, canceled: false, ...getCurrentImageDirectoryState() };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('reset-image-directory', async () => {
+  try {
+    const config = getConfig();
+    delete config.imageDirectory;
+    saveConfig(config);
+    return { success: true, ...getCurrentImageDirectoryState() };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 ipcMain.handle('export-current-pdf', async (event, suggestedName) => {
   const sourceWindow = BrowserWindow.fromWebContents(event.sender);
   if (!sourceWindow || sourceWindow.isDestroyed()) {
@@ -626,7 +676,12 @@ ipcMain.handle('paste-clipboard-content', async (event, { notePath }) => {
       throw new Error('当前笔记不在存储目录中');
     }
 
-    const assetsDir = path.join(notesDir, 'assets');
+    const config = getConfig();
+    const imageDirectory = getImageDirectoryState(config, notesDir);
+    const assetsDir = imageDirectory.effectivePath;
+    if (imageDirectory.isCustom && !fs.existsSync(assetsDir)) {
+      throw new Error('自定义图片目录不存在或已被移动');
+    }
     if (!fs.existsSync(assetsDir)) fs.mkdirSync(assetsDir, { recursive: true });
 
     async function loadImage(imageSource) {
