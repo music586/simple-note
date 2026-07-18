@@ -92,14 +92,19 @@ function getNotesDir() {
   return getConfig().notesDir;
 }
 
-function getCurrentImageDirectoryState() {
+function getRawCurrentImageDirectoryState() {
   const config = getConfig();
   const state = getImageDirectoryState(config, getNotesDir());
-  if (state.isCustom) validateCustomImageDirectory(state.customPath);
   return {
     ...state,
     exists: fs.existsSync(state.effectivePath)
   };
+}
+
+function getCurrentImageDirectoryState() {
+  const state = getRawCurrentImageDirectoryState();
+  if (state.isCustom) validateCustomImageDirectory(state.customPath);
+  return state;
 }
 
 function validateCustomImageDirectory(directoryPath) {
@@ -498,22 +503,38 @@ ipcMain.handle('get-image-directory', async () => {
   try {
     return { success: true, ...getCurrentImageDirectoryState() };
   } catch (err) {
-    return { success: false, error: err.message };
+    try {
+      const state = getRawCurrentImageDirectoryState();
+      return { success: false, ...state, exists: false, error: err.message };
+    } catch (stateErr) {
+      return { success: false, error: err.message };
+    }
   }
 });
 
 ipcMain.handle('select-image-directory', async event => {
   try {
     const sourceWindow = BrowserWindow.fromWebContents(event.sender) || mainWindow;
-    const state = getCurrentImageDirectoryState();
+    const state = getRawCurrentImageDirectoryState();
+    let pickerDefaultPath = state.defaultPath;
+    if (!state.isCustom) {
+      pickerDefaultPath = state.effectivePath;
+    } else {
+      try {
+        validateCustomImageDirectory(state.customPath);
+        pickerDefaultPath = state.effectivePath;
+      } catch (err) {
+        pickerDefaultPath = state.defaultPath;
+      }
+    }
     const result = await dialog.showOpenDialog(sourceWindow, {
       title: '选择图片文件目录',
       properties: ['openDirectory', 'createDirectory'],
-      defaultPath: state.effectivePath
+      defaultPath: pickerDefaultPath
     });
 
     if (result.canceled || result.filePaths.length === 0) {
-      return { success: true, canceled: true, ...getCurrentImageDirectoryState() };
+      return { success: true, canceled: true, ...getRawCurrentImageDirectoryState() };
     }
 
     const selectedPath = path.resolve(result.filePaths[0]);

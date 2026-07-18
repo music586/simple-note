@@ -52,3 +52,23 @@ test('custom image directories must be writable directories', () => {
   assert.match(source, /自定义图片路径不是文件夹/);
   assert.match(source, /自定义图片目录不可进入或写入/);
 });
+
+test('an invalid saved custom directory still opens the native picker', () => {
+  const handler = source.slice(
+    source.indexOf("ipcMain.handle('select-image-directory'"),
+    source.indexOf("ipcMain.handle('reset-image-directory'")
+  );
+  assert.match(handler, /getRawCurrentImageDirectoryState\(\)/);
+  assert.match(handler, /pickerDefaultPath = state\.defaultPath/);
+  assert.match(handler, /defaultPath: pickerDefaultPath/);
+  assert.doesNotMatch(handler, /const state = getCurrentImageDirectoryState\(\)/);
+});
+
+test('failed image directory reads include recoverable raw state', () => {
+  const handler = source.slice(
+    source.indexOf("ipcMain.handle('get-image-directory'"),
+    source.indexOf("ipcMain.handle('select-image-directory'")
+  );
+  assert.match(handler, /getRawCurrentImageDirectoryState\(\)/);
+  assert.match(handler, /success: false,[\s\S]*exists: false,[\s\S]*error: err\.message/);
+});

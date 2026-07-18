@@ -668,6 +668,13 @@ function resetImageDirectorySettings() {
   imageDirectoryReset.disabled = true;
 }
 
+function renderFailedImageDirectorySettings(result) {
+  if (result.isCustom && result.effectivePath) {
+    renderImageDirectorySettings(result);
+  }
+  settingsError.textContent = getSettingsErrorMessage('设置加载失败', result.error);
+}
+
 async function showSettingsDialog() {
   if (settingsModal.classList.contains('active')) return;
   settingsPreviousFocus = document.activeElement;
@@ -681,7 +688,7 @@ async function showSettingsDialog() {
     const result = await ipcRenderer.invoke('get-image-directory');
     if (requestId !== settingsRequestId) return;
     if (!result.success) {
-      settingsError.textContent = getSettingsErrorMessage('设置加载失败', result.error);
+      renderFailedImageDirectorySettings(result);
       return;
     }
     renderImageDirectorySettings(result);

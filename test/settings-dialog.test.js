@@ -58,3 +58,9 @@ test('settings dialog clears stale directory state before loading', () => {
   assert.match(renderer, /settingsIsCustom = false/);
   assert.match(renderer, /resetImageDirectorySettings\(\);[\s\S]*get-image-directory/);
 });
+
+test('failed custom directory loads enable recovery actions', () => {
+  assert.match(renderer, /function renderFailedImageDirectorySettings\(result\)/);
+  assert.match(renderer, /renderImageDirectorySettings\(result\)/);
+  assert.match(renderer, /if \(result\.isCustom && result\.effectivePath\)/);
+});
