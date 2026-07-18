@@ -28,6 +28,14 @@ test('image directory settings IPC returns errors instead of throwing', () => {
   assert.match(handler, /return \{ success: false, error: err\.message \}/);
 });
 
+test('reading configured image directory state validates the custom path', () => {
+  const stateHelper = source.slice(
+    source.indexOf('function getCurrentImageDirectoryState()'),
+    source.indexOf('function validateCustomImageDirectory(directoryPath)')
+  );
+  assert.match(stateHelper, /if \(state\.isCustom\) validateCustomImageDirectory\(state\.customPath\)/);
+});
+
 test('clipboard images use the configured image directory', () => {
   assert.match(source, /getImageDirectoryState\(config, notesDir\)/);
   assert.doesNotMatch(source, /const assetsDir = path\.join\(notesDir, 'assets'\)/);

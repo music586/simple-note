@@ -95,6 +95,7 @@ function getNotesDir() {
 function getCurrentImageDirectoryState() {
   const config = getConfig();
   const state = getImageDirectoryState(config, getNotesDir());
+  if (state.isCustom) validateCustomImageDirectory(state.customPath);
   return {
     ...state,
     exists: fs.existsSync(state.effectivePath)
