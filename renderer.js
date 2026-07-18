@@ -598,6 +598,14 @@ const locationsModal = document.getElementById('locationsModal');
 const locationsList = document.getElementById('locationsList');
 const locationsClose = document.getElementById('locationsClose');
 const locationsAdd = document.getElementById('locationsAdd');
+const settingsModal = document.getElementById('settingsModal');
+const settingsClose = document.getElementById('settingsClose');
+const imageDirectoryPath = document.getElementById('imageDirectoryPath');
+const imageDirectoryMode = document.getElementById('imageDirectoryMode');
+const imageDirectoryChoose = document.getElementById('imageDirectoryChoose');
+const imageDirectoryReset = document.getElementById('imageDirectoryReset');
+const settingsDone = document.getElementById('settingsDone');
+const settingsError = document.getElementById('settingsError');
 
 let modalCallback = null;
 let confirmCallback = null;
@@ -626,6 +634,30 @@ function showConfirm(title, message, callback) {
 function hideConfirm() {
   confirmModal.classList.remove('active');
   confirmCallback = null;
+}
+
+function renderImageDirectorySettings(data) {
+  imageDirectoryPath.textContent = data.effectivePath;
+  imageDirectoryMode.textContent = data.isCustom ? '自定义目录' : '默认目录';
+  imageDirectoryReset.disabled = !data.isCustom;
+  settingsError.textContent = data.isCustom && !data.exists
+    ? '自定义图片目录不存在或已被移动'
+    : '';
+}
+
+async function showSettingsDialog() {
+  settingsError.textContent = '';
+  const result = await ipcRenderer.invoke('get-image-directory');
+  if (!result.success) {
+    settingsError.textContent = result.error;
+  } else {
+    renderImageDirectorySettings(result);
+  }
+  settingsModal.classList.add('active');
+}
+
+function hideSettingsDialog() {
+  settingsModal.classList.remove('active');
 }
 
 modalCancel.addEventListener('click', hideModal);
@@ -2245,6 +2277,36 @@ locationsClose.addEventListener('click', () => locationsModal.classList.remove('
 locationsAdd.addEventListener('click', changeNotesDir);
 locationsModal.addEventListener('click', event => {
   if (event.target === locationsModal) locationsModal.classList.remove('active');
+});
+
+ipcRenderer.on('open-settings', showSettingsDialog);
+settingsClose.addEventListener('click', hideSettingsDialog);
+settingsDone.addEventListener('click', hideSettingsDialog);
+settingsModal.addEventListener('click', event => {
+  if (event.target === settingsModal) hideSettingsDialog();
+});
+imageDirectoryChoose.addEventListener('click', async () => {
+  settingsError.textContent = '';
+  const result = await ipcRenderer.invoke('select-image-directory');
+  if (!result.success) {
+    settingsError.textContent = result.error;
+    return;
+  }
+  renderImageDirectorySettings(result);
+});
+imageDirectoryReset.addEventListener('click', async () => {
+  settingsError.textContent = '';
+  const result = await ipcRenderer.invoke('reset-image-directory');
+  if (!result.success) {
+    settingsError.textContent = result.error;
+    return;
+  }
+  renderImageDirectorySettings(result);
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && settingsModal.classList.contains('active')) {
+    hideSettingsDialog();
+  }
 });
 
 noteTitle.addEventListener('change', async () => {

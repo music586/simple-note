@@ -3227,6 +3227,92 @@ textarea,
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28), 0 2px 10px rgba(0, 0, 0, 0.16);
 }
 
+.settings-modal-content {
+  width: min(520px, calc(100vw - 32px));
+  max-width: 520px;
+}
+
+.settings-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-close {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.settings-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+.settings-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.image-directory-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.image-directory-heading > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.image-directory-heading strong {
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.image-directory-heading span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.image-directory-path {
+  min-height: 44px;
+  padding: 11px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 9px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+.settings-error {
+  min-height: 18px;
+  color: var(--danger-color);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.settings-modal-content .modal-footer {
+  justify-content: space-between;
+}
+
+.settings-modal-content .btn:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .locations-modal-header {
   min-height: 52px;
   padding: 0 16px;
