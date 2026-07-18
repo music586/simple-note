@@ -609,6 +609,10 @@ const settingsError = document.getElementById('settingsError');
 
 let modalCallback = null;
 let confirmCallback = null;
+let settingsPreviousFocus = null;
+let settingsRequestId = 0;
+let settingsBusy = false;
+let settingsIsCustom = false;
 
 function showModal(title, placeholder, defaultValue, callback) {
   modalTitle.textContent = title;
@@ -639,25 +643,55 @@ function hideConfirm() {
 function renderImageDirectorySettings(data) {
   imageDirectoryPath.textContent = data.effectivePath;
   imageDirectoryMode.textContent = data.isCustom ? '自定义目录' : '默认目录';
-  imageDirectoryReset.disabled = !data.isCustom;
+  settingsIsCustom = data.isCustom;
+  imageDirectoryReset.disabled = settingsBusy || !settingsIsCustom;
   settingsError.textContent = data.isCustom && !data.exists
     ? '自定义图片目录不存在或已被移动'
     : '';
 }
 
+function getSettingsErrorMessage(action, error) {
+  const detail = typeof error === 'string' ? error : error?.message;
+  return detail ? `${action}：${detail}` : action;
+}
+
+function setSettingsBusy(busy) {
+  settingsBusy = busy;
+  imageDirectoryChoose.disabled = busy;
+  imageDirectoryReset.disabled = busy || !settingsIsCustom;
+}
+
 async function showSettingsDialog() {
+  if (settingsModal.classList.contains('active')) return;
+  settingsPreviousFocus = document.activeElement;
   settingsError.textContent = '';
-  const result = await ipcRenderer.invoke('get-image-directory');
-  if (!result.success) {
-    settingsError.textContent = result.error;
-  } else {
-    renderImageDirectorySettings(result);
-  }
   settingsModal.classList.add('active');
+  settingsDone.focus();
+  const requestId = ++settingsRequestId;
+  setSettingsBusy(true);
+  try {
+    const result = await ipcRenderer.invoke('get-image-directory');
+    if (requestId !== settingsRequestId) return;
+    if (!result.success) {
+      settingsError.textContent = getSettingsErrorMessage('设置加载失败', result.error);
+      return;
+    }
+    renderImageDirectorySettings(result);
+  } catch (error) {
+    if (requestId !== settingsRequestId) return;
+    settingsError.textContent = getSettingsErrorMessage('设置加载失败', error);
+  } finally {
+    if (requestId === settingsRequestId) setSettingsBusy(false);
+  }
 }
 
 function hideSettingsDialog() {
+  if (!settingsModal.classList.contains('active')) return;
+  settingsRequestId += 1;
+  setSettingsBusy(false);
   settingsModal.classList.remove('active');
+  if (settingsPreviousFocus?.isConnected) settingsPreviousFocus.focus();
+  settingsPreviousFocus = null;
 }
 
 modalCancel.addEventListener('click', hideModal);
@@ -2286,28 +2320,73 @@ settingsModal.addEventListener('click', event => {
   if (event.target === settingsModal) hideSettingsDialog();
 });
 imageDirectoryChoose.addEventListener('click', async () => {
+  if (settingsBusy) return;
   settingsError.textContent = '';
-  const result = await ipcRenderer.invoke('select-image-directory');
-  if (!result.success) {
-    settingsError.textContent = result.error;
-    return;
+  const requestId = ++settingsRequestId;
+  setSettingsBusy(true);
+  try {
+    const result = await ipcRenderer.invoke('select-image-directory');
+    if (requestId !== settingsRequestId) return;
+    if (!result.success) {
+      settingsError.textContent = getSettingsErrorMessage('选择图片目录失败', result.error);
+      return;
+    }
+    renderImageDirectorySettings(result);
+  } catch (error) {
+    if (requestId !== settingsRequestId) return;
+    settingsError.textContent = getSettingsErrorMessage('选择图片目录失败', error);
+  } finally {
+    if (requestId === settingsRequestId) setSettingsBusy(false);
   }
-  renderImageDirectorySettings(result);
 });
 imageDirectoryReset.addEventListener('click', async () => {
+  if (settingsBusy) return;
   settingsError.textContent = '';
-  const result = await ipcRenderer.invoke('reset-image-directory');
-  if (!result.success) {
-    settingsError.textContent = result.error;
-    return;
+  const requestId = ++settingsRequestId;
+  setSettingsBusy(true);
+  try {
+    const result = await ipcRenderer.invoke('reset-image-directory');
+    if (requestId !== settingsRequestId) return;
+    if (!result.success) {
+      settingsError.textContent = getSettingsErrorMessage('恢复默认目录失败', result.error);
+      return;
+    }
+    renderImageDirectorySettings(result);
+  } catch (error) {
+    if (requestId !== settingsRequestId) return;
+    settingsError.textContent = getSettingsErrorMessage('恢复默认目录失败', error);
+  } finally {
+    if (requestId === settingsRequestId) setSettingsBusy(false);
   }
-  renderImageDirectorySettings(result);
 });
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && settingsModal.classList.contains('active')) {
+  if (!settingsModal.classList.contains('active')) return;
+
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopImmediatePropagation();
     hideSettingsDialog();
+    return;
   }
-});
+
+  if (event.key !== 'Tab') return;
+  const focusable = Array.from(settingsModal.querySelectorAll(
+    'button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'
+  ));
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  } else if (!settingsModal.contains(document.activeElement)) {
+    event.preventDefault();
+    first.focus();
+  }
+}, true);
 
 noteTitle.addEventListener('change', async () => {
   if (currentNote) {

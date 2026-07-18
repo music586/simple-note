@@ -27,3 +27,26 @@ test('settings dialog uses the centered modal system', () => {
   assert.match(styles, /\.settings-modal-content\s*\{/);
   assert.match(styles, /\.image-directory-path\s*\{/);
 });
+
+test('settings dialog handles rejected IPC with visible Chinese errors', () => {
+  assert.match(renderer, /function getSettingsErrorMessage\(/);
+  assert.match(renderer, /设置加载失败/);
+  assert.match(renderer, /选择图片目录失败/);
+  assert.match(renderer, /恢复默认目录失败/);
+  assert.match(renderer, /try\s*\{[\s\S]*ipcRenderer\.invoke\('get-image-directory'\)/);
+});
+
+test('settings dialog owns keyboard focus while open', () => {
+  assert.match(renderer, /settingsPreviousFocus = document\.activeElement/);
+  assert.match(renderer, /settingsDone\.focus\(\)/);
+  assert.match(renderer, /settingsModal\.querySelectorAll\(/);
+  assert.match(renderer, /event\.stopImmediatePropagation\(\)/);
+  assert.match(renderer, /document\.addEventListener\('keydown',[\s\S]*true\);/);
+});
+
+test('settings dialog prevents stale and duplicate directory requests', () => {
+  assert.match(renderer, /settingsRequestId/);
+  assert.match(renderer, /requestId !== settingsRequestId/);
+  assert.match(renderer, /setSettingsBusy\(true\)/);
+  assert.match(renderer, /if \(settingsBusy\) return/);
+});
