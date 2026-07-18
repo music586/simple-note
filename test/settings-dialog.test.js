@@ -64,3 +64,8 @@ test('failed custom directory loads enable recovery actions', () => {
   assert.match(renderer, /renderImageDirectorySettings\(result\)/);
   assert.match(renderer, /if \(result\.isCustom && result\.effectivePath\)/);
 });
+
+test('picker cancellation keeps an invalid directory error visible', () => {
+  assert.match(renderer, /if \(result\.canceled && result\.error\)/);
+  assert.match(renderer, /getSettingsErrorMessage\('当前目录不可用', result\.error\)/);
+});

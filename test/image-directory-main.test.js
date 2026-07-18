@@ -72,3 +72,16 @@ test('failed image directory reads include recoverable raw state', () => {
   assert.match(handler, /getRawCurrentImageDirectoryState\(\)/);
   assert.match(handler, /success: false,[\s\S]*exists: false,[\s\S]*error: err\.message/);
 });
+
+test('canceling the picker preserves an invalid custom directory error', () => {
+  const handler = source.slice(
+    source.indexOf("ipcMain.handle('select-image-directory'"),
+    source.indexOf("ipcMain.handle('reset-image-directory'")
+  );
+  assert.match(handler, /let stateError = null/);
+  assert.match(handler, /stateError = err/);
+  assert.match(
+    handler,
+    /canceled: true,[\s\S]*exists: false,[\s\S]*error: stateError\.message/
+  );
+});

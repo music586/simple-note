@@ -517,6 +517,7 @@ ipcMain.handle('select-image-directory', async event => {
     const sourceWindow = BrowserWindow.fromWebContents(event.sender) || mainWindow;
     const state = getRawCurrentImageDirectoryState();
     let pickerDefaultPath = state.defaultPath;
+    let stateError = null;
     if (!state.isCustom) {
       pickerDefaultPath = state.effectivePath;
     } else {
@@ -525,6 +526,7 @@ ipcMain.handle('select-image-directory', async event => {
         pickerDefaultPath = state.effectivePath;
       } catch (err) {
         pickerDefaultPath = state.defaultPath;
+        stateError = err;
       }
     }
     const result = await dialog.showOpenDialog(sourceWindow, {
@@ -534,6 +536,15 @@ ipcMain.handle('select-image-directory', async event => {
     });
 
     if (result.canceled || result.filePaths.length === 0) {
+      if (stateError) {
+        return {
+          success: true,
+          canceled: true,
+          ...state,
+          exists: false,
+          error: stateError.message
+        };
+      }
       return { success: true, canceled: true, ...getRawCurrentImageDirectoryState() };
     }
 

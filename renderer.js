@@ -2347,6 +2347,9 @@ imageDirectoryChoose.addEventListener('click', async () => {
       return;
     }
     renderImageDirectorySettings(result);
+    if (result.canceled && result.error) {
+      settingsError.textContent = getSettingsErrorMessage('当前目录不可用', result.error);
+    }
   } catch (error) {
     if (requestId !== settingsRequestId) return;
     settingsError.textContent = getSettingsErrorMessage('选择图片目录失败', error);
