@@ -101,6 +101,28 @@ function getCurrentImageDirectoryState() {
   };
 }
 
+function validateCustomImageDirectory(directoryPath) {
+  if (!fs.existsSync(directoryPath)) {
+    throw new Error('自定义图片目录不存在或已被移动');
+  }
+
+  let directoryStat;
+  try {
+    directoryStat = fs.statSync(directoryPath);
+  } catch (err) {
+    throw new Error('自定义图片目录不存在或无法访问');
+  }
+  if (!directoryStat.isDirectory()) {
+    throw new Error('自定义图片路径不是文件夹');
+  }
+
+  try {
+    fs.accessSync(directoryPath, fs.constants.W_OK | fs.constants.X_OK);
+  } catch (err) {
+    throw new Error('自定义图片目录不可进入或写入');
+  }
+}
+
 function ensureNotesDir() {
   const notesDir = getNotesDir();
   if (!fs.existsSync(notesDir)) {
@@ -472,7 +494,11 @@ ipcMain.handle('get-notes-dir', async () => {
 });
 
 ipcMain.handle('get-image-directory', async () => {
-  return { success: true, ...getCurrentImageDirectoryState() };
+  try {
+    return { success: true, ...getCurrentImageDirectoryState() };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
 ipcMain.handle('select-image-directory', async event => {
@@ -489,8 +515,10 @@ ipcMain.handle('select-image-directory', async event => {
       return { success: true, canceled: true, ...getCurrentImageDirectoryState() };
     }
 
+    const selectedPath = path.resolve(result.filePaths[0]);
+    validateCustomImageDirectory(selectedPath);
     const config = getConfig();
-    config.imageDirectory = path.resolve(result.filePaths[0]);
+    config.imageDirectory = selectedPath;
     saveConfig(config);
     return { success: true, canceled: false, ...getCurrentImageDirectoryState() };
   } catch (err) {
@@ -679,9 +707,7 @@ ipcMain.handle('paste-clipboard-content', async (event, { notePath }) => {
     const config = getConfig();
     const imageDirectory = getImageDirectoryState(config, notesDir);
     const assetsDir = imageDirectory.effectivePath;
-    if (imageDirectory.isCustom && !fs.existsSync(assetsDir)) {
-      throw new Error('自定义图片目录不存在或已被移动');
-    }
+    if (imageDirectory.isCustom) validateCustomImageDirectory(assetsDir);
     if (!fs.existsSync(assetsDir)) fs.mkdirSync(assetsDir, { recursive: true });
 
     async function loadImage(imageSource) {

@@ -18,7 +18,29 @@ test('main process exposes image directory settings IPC', () => {
   assert.match(source, /properties: \['openDirectory', 'createDirectory'\]/);
 });
 
+test('image directory settings IPC returns errors instead of throwing', () => {
+  const handler = source.slice(
+    source.indexOf("ipcMain.handle('get-image-directory'"),
+    source.indexOf("ipcMain.handle('select-image-directory'")
+  );
+  assert.match(handler, /try \{/);
+  assert.match(handler, /catch \(err\)/);
+  assert.match(handler, /return \{ success: false, error: err\.message \}/);
+});
+
 test('clipboard images use the configured image directory', () => {
   assert.match(source, /getImageDirectoryState\(config, notesDir\)/);
   assert.doesNotMatch(source, /const assetsDir = path\.join\(notesDir, 'assets'\)/);
+});
+
+test('custom image directories must be writable directories', () => {
+  assert.match(source, /fs\.statSync\(directoryPath\)/);
+  assert.match(
+    source,
+    /fs\.accessSync\(directoryPath, fs\.constants\.W_OK \| fs\.constants\.X_OK\)/
+  );
+  assert.match(source, /validateCustomImageDirectory\(selectedPath\)/);
+  assert.match(source, /validateCustomImageDirectory\(assetsDir\)/);
+  assert.match(source, /自定义图片路径不是文件夹/);
+  assert.match(source, /自定义图片目录不可进入或写入/);
 });
