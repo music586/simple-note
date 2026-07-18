@@ -35,6 +35,7 @@
     },
     "files": [
       "main.js",
+      "image-directory.js",
       "renderer.js",
       "editor-cursor.js",
       "markdown-keymap.js",
