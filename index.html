@@ -31,9 +31,11 @@
         <div class="editor-panel" id="leftPanel">
           <div class="toolbar">
             <button class="toggle-sidebar-btn" id="toggleSidebarBtn" title="隐藏目录" aria-label="切换目录"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg></button>
-            <input type="text" id="noteTitle" class="note-title-input" placeholder="笔记标题..." readonly tabindex="-1">
           </div>
-          
+          <div class="note-heading-row">
+            <input type="text" id="noteTitle" class="note-title-input" placeholder="笔记标题..."
+              aria-label="笔记文件名">
+          </div>
           <div class="editor-container view-both" id="editorContainer">
             <div class="editor-pane" id="editorPane">
               <textarea id="editor" placeholder="在此输入 Markdown 内容..."></textarea>
@@ -50,13 +52,15 @@
         
         <div class="editor-panel" id="rightPanel" style="display: none;">
           <div class="toolbar">
-            <input type="text" id="noteTitleRight" class="note-title-input" placeholder="笔记标题..." readonly tabindex="-1">
             <div class="toolbar-actions">
               <button class="toggle-preview-btn active" id="togglePreviewBtnRight" title="隐藏预览" aria-label="切换预览"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
               <button id="closeRightBtn" class="btn-icon small" title="关闭" aria-label="关闭"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
             </div>
           </div>
-          
+          <div class="note-heading-row note-heading-row-right">
+            <input type="text" id="noteTitleRight" class="note-title-input"
+              placeholder="笔记标题..." aria-label="右侧笔记文件名">
+          </div>
           <div class="editor-container view-both" id="editorContainerRight">
             <div class="editor-pane" id="editorPaneRight">
               <textarea id="editorRight" placeholder="在此输入 Markdown 内容..."></textarea>
@@ -133,23 +137,85 @@
     aria-labelledby="settingsTitle">
     <div class="modal-content settings-modal-content">
       <div class="modal-header settings-modal-header">
-        <span id="settingsTitle" class="modal-title">设置</span>
-        <button id="settingsClose" class="settings-close" title="关闭" aria-label="关闭">×</button>
+        <div class="settings-title-group">
+          <span class="settings-kicker">简记偏好</span>
+          <span id="settingsTitle" class="modal-title">设置</span>
+          <p>管理笔记中使用的图片资源与模板位置。</p>
+        </div>
       </div>
       <div class="modal-body settings-modal-body">
-        <div class="image-directory-heading">
-          <div>
-            <strong>图片文件目录</strong>
-            <span id="imageDirectoryMode">默认目录</span>
+        <section class="settings-card">
+          <div class="settings-card-heading">
+            <span class="settings-card-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/>
+                <circle cx="9" cy="10" r="1.5"/><path d="m5.5 17 4.2-4 3 2.7 2.3-2 3.5 3.3"/></svg>
+            </span>
+            <div class="settings-card-copy">
+              <div class="settings-card-title">
+                <strong>图片文件目录</strong>
+                <span id="imageDirectoryMode" class="settings-status">默认目录</span>
+              </div>
+              <p>粘贴到笔记中的图片将保存在这里。</p>
+            </div>
           </div>
-          <button id="imageDirectoryChoose" class="btn">选择目录</button>
-        </div>
-        <div id="imageDirectoryPath" class="image-directory-path"></div>
+          <div id="imageDirectoryPath" class="image-directory-path"></div>
+          <div class="settings-card-actions">
+            <button id="imageDirectoryReset" class="btn btn-secondary">恢复默认</button>
+            <button id="imageDirectoryChoose" class="btn">选择目录</button>
+          </div>
+        </section>
+        <section class="settings-card">
+          <div class="settings-card-heading">
+            <span class="settings-card-icon template" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M7 3.5h7l4 4V20H7z"/>
+                <path d="M14 3.5V8h4M10 12h5M10 15.5h5"/></svg>
+            </span>
+            <div class="settings-card-copy">
+              <div class="settings-card-title">
+                <strong>模板目录</strong>
+                <span id="templateDirectoryMode" class="settings-status">未设置</span>
+              </div>
+              <p>从“插入”菜单快速复用 Markdown 模板。</p>
+            </div>
+          </div>
+          <div id="templateDirectoryPath" class="image-directory-path">未设置</div>
+          <div class="settings-card-actions">
+            <button id="templateDirectoryClear" class="btn btn-secondary">清除</button>
+            <button id="templateDirectoryChoose" class="btn">选择目录</button>
+          </div>
+        </section>
+        <section class="settings-card settings-toggle-card">
+          <div class="settings-card-heading">
+            <span class="settings-card-icon outline" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M5 6h2M10 6h9M5 12h2M10 12h9M5 18h2M10 18h9"/></svg>
+            </span>
+            <div class="settings-card-copy">
+              <div class="settings-card-title">
+                <strong>展示文档大纲</strong>
+              </div>
+              <p>在内容区右侧展示标题导航，仍遵循原有宽度限制。</p>
+            </div>
+            <button id="outlineToggle" class="settings-switch" type="button" role="switch"
+              aria-checked="true" aria-label="展示文档大纲">
+              <span aria-hidden="true"></span>
+            </button>
+          </div>
+        </section>
         <div id="settingsError" class="settings-error" role="status"></div>
       </div>
+    </div>
+  </div>
+
+  <div id="templateModal" class="modal" role="dialog" aria-modal="true"
+    aria-labelledby="templateTitle">
+    <div class="modal-content modal-small template-modal-content">
+      <div class="modal-header">
+        <span id="templateTitle" class="modal-title">选择模板</span>
+      </div>
+      <div id="templateList" class="template-list"></div>
+      <div id="templateError" class="settings-error template-error" role="status"></div>
       <div class="modal-footer">
-        <button id="imageDirectoryReset" class="btn btn-secondary">恢复默认</button>
-        <button id="settingsDone" class="btn">完成</button>
+        <button id="templateCancel" class="btn btn-secondary">取消</button>
       </div>
     </div>
   </div>

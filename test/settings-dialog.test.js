@@ -10,9 +10,10 @@ const styles = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
 
 test('settings dialog shows a read-only image directory chooser', () => {
   for (const id of [
-    'settingsModal', 'settingsClose', 'imageDirectoryPath', 'imageDirectoryMode',
-    'imageDirectoryChoose', 'imageDirectoryReset', 'settingsDone', 'settingsError'
+    'settingsModal', 'imageDirectoryPath', 'imageDirectoryMode',
+    'imageDirectoryChoose', 'imageDirectoryReset', 'settingsError'
   ]) assert.match(html, new RegExp(`id="${id}"`));
+  assert.doesNotMatch(html, /id="settingsClose"|id="settingsDone"/);
   assert.doesNotMatch(html, /id="imageDirectoryPath"[^>]*<input/);
 });
 
@@ -28,6 +29,14 @@ test('settings dialog uses the centered modal system', () => {
   assert.match(styles, /\.image-directory-path\s*\{/);
 });
 
+test('settings dialog groups directory controls into responsive setting cards', () => {
+  assert.equal((html.match(/class="settings-card"/g) || []).length, 2);
+  assert.match(html, /class="settings-kicker">简记偏好/);
+  assert.match(styles, /\.settings-modal-content::before\s*\{/);
+  assert.match(styles, /@media \(max-width: 560px\)/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
+});
+
 test('settings dialog handles rejected IPC with visible Chinese errors', () => {
   assert.match(renderer, /function getSettingsErrorMessage\(/);
   assert.match(renderer, /设置加载失败/);
@@ -38,7 +47,7 @@ test('settings dialog handles rejected IPC with visible Chinese errors', () => {
 
 test('settings dialog owns keyboard focus while open', () => {
   assert.match(renderer, /settingsPreviousFocus = document\.activeElement/);
-  assert.match(renderer, /settingsDone\.focus\(\)/);
+  assert.match(renderer, /imageDirectoryChoose\.focus\(\)/);
   assert.match(renderer, /settingsModal\.querySelectorAll\(/);
   assert.match(renderer, /event\.stopImmediatePropagation\(\)/);
   assert.match(renderer, /document\.addEventListener\('keydown',[\s\S]*true\);/);

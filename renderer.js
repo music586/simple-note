@@ -309,6 +309,7 @@ editor.codeMirror.on('cursorActivity', () => {
   }
   updateSlashCommandForEditor(editor);
   scheduleEditorDecorations(editor, () => currentNote);
+  updateDocumentOutlineSelection(editor, documentOutline);
 });
 editor.codeMirror.on('focus', () => {
   lastActiveEditor = editor;
@@ -325,6 +326,7 @@ editorRight.codeMirror.on('cursorActivity', () => {
   }
   updateSlashCommandForEditor(editorRight);
   scheduleEditorDecorations(editorRight, () => currentNoteRight);
+  updateDocumentOutlineSelection(editorRight, documentOutlineRight);
 });
 editorRight.codeMirror.on('focus', () => {
   lastActiveEditor = editorRight;
@@ -397,6 +399,7 @@ function createCodeEditor(textarea) {
     codeMirror,
     decorationMarks: [],
     decorationLines: [],
+    decorationWidgets: [],
     decorationFrame: null,
     cursorAlignmentFrame: null,
     renderingDecorations: false,
@@ -475,25 +478,39 @@ let colorTheme = localStorage.getItem('color-theme') || 'dark';
 function applyColorTheme(theme) {
   colorTheme = theme;
   document.documentElement.dataset.theme = theme;
+  ipcRenderer.send('theme-changed', theme);
 }
 
-function toggleColorTheme() {
-  const nextTheme = colorTheme === 'dark' ? 'light' : 'dark';
-  applyColorTheme(nextTheme);
-  localStorage.setItem('color-theme', nextTheme);
+function setColorTheme(theme) {
+  if (theme !== 'light' && theme !== 'dark') return;
+  applyColorTheme(theme);
+  localStorage.setItem('color-theme', theme);
 }
 
 applyColorTheme(colorTheme);
+
+ipcRenderer.on('request-color-theme', () => {
+  ipcRenderer.send('theme-changed', colorTheme);
+});
+
+window.addEventListener('storage', event => {
+  if (event.key !== 'color-theme' || (event.newValue !== 'light' && event.newValue !== 'dark')) {
+    return;
+  }
+  applyColorTheme(event.newValue);
+});
 
 panelDivider.classList.add('hidden');
 
 let previewHiddenLeft = localStorage.getItem('preview-hidden-left') !== 'false';
 
-function togglePreviewLeft() {
-  previewHiddenLeft = !previewHiddenLeft;
+function setPreviewVisibility(visible) {
+  if (typeof visible !== 'boolean') return;
+  previewHiddenLeft = !visible;
   editorContainer.classList.toggle('preview-hidden', previewHiddenLeft);
   localStorage.setItem('preview-hidden-left', previewHiddenLeft);
   if (!previewHiddenLeft) updatePreview(true);
+  reportPreviewVisibility();
 }
 
 if (previewHiddenLeft) {
@@ -503,6 +520,28 @@ if (previewHiddenLeft) {
 let sidebarHidden = localStorage.getItem('sidebar-hidden') === 'true';
 let readingSidebarVisible = false;
 const app = document.querySelector('.app');
+
+function isSidebarVisible() {
+  return app.classList.contains('reading-mode')
+    ? readingSidebarVisible
+    : !sidebarHidden;
+}
+
+function reportSidebarVisibility() {
+  ipcRenderer.send('sidebar-visibility-changed', isSidebarVisible());
+}
+
+function reportPreviewVisibility() {
+  ipcRenderer.send('preview-visibility-changed', !previewHiddenLeft);
+}
+
+ipcRenderer.on('request-sidebar-visibility', reportSidebarVisibility);
+ipcRenderer.on('request-preview-visibility', reportPreviewVisibility);
+reportPreviewVisibility();
+
+ipcRenderer.on('topbar-hover-changed', (event, hovered) => {
+  app.classList.toggle('topbar-hovered', hovered);
+});
 
 ipcRenderer.on('zen-mode-changed', (event, enabled) => {
   app.classList.toggle('zen-mode', enabled);
@@ -524,10 +563,16 @@ ipcRenderer.on('reading-mode-changed', (event, enabled) => {
     closeSlashCommandMenu();
     app.classList.remove('sidebar-hidden');
     toggleSidebarBtn.title = '显示目录';
+    toggleSidebarBtn.setAttribute('aria-expanded', 'false');
+    updateSidebarTogglePlacement(false);
+    reportSidebarVisibility();
     updatePreview(true);
   } else {
     app.classList.toggle('sidebar-hidden', sidebarHidden);
     toggleSidebarBtn.title = sidebarHidden ? '显示目录' : '隐藏目录';
+    toggleSidebarBtn.setAttribute('aria-expanded', String(!sidebarHidden));
+    updateSidebarTogglePlacement(!sidebarHidden);
+    reportSidebarVisibility();
   }
   requestAnimationFrame(() => editor.codeMirror.refresh());
 });
@@ -562,16 +607,37 @@ document.addEventListener('pointerdown', event => {
 }, true);
 
 function toggleSidebar() {
+  setSidebarVisibility(!isSidebarVisible());
+}
+
+function setSidebarVisibility(visible) {
+  if (typeof visible !== 'boolean') return;
   if (app.classList.contains('reading-mode')) {
-    readingSidebarVisible = !readingSidebarVisible;
+    readingSidebarVisible = visible;
     app.classList.toggle('reading-sidebar-visible', readingSidebarVisible);
     toggleSidebarBtn.title = readingSidebarVisible ? '隐藏目录' : '显示目录';
+    toggleSidebarBtn.setAttribute('aria-expanded', String(readingSidebarVisible));
+    updateSidebarTogglePlacement(readingSidebarVisible);
+    reportSidebarVisibility();
     return;
   }
-  sidebarHidden = !sidebarHidden;
+  sidebarHidden = !visible;
   app.classList.toggle('sidebar-hidden', sidebarHidden);
   toggleSidebarBtn.title = sidebarHidden ? '显示目录' : '隐藏目录';
+  toggleSidebarBtn.setAttribute('aria-expanded', String(!sidebarHidden));
+  updateSidebarTogglePlacement(!sidebarHidden);
+  reportSidebarVisibility();
   localStorage.setItem('sidebar-hidden', sidebarHidden);
+}
+
+function updateSidebarTogglePlacement(expanded) {
+  const sidebarHeader = document.querySelector('.sidebar-header');
+  const leftToolbar = document.querySelector('#leftPanel > .toolbar');
+  if (expanded) {
+    sidebarHeader.appendChild(toggleSidebarBtn);
+  } else {
+    leftToolbar.prepend(toggleSidebarBtn);
+  }
 }
 
 toggleSidebarBtn.addEventListener('click', toggleSidebar);
@@ -582,6 +648,9 @@ if (sidebarHidden) {
 } else {
   toggleSidebarBtn.title = '隐藏目录';
 }
+toggleSidebarBtn.setAttribute('aria-expanded', String(!sidebarHidden));
+updateSidebarTogglePlacement(!sidebarHidden);
+reportSidebarVisibility();
 
 const modal = document.getElementById('modal');
 const modalTitle = document.getElementById('modalTitle');
@@ -599,13 +668,20 @@ const locationsList = document.getElementById('locationsList');
 const locationsClose = document.getElementById('locationsClose');
 const locationsAdd = document.getElementById('locationsAdd');
 const settingsModal = document.getElementById('settingsModal');
-const settingsClose = document.getElementById('settingsClose');
 const imageDirectoryPath = document.getElementById('imageDirectoryPath');
 const imageDirectoryMode = document.getElementById('imageDirectoryMode');
 const imageDirectoryChoose = document.getElementById('imageDirectoryChoose');
 const imageDirectoryReset = document.getElementById('imageDirectoryReset');
-const settingsDone = document.getElementById('settingsDone');
+const templateDirectoryPath = document.getElementById('templateDirectoryPath');
+const templateDirectoryMode = document.getElementById('templateDirectoryMode');
+const templateDirectoryChoose = document.getElementById('templateDirectoryChoose');
+const templateDirectoryClear = document.getElementById('templateDirectoryClear');
+const outlineToggle = document.getElementById('outlineToggle');
 const settingsError = document.getElementById('settingsError');
+const templateModal = document.getElementById('templateModal');
+const templateList = document.getElementById('templateList');
+const templateError = document.getElementById('templateError');
+const templateCancel = document.getElementById('templateCancel');
 
 let modalCallback = null;
 let confirmCallback = null;
@@ -613,6 +689,15 @@ let settingsPreviousFocus = null;
 let settingsRequestId = 0;
 let settingsBusy = false;
 let settingsIsCustom = false;
+let templateDirectoryIsSet = false;
+let outlineEnabled = localStorage.getItem('outline-enabled') !== 'false';
+
+function applyOutlineSetting() {
+  app.classList.toggle('outline-hidden', !outlineEnabled);
+  outlineToggle.setAttribute('aria-checked', String(outlineEnabled));
+}
+
+applyOutlineSetting();
 
 function showModal(title, placeholder, defaultValue, callback) {
   modalTitle.textContent = title;
@@ -650,6 +735,15 @@ function renderImageDirectorySettings(data) {
     : '';
 }
 
+function renderTemplateDirectorySettings(data) {
+  templateDirectoryIsSet = Boolean(data.path);
+  templateDirectoryPath.textContent = data.path || '未设置';
+  templateDirectoryMode.textContent = !data.path
+    ? '未设置'
+    : data.exists ? '已设置' : '目录不可用';
+  templateDirectoryClear.disabled = settingsBusy || !templateDirectoryIsSet;
+}
+
 function getSettingsErrorMessage(action, error) {
   const detail = typeof error === 'string' ? error : error?.message;
   return detail ? `${action}：${detail}` : action;
@@ -659,6 +753,8 @@ function setSettingsBusy(busy) {
   settingsBusy = busy;
   imageDirectoryChoose.disabled = busy;
   imageDirectoryReset.disabled = busy || !settingsIsCustom;
+  templateDirectoryChoose.disabled = busy;
+  templateDirectoryClear.disabled = busy || !templateDirectoryIsSet;
 }
 
 function resetImageDirectorySettings() {
@@ -666,6 +762,7 @@ function resetImageDirectorySettings() {
   imageDirectoryMode.textContent = '正在加载…';
   settingsIsCustom = false;
   imageDirectoryReset.disabled = true;
+  renderTemplateDirectorySettings({ path: '', exists: false });
 }
 
 function renderFailedImageDirectorySettings(result) {
@@ -681,17 +778,24 @@ async function showSettingsDialog() {
   settingsError.textContent = '';
   resetImageDirectorySettings();
   settingsModal.classList.add('active');
-  settingsDone.focus();
+  imageDirectoryChoose.focus();
   const requestId = ++settingsRequestId;
   setSettingsBusy(true);
   try {
-    const result = await ipcRenderer.invoke('get-image-directory');
+    const [result, templateResult] = await Promise.all([
+      ipcRenderer.invoke('get-image-directory'),
+      ipcRenderer.invoke('get-template-directory')
+    ]);
     if (requestId !== settingsRequestId) return;
     if (!result.success) {
       renderFailedImageDirectorySettings(result);
       return;
     }
     renderImageDirectorySettings(result);
+    if (templateResult.success) renderTemplateDirectorySettings(templateResult);
+    else settingsError.textContent = getSettingsErrorMessage(
+      '模板目录设置加载失败', templateResult.error
+    );
   } catch (error) {
     if (requestId !== settingsRequestId) return;
     settingsError.textContent = getSettingsErrorMessage('设置加载失败', error);
@@ -740,6 +844,13 @@ async function loadTree() {
   notesDirInfo.title = `${notesInfo.path}\n点击管理存储目录`;
   notesDirInfo.dataset.alias = notesInfo.alias;
   renderTree();
+}
+
+let treeRefreshTimer = null;
+
+function scheduleTreeRefresh() {
+  clearTimeout(treeRefreshTimer);
+  treeRefreshTimer = setTimeout(loadTree, 100);
 }
 
 let previewHiddenRight = localStorage.getItem('preview-hidden-right') !== 'false';
@@ -948,10 +1059,20 @@ function bindPreviewTaskCheckboxes(container, editorAdapter) {
 
 function renderDocumentOutline(editorAdapter, container) {
   const headings = getDocumentOutline(editorAdapter.value.split('\n'));
+  const topHeadingLevel = headings.length
+    ? Math.min(...headings.map(heading => heading.level))
+    : null;
+  const cursorLine = editorAdapter.codeMirror.getCursor().line;
+  const activeHeading = headings.findLast(heading => heading.line <= cursorLine);
   container.replaceChildren();
   const title = document.createElement('div');
   title.className = 'document-outline-title';
-  title.textContent = '大纲';
+  const titleLabel = document.createElement('span');
+  titleLabel.textContent = '大纲';
+  const titleCount = document.createElement('span');
+  titleCount.className = 'document-outline-count';
+  titleCount.textContent = String(headings.length);
+  title.append(titleLabel, titleCount);
   container.appendChild(title);
   if (!headings.length) {
     const empty = document.createElement('div');
@@ -961,12 +1082,18 @@ function renderDocumentOutline(editorAdapter, container) {
     return;
   }
   headings.forEach(heading => {
+    const outlineText = heading.text.replace(/\*/g, '').trim();
     const item = document.createElement('button');
     item.type = 'button';
     item.className = 'document-outline-item';
-    item.style.setProperty('--outline-level', heading.level - 1);
-    item.textContent = heading.text;
-    item.title = heading.text;
+    item.dataset.level = String(heading.level);
+    item.classList.toggle('top-level', heading.level === topHeadingLevel);
+    item.dataset.line = String(heading.line);
+    item.classList.toggle('active', heading === activeHeading);
+    if (heading === activeHeading) item.setAttribute('aria-current', 'location');
+    item.style.setProperty('--outline-level', heading.level - topHeadingLevel);
+    item.textContent = outlineText;
+    item.title = outlineText;
     item.addEventListener('click', () => {
       const codeMirror = editorAdapter.codeMirror;
       codeMirror.setCursor({ line: heading.line, ch: 0 });
@@ -976,6 +1103,21 @@ function renderDocumentOutline(editorAdapter, container) {
       });
     });
     container.appendChild(item);
+  });
+}
+
+function updateDocumentOutlineSelection(editorAdapter, container) {
+  const cursorLine = editorAdapter.codeMirror.getCursor().line;
+  const items = Array.from(container.querySelectorAll('.document-outline-item'));
+  let activeItem = null;
+  items.forEach(item => {
+    if (Number(item.dataset.line) <= cursorLine) activeItem = item;
+  });
+  items.forEach(item => {
+    const active = item === activeItem;
+    item.classList.toggle('active', active);
+    if (active) item.setAttribute('aria-current', 'location');
+    else item.removeAttribute('aria-current');
   });
 }
 
@@ -1313,6 +1455,8 @@ function renderEditorDecorations(editorAdapter, note) {
       codeMirror.removeLineClass(item.line, 'wrap', item.className);
     });
     editorAdapter.decorationLines = [];
+    editorAdapter.decorationWidgets.forEach(widget => widget.clear());
+    editorAdapter.decorationWidgets = [];
   });
   if (!note) {
     wrapper.style.removeProperty('--editor-cursor-height');
@@ -1349,6 +1493,34 @@ function renderEditorDecorations(editorAdapter, note) {
   function addLineStyle(lineNumber, className) {
     const line = codeMirror.addLineClass(lineNumber, 'wrap', className);
     editorAdapter.decorationLines.push({ line, className });
+  }
+
+  function createImageWidget(match) {
+    const widget = document.createElement('span');
+    widget.className = 'cm-image-widget';
+    widget.title = '选中图片';
+    const image = document.createElement('img');
+    image.alt = match[1] || '图片';
+    try {
+      image.src = getImageUrl(match[2], note);
+    } catch (err) {
+      widget.classList.add('is-broken');
+    }
+    widget.appendChild(image);
+    const linkIndicator = document.createElement('span');
+    linkIndicator.className = 'cm-image-link-indicator';
+    linkIndicator.title = '图片包含链接';
+    linkIndicator.innerHTML = '<svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"/></svg>';
+    widget.appendChild(linkIndicator);
+    widget.addEventListener('mousedown', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      wrapper.querySelectorAll('.cm-image-widget.is-selected').forEach(selected => {
+        if (selected !== widget) selected.classList.remove('is-selected');
+      });
+      widget.classList.toggle('is-selected');
+    });
+    return widget;
   }
 
   Array.from(editorAdapter.collapsedHeadings).forEach(lineHandle => {
@@ -1611,6 +1783,18 @@ function renderEditorDecorations(editorAdapter, note) {
           { className: editingClassName }
         );
       }
+      let activeImageMatch;
+      while ((activeImageMatch = imagePattern.exec(lineText)) !== null) {
+        const widget = createImageWidget(activeImageMatch);
+        widget.classList.add('is-source-visible');
+        const lineWidget = codeMirror.addLineWidget(lineNumber, widget, {
+          above: false,
+          coverGutter: false,
+          noHScroll: true
+        });
+        editorAdapter.decorationWidgets.push(lineWidget);
+      }
+      imagePattern.lastIndex = 0;
       const activeListPrefix = getRenderedListPrefix(lineText);
       if (activeListPrefix?.type === 'ordered') {
         const marker = document.createElement('span');
@@ -1649,22 +1833,7 @@ function renderEditorDecorations(editorAdapter, note) {
     let hasImage = false;
     while ((match = imagePattern.exec(lineText)) !== null) {
       hasImage = true;
-      const widget = document.createElement('span');
-      widget.className = 'cm-image-widget';
-      widget.title = '图片';
-      const image = document.createElement('img');
-      image.alt = match[1] || '图片';
-      try {
-        image.src = getImageUrl(match[2], note);
-      } catch (err) {
-        widget.classList.add('is-broken');
-      }
-      widget.appendChild(image);
-      const linkIndicator = document.createElement('span');
-      linkIndicator.className = 'cm-image-link-indicator';
-      linkIndicator.title = '图片包含链接';
-      linkIndicator.innerHTML = '<svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"/></svg>';
-      widget.appendChild(linkIndicator);
+      const widget = createImageWidget(match);
 
       const from = { line: lineNumber, ch: match.index };
       const to = { line: lineNumber, ch: match.index + match[0].length };
@@ -1672,10 +1841,6 @@ function renderEditorDecorations(editorAdapter, note) {
         replacedWith: widget,
         atomic: true,
         handleMouseEvents: true
-      });
-      widget.addEventListener('click', () => {
-        codeMirror.focus();
-        codeMirror.setCursor(to);
       });
     }
     imagePattern.lastIndex = 0;
@@ -2078,6 +2243,66 @@ function insertMarkdownCodeFence() {
   targetEditor.focus();
 }
 
+function hideTemplateDialog() {
+  templateModal.classList.remove('active');
+  templateList.replaceChildren();
+  templateError.textContent = '';
+}
+
+async function insertTemplateContent(fileName) {
+  const useRightEditor = lastActiveEditor === editorRight && currentNoteRight;
+  const targetEditor = useRightEditor ? editorRight : editor;
+  const targetNote = useRightEditor ? currentNoteRight : currentNote;
+  if (!targetNote) {
+    hideTemplateDialog();
+    showConfirm('无法插入模板', '请先选择一篇笔记', () => {});
+    return;
+  }
+
+  const result = await ipcRenderer.invoke('read-template', fileName);
+  if (!result.success) {
+    templateError.textContent = result.error || '模板读取失败';
+    return;
+  }
+  const start = targetEditor.selectionStart;
+  targetEditor.setRangeText(result.content, start, targetEditor.selectionEnd);
+  targetEditor.setCursorIndex(start + result.content.length);
+  targetEditor.focus();
+  hideTemplateDialog();
+}
+
+async function showTemplateDialog() {
+  const targetNote = lastActiveEditor === editorRight ? currentNoteRight : currentNote;
+  if (!targetNote) {
+    showConfirm('无法插入模板', '请先选择一篇笔记', () => {});
+    return;
+  }
+  templateList.replaceChildren();
+  templateError.textContent = '';
+  templateModal.classList.add('active');
+
+  const result = await ipcRenderer.invoke('get-templates');
+  if (!result.success) {
+    templateError.textContent = result.error || '模板列表加载失败，请先在设置中选择模板目录';
+    return;
+  }
+  if (!result.templates.length) {
+    const empty = document.createElement('div');
+    empty.className = 'template-empty';
+    empty.textContent = '模板目录中没有 Markdown 模板';
+    templateList.appendChild(empty);
+    return;
+  }
+  result.templates.forEach(template => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = template.name;
+    button.addEventListener('click', () => insertTemplateContent(template.file));
+    templateList.appendChild(button);
+  });
+  templateList.querySelector('button')?.focus();
+}
+
 function formatActiveMarkdown(format) {
   const useRightEditor = lastActiveEditor === editorRight && currentNoteRight;
   const targetEditor = useRightEditor ? editorRight : editor;
@@ -2329,8 +2554,6 @@ locationsModal.addEventListener('click', event => {
 });
 
 ipcRenderer.on('open-settings', showSettingsDialog);
-settingsClose.addEventListener('click', hideSettingsDialog);
-settingsDone.addEventListener('click', hideSettingsDialog);
 settingsModal.addEventListener('click', event => {
   if (event.target === settingsModal) hideSettingsDialog();
 });
@@ -2377,6 +2600,49 @@ imageDirectoryReset.addEventListener('click', async () => {
     if (requestId === settingsRequestId) setSettingsBusy(false);
   }
 });
+templateDirectoryChoose.addEventListener('click', async () => {
+  if (settingsBusy) return;
+  settingsError.textContent = '';
+  setSettingsBusy(true);
+  try {
+    const result = await ipcRenderer.invoke('select-template-directory');
+    if (!result.success) {
+      settingsError.textContent = getSettingsErrorMessage('选择模板目录失败', result.error);
+    } else if (!result.canceled) {
+      renderTemplateDirectorySettings(result);
+    }
+  } catch (error) {
+    settingsError.textContent = getSettingsErrorMessage('选择模板目录失败', error);
+  } finally {
+    setSettingsBusy(false);
+  }
+});
+templateDirectoryClear.addEventListener('click', async () => {
+  if (settingsBusy) return;
+  settingsError.textContent = '';
+  setSettingsBusy(true);
+  try {
+    const result = await ipcRenderer.invoke('clear-template-directory');
+    if (!result.success) {
+      settingsError.textContent = getSettingsErrorMessage('清除模板目录失败', result.error);
+    } else {
+      renderTemplateDirectorySettings(result);
+    }
+  } catch (error) {
+    settingsError.textContent = getSettingsErrorMessage('清除模板目录失败', error);
+  } finally {
+    setSettingsBusy(false);
+  }
+});
+outlineToggle.addEventListener('click', () => {
+  outlineEnabled = !outlineEnabled;
+  localStorage.setItem('outline-enabled', String(outlineEnabled));
+  applyOutlineSetting();
+});
+templateCancel.addEventListener('click', hideTemplateDialog);
+templateModal.addEventListener('click', event => {
+  if (event.target === templateModal) hideTemplateDialog();
+});
 document.addEventListener('keydown', event => {
   if (!settingsModal.classList.contains('active')) return;
 
@@ -2410,6 +2676,9 @@ noteTitle.addEventListener('change', async () => {
   if (currentNote) {
     await saveCurrentNote();
   }
+});
+noteTitle.addEventListener('keydown', event => {
+  if (event.key === 'Enter') noteTitle.blur();
 });
 
 notesList.addEventListener('contextmenu', (e) => {
@@ -2448,6 +2717,9 @@ ipcRenderer.on('save-note', saveCurrentNote);
 ipcRenderer.on('export-pdf', exportCurrentNoteToPdf);
 ipcRenderer.on('insert-table', insertMarkdownTable);
 ipcRenderer.on('insert-code-block', insertMarkdownCodeFence);
+ipcRenderer.on('insert-template', showTemplateDialog);
+ipcRenderer.on('notes-tree-changed', scheduleTreeRefresh);
+window.addEventListener('focus', scheduleTreeRefresh);
 ipcRenderer.on('format-markdown', (event, format) => formatActiveMarkdown(format));
 ipcRenderer.on('code-language-selected', (event, language) => {
   const pending = pendingCodeFenceCompletion;
@@ -2479,9 +2751,9 @@ ipcRenderer.on('table-context-action', (event, action) => {
   handler(action);
 });
 ipcRenderer.on('change-dir', changeNotesDir);
-ipcRenderer.on('toggle-sidebar', toggleSidebar);
-ipcRenderer.on('toggle-preview', togglePreviewLeft);
-ipcRenderer.on('toggle-theme', toggleColorTheme);
+ipcRenderer.on('set-sidebar-visibility', (event, visible) => setSidebarVisibility(visible));
+ipcRenderer.on('set-preview-visibility', (event, visible) => setPreviewVisibility(visible));
+ipcRenderer.on('set-color-theme', (event, theme) => setColorTheme(theme));
 
 ipcRenderer.on('context-menu-rename', (event, data) => {
   renameItem(data || contextMenuData);
@@ -2598,6 +2870,9 @@ noteTitleRight.addEventListener('change', async () => {
   if (currentNoteRight) {
     await saveCurrentNoteRight();
   }
+});
+noteTitleRight.addEventListener('keydown', event => {
+  if (event.key === 'Enter') noteTitleRight.blur();
 });
 
 closeRightBtn.addEventListener('click', closeRightPanel);

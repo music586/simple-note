@@ -2,14 +2,30 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { fileURLToPath } = require('url');
-const { app, BrowserWindow, ipcMain, dialog, Menu, clipboard, shell } = require('electron');
+const {
+  app,
+  BrowserWindow,
+  ipcMain,
+  dialog,
+  Menu,
+  clipboard,
+  shell,
+  screen
+} = require('electron');
 const { getImageDirectoryState } = require('./image-directory');
 
 let mainWindow;
 let aboutWindow;
 let zenMode = false;
 let readingMode = false;
+let notesDirectoryWatcher = null;
+let notesTreeRefreshTimer = null;
+let topbarHoverTimer = null;
 const readingWindowStates = new WeakMap();
+const topbarHoverStates = new WeakMap();
+const windowColorThemes = new WeakMap();
+const windowSidebarStates = new WeakMap();
+const windowPreviewStates = new WeakMap();
 const iconPath = path.join(__dirname, 'icon.png');
 
 const appName = '简记';
@@ -92,6 +108,14 @@ function getNotesDir() {
   return getConfig().notesDir;
 }
 
+function validateTemplateDirectory(directoryPath) {
+  if (!directoryPath || !fs.existsSync(directoryPath)) {
+    throw new Error('模板目录不存在或已被移动');
+  }
+  if (!fs.statSync(directoryPath).isDirectory()) throw new Error('模板路径不是文件夹');
+  fs.accessSync(directoryPath, fs.constants.R_OK | fs.constants.X_OK);
+}
+
 function getRawCurrentImageDirectoryState() {
   const config = getConfig();
   const state = getImageDirectoryState(config, getNotesDir());
@@ -136,6 +160,38 @@ function ensureNotesDir() {
   }
 }
 
+function notifyNotesTreeChanged() {
+  clearTimeout(notesTreeRefreshTimer);
+  notesTreeRefreshTimer = setTimeout(() => {
+    BrowserWindow.getAllWindows().forEach(window => {
+      if (!window.isDestroyed()) window.webContents.send('notes-tree-changed');
+    });
+  }, 150);
+}
+
+function watchNotesDirectory() {
+  if (notesDirectoryWatcher) {
+    notesDirectoryWatcher.close();
+    notesDirectoryWatcher = null;
+  }
+
+  ensureNotesDir();
+  try {
+    notesDirectoryWatcher = fs.watch(getNotesDir(), { recursive: true }, (eventType, fileName) => {
+      const pathParts = String(fileName || '').split(path.sep);
+      if (pathParts.includes('assets') || pathParts.includes('.obsidian') ||
+          pathParts.includes('.git')) return;
+      notifyNotesTreeChanged();
+    });
+    notesDirectoryWatcher.on('error', () => {
+      notesDirectoryWatcher?.close();
+      notesDirectoryWatcher = null;
+    });
+  } catch (err) {
+    notesDirectoryWatcher = null;
+  }
+}
+
 function showItemInFileManager(itemPath) {
   const notesDir = path.resolve(getNotesDir());
   const resolvedItemPath = path.resolve(itemPath || '');
@@ -164,15 +220,18 @@ function getTree(dir, basePath = '') {
   const result = [];
   if (!fs.existsSync(dir)) return result;
 
-  const items = fs.readdirSync(dir, { withFileTypes: true });
+  const items = fs.readdirSync(dir, { withFileTypes: true }).map(item => ({
+    entry: item,
+    mtimeMs: fs.statSync(path.join(dir, item.name)).mtimeMs
+  }));
   items.sort((a, b) => {
-    if (a.isDirectory() && !b.isDirectory()) return -1;
-    if (!a.isDirectory() && b.isDirectory()) return 1;
-    return a.name.localeCompare(b.name);
+    if (a.entry.isDirectory() && !b.entry.isDirectory()) return -1;
+    if (!a.entry.isDirectory() && b.entry.isDirectory()) return 1;
+    return b.mtimeMs - a.mtimeMs || a.entry.name.localeCompare(b.entry.name, 'zh-CN');
   });
 
-  for (const item of items) {
-    if (item.isDirectory() && item.name === '.obsidian') continue;
+  for (const { entry: item } of items) {
+    if (item.isDirectory() && (item.name === '.obsidian' || item.name === '.git')) continue;
     if (!basePath && item.isDirectory() && item.name === 'assets') continue;
 
     const itemPath = path.join(dir, item.name);
@@ -247,6 +306,91 @@ function sendToActiveWindow(channel, ...args) {
   }
 }
 
+function updateAppearanceMenu(theme) {
+  const menu = Menu.getApplicationMenu();
+  const lightItem = menu?.getMenuItemById('appearance-light');
+  const darkItem = menu?.getMenuItemById('appearance-dark');
+  if (lightItem) lightItem.checked = theme === 'light';
+  if (darkItem) darkItem.checked = theme === 'dark';
+}
+
+function setActiveWindowTheme(theme) {
+  updateAppearanceMenu(theme);
+  sendToActiveWindow('set-color-theme', theme);
+  setImmediate(() => updateAppearanceMenu(theme));
+}
+
+function syncActiveWindowAppearanceMenu(window) {
+  if (!window || window.isDestroyed()) return;
+  const theme = windowColorThemes.get(window);
+  if (theme) updateAppearanceMenu(theme);
+  window.webContents.send('request-color-theme');
+}
+
+function updateVisibilityMenuItems(name, visible) {
+  const menu = Menu.getApplicationMenu();
+  const collapseItem = menu?.getMenuItemById(`collapse-${name}`);
+  const expandItem = menu?.getMenuItemById(`expand-${name}`);
+  if (collapseItem) collapseItem.visible = visible;
+  if (expandItem) expandItem.visible = !visible;
+}
+
+function updateSidebarMenu(visible) {
+  updateVisibilityMenuItems('sidebar', visible);
+}
+
+function toggleActiveWindowSidebar() {
+  const activeWindow = getActiveWindow();
+  if (!activeWindow) return;
+  const nextVisible = !(windowSidebarStates.get(activeWindow) ?? true);
+  windowSidebarStates.set(activeWindow, nextVisible);
+  updateSidebarMenu(nextVisible);
+  activeWindow.webContents.send('set-sidebar-visibility', nextVisible);
+}
+
+function syncActiveWindowSidebarMenu(window) {
+  if (!window || window.isDestroyed()) return;
+  const visible = windowSidebarStates.get(window);
+  if (typeof visible === 'boolean') updateSidebarMenu(visible);
+  window.webContents.send('request-sidebar-visibility');
+}
+
+function updatePreviewMenu(visible) {
+  updateVisibilityMenuItems('preview', visible);
+}
+
+function toggleActiveWindowPreview() {
+  const activeWindow = getActiveWindow();
+  if (!activeWindow) return;
+  const nextVisible = !(windowPreviewStates.get(activeWindow) ?? false);
+  windowPreviewStates.set(activeWindow, nextVisible);
+  updatePreviewMenu(nextVisible);
+  activeWindow.webContents.send('set-preview-visibility', nextVisible);
+}
+
+function syncActiveWindowPreviewMenu(window) {
+  if (!window || window.isDestroyed()) return;
+  const visible = windowPreviewStates.get(window);
+  if (typeof visible === 'boolean') updatePreviewMenu(visible);
+  window.webContents.send('request-preview-visibility');
+}
+
+function startTopbarHoverTracking() {
+  if (topbarHoverTimer) return;
+  topbarHoverTimer = setInterval(() => {
+    const cursor = screen.getCursorScreenPoint();
+    BrowserWindow.getAllWindows().forEach(window => {
+      const bounds = window.getBounds();
+      const hovered = window.isVisible() && !window.isMinimized()
+        && cursor.x >= bounds.x && cursor.x < bounds.x + bounds.width
+        && cursor.y >= bounds.y && cursor.y < bounds.y + 42;
+      if (topbarHoverStates.get(window) === hovered) return;
+      topbarHoverStates.set(window, hovered);
+      if (!window.isDestroyed()) window.webContents.send('topbar-hover-changed', hovered);
+    });
+  }, 80);
+}
+
 function createWindow() {
   const newWindow = new BrowserWindow({
     width: 1200,
@@ -257,7 +401,7 @@ function createWindow() {
     backgroundColor: '#151821',
     ...(process.platform === 'darwin' ? {
       titleBarStyle: 'hiddenInset',
-      trafficLightPosition: { x: 18, y: 19 }
+      trafficLightPosition: { x: 18, y: 15 }
     } : {}),
     webPreferences: {
       nodeIntegration: true,
@@ -268,9 +412,19 @@ function createWindow() {
 
   mainWindow = newWindow;
   newWindow.loadFile('index.html');
+  newWindow.webContents.on('did-finish-load', () => {
+    syncActiveWindowAppearanceMenu(newWindow);
+    syncActiveWindowSidebarMenu(newWindow);
+    syncActiveWindowPreviewMenu(newWindow);
+  });
   newWindow.on('page-title-updated', event => {
     event.preventDefault();
     newWindow.setTitle(appName);
+  });
+  newWindow.on('focus', () => {
+    syncActiveWindowAppearanceMenu(newWindow);
+    syncActiveWindowSidebarMenu(newWindow);
+    syncActiveWindowPreviewMenu(newWindow);
   });
   newWindow.on('leave-full-screen', () => {
     if (zenMode) setZenMode(false, false, newWindow);
@@ -357,6 +511,11 @@ function createWindow() {
       label: '插入',
       submenu: [
         {
+          label: '模板…',
+          click: () => sendToActiveWindow('insert-template')
+        },
+        { type: 'separator' },
+        {
           label: '超链接',
           click: () => sendToActiveWindow('format-markdown', 'insert-link')
         },
@@ -422,19 +581,48 @@ function createWindow() {
       label: '视图',
       submenu: [
         {
-          label: '折叠/展开侧边栏',
+          id: 'collapse-sidebar',
+          label: '折叠侧边栏',
           accelerator: 'CmdOrCtrl+Shift+B',
-          click: () => sendToActiveWindow('toggle-sidebar')
+          click: toggleActiveWindowSidebar
         },
         {
-          label: '折叠/展开预览',
+          id: 'expand-sidebar',
+          label: '展开侧边栏',
+          accelerator: 'CmdOrCtrl+Shift+B',
+          visible: false,
+          click: toggleActiveWindowSidebar
+        },
+        {
+          id: 'collapse-preview',
+          label: '折叠预览',
           accelerator: 'CmdOrCtrl+Shift+P',
-          click: () => sendToActiveWindow('toggle-preview')
+          visible: false,
+          click: toggleActiveWindowPreview
         },
         {
-          label: '切换主题',
-          accelerator: 'CmdOrCtrl+Shift+L',
-          click: () => sendToActiveWindow('toggle-theme')
+          id: 'expand-preview',
+          label: '展开预览',
+          accelerator: 'CmdOrCtrl+Shift+P',
+          click: toggleActiveWindowPreview
+        },
+        {
+          label: '外观',
+          submenu: [
+            {
+              id: 'appearance-light',
+              type: 'checkbox',
+              label: '明亮',
+              click: () => setActiveWindowTheme('light')
+            },
+            {
+              id: 'appearance-dark',
+              type: 'checkbox',
+              label: '黑暗',
+              checked: true,
+              click: () => setActiveWindowTheme('dark')
+            }
+          ]
         },
         {
           id: 'reading-mode',
@@ -462,6 +650,7 @@ function createWindow() {
 
   const menu = Menu.buildFromTemplate(menuTemplate);
   Menu.setApplicationMenu(menu);
+  syncActiveWindowAppearanceMenu(newWindow);
 }
 
 app.whenReady().then(() => {
@@ -480,7 +669,9 @@ app.whenReady().then(() => {
   }
 
   ensureNotesDir();
+  watchNotesDirectory();
   createWindow();
+  startTopbarHoverTracking();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -495,8 +686,35 @@ app.on('window-all-closed', () => {
   }
 });
 
+app.on('before-quit', () => {
+  clearTimeout(notesTreeRefreshTimer);
+  clearInterval(topbarHoverTimer);
+  notesDirectoryWatcher?.close();
+});
+
 ipcMain.handle('get-notes-dir', async () => {
   return getNotesDir();
+});
+
+ipcMain.on('theme-changed', (event, theme) => {
+  if (theme !== 'light' && theme !== 'dark') return;
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (sourceWindow) windowColorThemes.set(sourceWindow, theme);
+  if (sourceWindow && getActiveWindow() === sourceWindow) updateAppearanceMenu(theme);
+});
+
+ipcMain.on('sidebar-visibility-changed', (event, visible) => {
+  if (typeof visible !== 'boolean') return;
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (sourceWindow) windowSidebarStates.set(sourceWindow, visible);
+  if (sourceWindow && getActiveWindow() === sourceWindow) updateSidebarMenu(visible);
+});
+
+ipcMain.on('preview-visibility-changed', (event, visible) => {
+  if (typeof visible !== 'boolean') return;
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (sourceWindow) windowPreviewStates.set(sourceWindow, visible);
+  if (sourceWindow && getActiveWindow() === sourceWindow) updatePreviewMenu(visible);
 });
 
 ipcMain.handle('get-image-directory', async () => {
@@ -509,6 +727,84 @@ ipcMain.handle('get-image-directory', async () => {
     } catch (stateErr) {
       return { success: false, error: err.message };
     }
+  }
+});
+
+ipcMain.handle('get-template-directory', async () => {
+  const templateDirectory = getConfig().templateDirectory || '';
+  return {
+    success: true,
+    path: templateDirectory,
+    exists: Boolean(templateDirectory && fs.existsSync(templateDirectory))
+  };
+});
+
+ipcMain.handle('select-template-directory', async event => {
+  try {
+    const sourceWindow = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+    const currentPath = getConfig().templateDirectory;
+    const result = await dialog.showOpenDialog(sourceWindow, {
+      title: '选择模板目录',
+      properties: ['openDirectory', 'createDirectory'],
+      ...(currentPath && fs.existsSync(currentPath) ? { defaultPath: currentPath } : {})
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: true, canceled: true };
+    }
+    const selectedPath = path.resolve(result.filePaths[0]);
+    validateTemplateDirectory(selectedPath);
+    const config = getConfig();
+    config.templateDirectory = selectedPath;
+    saveConfig(config);
+    return { success: true, canceled: false, path: selectedPath, exists: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('clear-template-directory', async () => {
+  try {
+    const config = getConfig();
+    delete config.templateDirectory;
+    saveConfig(config);
+    return { success: true, path: '', exists: false };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('get-templates', async () => {
+  try {
+    const templateDirectory = getConfig().templateDirectory;
+    validateTemplateDirectory(templateDirectory);
+    const templates = fs.readdirSync(templateDirectory, { withFileTypes: true })
+      .filter(entry => entry.isFile() && path.extname(entry.name).toLowerCase() === '.md')
+      .map(entry => ({
+        name: path.basename(entry.name, path.extname(entry.name)),
+        file: entry.name
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+    return { success: true, templates };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('read-template', async (event, fileName) => {
+  try {
+    if (typeof fileName !== 'string' || path.basename(fileName) !== fileName ||
+        path.extname(fileName).toLowerCase() !== '.md') {
+      throw new Error('模板名称无效');
+    }
+    const templateDirectory = getConfig().templateDirectory;
+    validateTemplateDirectory(templateDirectory);
+    const templatePath = path.join(templateDirectory, fileName);
+    if (!fs.existsSync(templatePath) || !fs.statSync(templatePath).isFile()) {
+      throw new Error('模板不存在或已被移动');
+    }
+    return { success: true, content: fs.readFileSync(templatePath, 'utf-8') };
+  } catch (err) {
+    return { success: false, error: err.message };
   }
 });
 
@@ -666,6 +962,7 @@ ipcMain.handle('select-notes-dir', async event => {
     }
     config.notesAlias = location.alias || '';
     saveConfig(config);
+    watchNotesDirectory();
     return result.filePaths[0];
   }
   return null;
@@ -679,6 +976,7 @@ ipcMain.handle('switch-notes-dir', async (event, locationPath) => {
   config.notesDir = location.path;
   config.notesAlias = location.alias || '';
   saveConfig(config);
+  watchNotesDirectory();
   return { success: true };
 });
 
@@ -694,6 +992,7 @@ ipcMain.handle('remove-notes-dir', async (event, locationPath) => {
     config.notesAlias = nextLocation.alias || '';
   }
   saveConfig(config);
+  watchNotesDirectory();
   return { success: true, activePath: config.notesDir };
 });
 
