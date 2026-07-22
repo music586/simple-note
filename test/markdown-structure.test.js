@@ -5,6 +5,8 @@ const {
   MARKDOWN_STRUCTURE_COMMANDS,
   filterStructureCommands,
   getRenderedListPrefix,
+  shouldRenderActiveListPrefix,
+  getActiveBulletSourceCursor,
   getHeadingSectionRange,
   getDocumentOutline,
   getFencedCodeBlocks,
@@ -19,6 +21,18 @@ const {
 test('slash menu exposes pure update and guarded-selection helpers', () => {
   assert.equal(typeof getSlashMenuUpdate, 'function');
   assert.equal(typeof getSlashCommandEdit, 'function');
+});
+
+test('active bullet markers show source while the cursor is before their trailing space', () => {
+  const bullet = getRenderedListPrefix('- item');
+
+  assert.equal(shouldRenderActiveListPrefix(bullet, 0), false);
+  assert.equal(shouldRenderActiveListPrefix(bullet, 1), false);
+  assert.equal(shouldRenderActiveListPrefix(bullet, 2), true);
+  assert.equal(shouldRenderActiveListPrefix(getRenderedListPrefix('1. item'), 1), true);
+  assert.equal(getActiveBulletSourceCursor(bullet, 0), 1);
+  assert.equal(getActiveBulletSourceCursor(bullet, 1), 1);
+  assert.equal(getActiveBulletSourceCursor(bullet, 2), 2);
 });
 
 test('document outline returns headings outside fenced code', () => {
@@ -290,18 +304,18 @@ test('Enter exits empty list and quote items but continues an empty heading', ()
   });
 });
 
-test('Tab and Shift+Tab change list indentation by two spaces', () => {
+test('Tab and Shift+Tab change list indentation by six spaces', () => {
   const context = analyzeLineContext(['- item'], { line: 0, ch: 2 });
   assert.deepEqual(getIndentEdit(context, 1), {
     from: { line: 0, ch: 0 },
     to: { line: 0, ch: 0 },
-    text: '  ',
-    cursor: { line: 0, ch: 4 }
+    text: '      ',
+    cursor: { line: 0, ch: 8 }
   });
-  const nested = analyzeLineContext(['  - item'], { line: 0, ch: 4 });
+  const nested = analyzeLineContext(['      - item'], { line: 0, ch: 8 });
   assert.deepEqual(getIndentEdit(nested, -1), {
     from: { line: 0, ch: 0 },
-    to: { line: 0, ch: 2 },
+    to: { line: 0, ch: 6 },
     text: '',
     cursor: { line: 0, ch: 2 }
   });
@@ -309,10 +323,10 @@ test('Tab and Shift+Tab change list indentation by two spaces', () => {
 });
 
 test('Backspace outdents nested items before removing top-level markers', () => {
-  const nested = getBackspaceEdit(analyzeLineContext(['  - item'], { line: 0, ch: 4 }));
+  const nested = getBackspaceEdit(analyzeLineContext(['      - item'], { line: 0, ch: 8 }));
   assert.deepEqual(nested, {
     from: { line: 0, ch: 0 },
-    to: { line: 0, ch: 2 },
+    to: { line: 0, ch: 6 },
     text: '',
     cursor: { line: 0, ch: 2 }
   });

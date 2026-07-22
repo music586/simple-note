@@ -14,6 +14,9 @@ test('ordered list editor and preview preserve the natural source position', () 
   assert.match(styles, /\.preview-content ol\s*\{[^}]*list-style-position:\s*inside/s);
   assert.match(styles, /\.preview-content ol\s*\{[^}]*line-height:\s*1\.8/s);
   assert.match(renderer, /listPrefix\.type === 'ordered'\s*\? `\$\{listPrefix\.label\} `/);
-  assert.match(renderer, /activeListPrefix\?\.type === 'ordered'/);
-  assert.match(renderer, /className = 'cm-rendered-list-marker cm-rendered-ordered'/);
+  assert.match(renderer, /activeListPrefix\.type === 'ordered'/);
+  assert.match(
+    renderer,
+    /className = `cm-rendered-list-marker cm-rendered-\$\{activeListPrefix\.type\}`/
+  );
 });

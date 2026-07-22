@@ -69,3 +69,14 @@ test('active Markdown headings apply measured cursor CSS variables', () => {
   assert.match(styles, /height: var\(--editor-cursor-height\) !important/);
   assert.match(styles, /translateY\(var\(--editor-cursor-offset\)\)/);
 });
+
+test('active Markdown headings keep their source label alongside rendered styling', () => {
+  const renderer = fs.readFileSync(path.join(projectRoot, 'renderer.js'), 'utf8');
+  const headingBranch = renderer.slice(
+    renderer.indexOf('if (activeHeading)'),
+    renderer.indexOf('if (activeQuote)')
+  );
+
+  assert.match(headingBranch, /cm-editing-heading cm-rendered-h/);
+  assert.doesNotMatch(headingBranch, /collapsed: true/);
+});

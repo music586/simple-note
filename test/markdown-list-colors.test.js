@@ -5,11 +5,20 @@ const path = require('node:path');
 
 const styles = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
 
-test('list markers use a structural color distinct from links in both themes', () => {
-  assert.match(styles, /--md-accent: #9299f7;[\s\S]*--md-list: #67c7ae;/);
-  assert.match(styles, /--md-accent: #5d64ce;[\s\S]*--md-list: #218a72;/);
-  assert.match(styles, /\.cm-rendered-list-marker\s*\{[^}]*color: var\(--md-list\)/s);
-  assert.match(styles, /\.preview-content li::marker\s*\{[^}]*color: var\(--md-list\)/s);
+test('list markers and unchecked task controls use the body color', () => {
+  assert.match(styles, /\.cm-formatting-list\s*\{[^}]*color: var\(--md-body\)/s);
+  assert.match(styles, /\.cm-variable-2,[\s\S]*?\.cm-variable-3\s*\{[^}]*var\(--md-body\)/s);
+  assert.match(styles, /\.cm-rendered-list-line \.cm-comment\s*\{[^}]*var\(--md-body\)/s);
+  assert.match(styles, /\.cm-rendered-list-marker\s*\{[^}]*color: var\(--md-body\)/s);
+  assert.match(styles, /\.preview-content li::marker\s*\{[^}]*color: var\(--md-body\)/s);
+  assert.match(styles, /\.cm-rendered-checkbox\s*\{[^}]*border-color: var\(--md-body\)/s);
+});
+
+test('checked task controls use the dedicated completion color', () => {
+  assert.match(styles, /--md-task-checked: #67c7ae;/);
+  assert.match(styles, /--md-task-checked: #218a72;/);
+  assert.match(styles, /\.cm-rendered-checkbox\.is-checked\s*\{[^}]*var\(--md-task-checked\)/s);
+  assert.match(styles, /accent-color: var\(--md-task-checked\)/);
 });
 
 test('links keep their interaction color and visible underline treatment', () => {
@@ -18,7 +27,8 @@ test('links keep their interaction color and visible underline treatment', () =>
   assert.match(styles, /\.preview-content a:hover\s*\{[^}]*var\(--md-accent\)/s);
 });
 
-test('task completion uses the list color instead of the link color', () => {
-  assert.match(styles, /\.cm-rendered-checkbox\.is-checked\s*\{[^}]*var\(--md-list\)/s);
-  assert.match(styles, /accent-color: var\(--md-list\)/);
+test('syntax uses the muted color and code uses the accent color', () => {
+  assert.match(styles, /\.cm-formatting[^}]*color: var\(--md-muted\)/s);
+  assert.match(styles, /\.cm-inline-code\s*\{[^}]*color: var\(--md-accent\)/s);
+  assert.doesNotMatch(styles, /--md-(?:list|syntax|code):/);
 });

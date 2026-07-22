@@ -25,9 +25,19 @@ const { getTaskCheckboxEdit } = require('./preview-task');
 const { getMarkdownFormatEdit } = require('./markdown-format');
 const { normalizePreviewMarkdown } = require('./preview-markdown');
 const {
+  normalizeClipboardText,
+  joinClipboardTextAndImages,
+  removeGeneratedBoundaryNewlines,
+  shouldConvertClipboardHtml,
+  applyClipboardMarkdownMarks,
+  optimizeClipboardPlainText
+} = require('./clipboard-format');
+const {
   filterStructureCommands,
   analyzeLineContext,
   getRenderedListPrefix,
+  shouldRenderActiveListPrefix,
+  getActiveBulletSourceCursor,
   getHeadingSectionRange,
   getDocumentOutline,
   getFencedCodeBlocks,
@@ -364,8 +374,10 @@ function createCodeEditor(textarea) {
   const codeMirror = CodeMirror.fromTextArea(textarea, {
     mode: 'markdown',
     lineWrapping: true,
-    indentUnit: 2,
-    tabSize: 2,
+    // The active source line uses the proportional Chinese reading font, where
+    // six half-width spaces are approximately as wide as two Chinese glyphs.
+    indentUnit: 6,
+    tabSize: 6,
     viewportMargin: 20,
     extraKeys: {
       'Cmd-A': 'selectAll',
@@ -1523,6 +1535,25 @@ function renderEditorDecorations(editorAdapter, note) {
     return widget;
   }
 
+  function createTaskCheckbox(listPrefix, lineNumber) {
+    const checkbox = document.createElement('span');
+    checkbox.className = 'cm-rendered-checkbox';
+    checkbox.classList.toggle('is-checked', listPrefix.checked);
+    checkbox.setAttribute('role', 'checkbox');
+    checkbox.setAttribute('aria-checked', String(listPrefix.checked));
+    checkbox.setAttribute('aria-label', listPrefix.checked ? '标记为未完成' : '标记为已完成');
+    checkbox.title = listPrefix.checked ? '标记为未完成' : '标记为已完成';
+    checkbox.addEventListener('mousedown', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const from = { line: lineNumber, ch: listPrefix.toggleCh };
+      const to = { line: lineNumber, ch: listPrefix.toggleCh + 1 };
+      codeMirror.replaceRange(listPrefix.checked ? ' ' : 'x', from, to, 'task-toggle');
+      codeMirror.focus();
+    });
+    return checkbox;
+  }
+
   Array.from(editorAdapter.collapsedHeadings).forEach(lineHandle => {
     const headingLine = codeMirror.getLineNumber(lineHandle);
     if (headingLine === null) {
@@ -1765,7 +1796,7 @@ function renderEditorDecorations(editorAdapter, note) {
     }
     if (lineNumber === activeLine) {
       const activeHeading = lineText.match(/^(#{1,6})\s+/);
-      const activeQuote = lineText.match(/^\s*>\s?/);
+      const activeQuote = lineText.match(/^\s*>\s+/);
       let editingClassName = 'cm-editing-source-line';
       if (activeHeading) {
         addLineStyle(lineNumber, 'cm-rendered-heading-line');
@@ -1775,6 +1806,11 @@ function renderEditorDecorations(editorAdapter, note) {
       if (activeQuote) {
         addLineStyle(lineNumber, 'cm-rendered-quote-line');
         editingClassName += ' cm-editing-quote';
+        addMark(
+          { line: lineNumber, ch: 0 },
+          { line: lineNumber, ch: activeQuote[0].length },
+          { collapsed: true }
+        );
       }
       if (lineText && !inCodeFence && !fenceLine) {
         addMark(
@@ -1796,10 +1832,32 @@ function renderEditorDecorations(editorAdapter, note) {
       }
       imagePattern.lastIndex = 0;
       const activeListPrefix = getRenderedListPrefix(lineText);
-      if (activeListPrefix?.type === 'ordered') {
+      const activeCursor = codeMirror.getCursor();
+      const activeListCursorCh = getActiveBulletSourceCursor(
+        activeListPrefix,
+        activeCursor.ch
+      );
+      if (activeListCursorCh !== activeCursor.ch) {
+        codeMirror.setCursor({ line: activeCursor.line, ch: activeListCursorCh });
+      }
+      const renderActiveListPrefix = shouldRenderActiveListPrefix(
+        activeListPrefix,
+        activeListCursorCh
+      );
+      if (activeListPrefix) addLineStyle(lineNumber, 'cm-rendered-list-line');
+      if (renderActiveListPrefix && activeListPrefix.type === 'task') {
+        const checkbox = createTaskCheckbox(activeListPrefix, lineNumber);
+        addMark(
+          { line: lineNumber, ch: activeListPrefix.fromCh },
+          { line: lineNumber, ch: activeListPrefix.toCh },
+          { replacedWith: checkbox, atomic: true, handleMouseEvents: true }
+        );
+      } else if (renderActiveListPrefix) {
         const marker = document.createElement('span');
-        marker.className = 'cm-rendered-list-marker cm-rendered-ordered';
-        marker.textContent = `${activeListPrefix.label} `;
+        marker.className = `cm-rendered-list-marker cm-rendered-${activeListPrefix.type}`;
+        marker.textContent = activeListPrefix.type === 'ordered'
+          ? `${activeListPrefix.label} `
+          : activeListPrefix.label;
         addMark(
           { line: lineNumber, ch: activeListPrefix.fromCh },
           { line: lineNumber, ch: activeListPrefix.toCh },
@@ -1897,22 +1955,9 @@ function renderEditorDecorations(editorAdapter, note) {
     }
 
     const listPrefix = getRenderedListPrefix(lineText);
+    if (listPrefix) addLineStyle(lineNumber, 'cm-rendered-list-line');
     if (listPrefix?.type === 'task') {
-      const checkbox = document.createElement('span');
-      checkbox.className = 'cm-rendered-checkbox';
-      checkbox.classList.toggle('is-checked', listPrefix.checked);
-      checkbox.setAttribute('role', 'checkbox');
-      checkbox.setAttribute('aria-checked', String(listPrefix.checked));
-      checkbox.setAttribute('aria-label', listPrefix.checked ? '标记为未完成' : '标记为已完成');
-      checkbox.title = listPrefix.checked ? '标记为未完成' : '标记为已完成';
-      checkbox.addEventListener('mousedown', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        const from = { line: lineNumber, ch: listPrefix.toggleCh };
-        const to = { line: lineNumber, ch: listPrefix.toggleCh + 1 };
-        codeMirror.replaceRange(listPrefix.checked ? ' ' : 'x', from, to, 'task-toggle');
-        codeMirror.focus();
-      });
+      const checkbox = createTaskCheckbox(listPrefix, lineNumber);
       addMark(
         { line: lineNumber, ch: listPrefix.fromCh },
         { line: lineNumber, ch: listPrefix.toCh },
@@ -1992,12 +2037,13 @@ function renderEditorDecorations(editorAdapter, note) {
 }
 
 function createFencedCodeBlock(code, language = '') {
-  const normalizedCode = String(code || '').replace(/\r/g, '').replace(/\n$/, '');
+  const normalizedCode = normalizeClipboardText(code);
   const backtickRuns = normalizedCode.match(/`+/g) || [];
   const fenceLength = Math.max(3, ...backtickRuns.map(run => run.length + 1));
   const fence = '`'.repeat(fenceLength);
   const safeLanguage = String(language || '').replace(/[^\w+-]/g, '');
-  return `\n${fence}${safeLanguage}\n${normalizedCode}\n${fence}\n`;
+  const closingBreak = normalizedCode.endsWith('\n') ? '' : '\n';
+  return `\n${fence}${safeLanguage}\n${normalizedCode}${closingBreak}${fence}\n`;
 }
 
 function getClipboardEditorCode(event, html, text) {
@@ -2065,7 +2111,7 @@ function clipboardHtmlToMarkdown(html, relativePaths) {
     if (tag === 'table') {
       const rows = Array.from(node.querySelectorAll('tr')).map(row => {
         return Array.from(row.querySelectorAll(':scope > th, :scope > td')).map(cell => {
-          return (cell.textContent || '').replace(/\s+/g, ' ').trim();
+          return normalizeClipboardText(cell.textContent || '').replace(/\n/g, '<br>');
         });
       }).filter(row => row.length > 0);
       if (!rows.length) return '';
@@ -2076,9 +2122,12 @@ function clipboardHtmlToMarkdown(html, relativePaths) {
       return `\n${serializeMarkdownTable(normalizedRows, Array(columnCount).fill('left'))}\n`;
     }
     const content = Array.from(node.childNodes).map(convert).join('');
-    if (/^h[1-6]$/.test(tag)) return `\n${'#'.repeat(Number(tag[1]))} ${content.trim()}\n`;
-    if (tag === 'li') return content.trim() ? `\n- ${content.trim()}` : '';
-    if (['p', 'div', 'section', 'article', 'ul', 'ol'].includes(tag)) return `\n${content.trim()}\n`;
+    if (/^h[1-6]$/.test(tag)) return `\n${'#'.repeat(Number(tag[1]))} ${content}\n`;
+    if (tag === 'li') return content.trim() ? `\n- ${content}` : '';
+    if (tag === 'blockquote') {
+      return `\n${content.split('\n').map(line => `> ${line}`).join('\n')}\n`;
+    }
+    if (['p', 'div', 'section', 'article', 'ul', 'ol'].includes(tag)) return `\n${content}\n`;
     if (tag === 'strong' || tag === 'b') return `**${content}**`;
     if (tag === 'em' || tag === 'i') return `*${content}*`;
     if (tag === 'code') {
@@ -2089,14 +2138,45 @@ function clipboardHtmlToMarkdown(html, relativePaths) {
     return content;
   }
 
-  return convert(documentNode.body).replace(/\n{3,}/g, '\n\n').trim();
+  return removeGeneratedBoundaryNewlines(convert(documentNode.body));
+}
+
+function clipboardHtmlToFormattedText(html, text) {
+  const normalizedText = normalizeClipboardText(text);
+  if (!html || !normalizedText) return normalizedText;
+  const documentNode = new DOMParser().parseFromString(html, 'text/html');
+  const marks = [];
+  let searchFrom = 0;
+  const formats = [
+    { selector: 'strong, b', open: '**', close: '**' },
+    { selector: 'em, i', open: '*', close: '*' }
+  ];
+
+  formats.forEach(format => {
+    documentNode.querySelectorAll(format.selector).forEach(node => {
+      const content = normalizeClipboardText(node.textContent || '');
+      if (!content) return;
+      let start = normalizedText.indexOf(content, searchFrom);
+      if (start < 0) start = normalizedText.indexOf(content);
+      if (start < 0) return;
+      marks.push({
+        start,
+        end: start + content.length,
+        open: format.open,
+        close: format.close
+      });
+      searchFrom = start + content.length;
+    });
+  });
+
+  return applyClipboardMarkdownMarks(normalizedText, marks);
 }
 
 function clipboardTextTableToMarkdown(text) {
-  const lines = String(text || '').replace(/\r/g, '').split('\n');
+  const lines = normalizeClipboardText(text).split('\n');
   while (lines.length && !lines[lines.length - 1]) lines.pop();
   if (!lines.length || !lines.some(line => line.includes('\t'))) return '';
-  const rows = lines.map(line => line.split('\t').map(cell => cell.trim()));
+  const rows = lines.map(line => line.split('\t'));
   const columnCount = Math.max(...rows.map(row => row.length));
   if (columnCount < 2) return '';
   const normalizedRows = rows.map(row => {
@@ -2128,16 +2208,21 @@ async function pasteImages(event, editorElement, getCurrentNote) {
       return `![图片](${relativePath})`;
     }).join('\n\n');
     const htmlContent = clipboardHtmlToMarkdown(result.html, result.relativePaths);
-    const text = (result.text || clipboardText).trim();
-    const clipboardContent = htmlContent || (text ? `${text}\n\n${imageMarkdown}` : imageMarkdown);
+    const text = normalizeClipboardText(result.text || clipboardText);
+    const clipboardContent = htmlContent
+      || joinClipboardTextAndImages(text, imageMarkdown);
     pastedContent = `${needsLeadingBreak ? '\n' : ''}${clipboardContent}${needsTrailingBreak ? '\n' : ''}`;
   } else {
     const htmlSource = clipboardHtml || result.html || '';
-    const text = result.text || clipboardText;
+    const text = normalizeClipboardText(result.text || clipboardText);
     const editorCode = getClipboardEditorCode(event, htmlSource, text);
     const htmlBlock = /<(?:table|pre)[\s>]/i.test(htmlSource)
       ? clipboardHtmlToMarkdown(htmlSource, [])
       : '';
+    const formattedText = shouldConvertClipboardHtml(htmlSource)
+      ? clipboardHtmlToFormattedText(htmlSource, text)
+      : text;
+    const optimizedText = optimizeClipboardPlainText(formattedText);
     const textTable = clipboardTextTableToMarkdown(text);
     const structuredContent = htmlBlock || editorCode || textTable;
     if (structuredContent) {
@@ -2147,7 +2232,7 @@ async function pasteImages(event, editorElement, getCurrentNote) {
       pastedContent = `${needsLeadingBreak ? '\n\n' : ''}${structuredContent}`
         + `${needsTrailingBreak ? '\n\n' : ''}`;
     } else {
-      pastedContent = text;
+      pastedContent = optimizedText;
     }
   }
   editorElement.setRangeText(pastedContent, start, end, 'end');

@@ -828,7 +828,7 @@ body {
 .slash-command-empty { padding: 18px 10px; text-align: center; }
 .slash-command-option {
   display: grid;
-  grid-template-columns: 38px 1fr auto;
+  grid-template-columns: 58px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   width: 100%;
@@ -838,6 +838,9 @@ body {
   color: var(--text-primary);
   background: transparent;
   text-align: left;
+}
+.slash-command-option > span {
+  white-space: nowrap;
 }
 .slash-command-option[aria-selected='true'] {
   color: var(--slash-command-selected-text);
@@ -909,6 +912,11 @@ body {
 .preview-content ul {
   padding-left: 2em;
   margin-bottom: 16px;
+}
+
+.preview-content li > ul,
+.preview-content li > ol {
+  padding-left: 1.2em;
 }
 
 .preview-content ol {
@@ -2859,10 +2867,8 @@ textarea,
   --md-body: #cbd0db;
   --md-heading: #f2f3f7;
   --md-muted: #7e879a;
-  --md-syntax: #687185;
   --md-accent: #9299f7;
-  --md-list: #67c7ae;
-  --md-code: #c6b8e8;
+  --md-task-checked: #67c7ae;
   --md-code-bg: #1a1e29;
   --md-quote-bg: rgba(126, 135, 154, 0.07);
   --md-selection: rgba(124, 132, 240, 0.24);
@@ -2873,10 +2879,8 @@ textarea,
   --md-body: #424858;
   --md-heading: #222633;
   --md-muted: #7b8292;
-  --md-syntax: #969dad;
   --md-accent: #5d64ce;
-  --md-list: #218a72;
-  --md-code: #685b8d;
+  --md-task-checked: #218a72;
   --md-code-bg: #e9eaf1;
   --md-quote-bg: rgba(70, 77, 98, 0.045);
   --md-selection: rgba(98, 104, 217, 0.18);
@@ -2889,9 +2893,24 @@ textarea,
 
 .editor-pane > .CodeMirror .cm-formatting,
 .editor-pane > .CodeMirror .cm-formatting-header,
-.editor-pane > .CodeMirror .cm-formatting-list,
 .editor-pane > .CodeMirror .cm-formatting-quote {
-  color: var(--md-syntax);
+  color: var(--md-muted);
+}
+
+.editor-pane > .CodeMirror .cm-formatting-list {
+  color: var(--md-body);
+}
+
+.editor-pane > .CodeMirror .cm-variable-2,
+.editor-pane > .CodeMirror .cm-variable-3 {
+  color: var(--md-body);
+}
+
+.editor-pane > .CodeMirror .cm-rendered-list-line .cm-variable-2,
+.editor-pane > .CodeMirror .cm-rendered-list-line .cm-variable-3,
+.editor-pane > .CodeMirror .cm-rendered-list-line .cm-keyword,
+.editor-pane > .CodeMirror .cm-rendered-list-line .cm-comment {
+  color: var(--md-body);
 }
 
 .editor-pane > .CodeMirror .cm-header {
@@ -2919,7 +2938,7 @@ textarea,
 
 .editor-pane > .CodeMirror .cm-comment.cm-code,
 .editor-pane > .CodeMirror .cm-inline-code {
-  color: var(--md-code);
+  color: var(--md-accent);
 }
 
 .CodeMirror-cursor {
@@ -2950,7 +2969,7 @@ textarea,
 }
 
 .cm-rendered-list-marker {
-  color: var(--md-list);
+  color: var(--md-body);
   font-weight: 600;
 }
 
@@ -2961,7 +2980,7 @@ textarea,
 .cm-rendered-code,
 .cm-rendered-code-block {
   background: var(--md-code-bg);
-  color: var(--md-code);
+  color: var(--md-accent);
 }
 
 .cm-rendered-code-line {
@@ -2983,12 +3002,12 @@ textarea,
 }
 
 .cm-rendered-checkbox {
-  border-color: var(--md-muted);
+  border-color: var(--md-body);
 }
 
 .cm-rendered-checkbox.is-checked {
-  border-color: var(--md-list);
-  background: var(--md-list);
+  border-color: var(--md-task-checked);
+  background: var(--md-task-checked);
 }
 
 .cm-table-widget {
@@ -3254,7 +3273,7 @@ textarea,
 }
 
 .preview-content li::marker {
-  color: var(--md-list);
+  color: var(--md-body);
   font-weight: 600;
 }
 
@@ -3267,12 +3286,12 @@ textarea,
 }
 
 .preview-content li > input[type='checkbox'] {
-  accent-color: var(--md-list);
+  accent-color: var(--md-task-checked);
 }
 
 .preview-content code,
 .preview-content pre {
-  color: var(--md-code);
+  color: var(--md-accent);
 }
 
 /* Book-like reading measure and print typography */
@@ -3407,7 +3426,7 @@ textarea,
     --md-body: #30343b;
     --md-heading: #17191d;
     --md-muted: #666d78;
-    --md-code: #343946;
+    --md-accent: #343946;
     --md-code-bg: #f1f2f4;
   }
 

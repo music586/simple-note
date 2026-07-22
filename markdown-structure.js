@@ -79,6 +79,18 @@ function getRenderedListPrefix(lineText) {
   };
 }
 
+function shouldRenderActiveListPrefix(listPrefix, cursorCh) {
+  if (!listPrefix) return false;
+  if (listPrefix.type !== 'bullet') return true;
+  return cursorCh >= listPrefix.toCh;
+}
+
+function getActiveBulletSourceCursor(listPrefix, cursorCh) {
+  if (!listPrefix || listPrefix.type !== 'bullet') return cursorCh;
+  if (cursorCh > listPrefix.fromCh) return cursorCh;
+  return listPrefix.fromCh + 1;
+}
+
 function getFencedCodeBlocks(lines) {
   const blocks = [];
   let openBlock = null;
@@ -257,17 +269,17 @@ function getEnterEdit(context) {
 
 function getIndentEdit(context, direction) {
   if (context.inFence || !['bullet', 'ordered', 'task'].includes(context.type)) return null;
-  if (direction > 0) return createEdit(context, 0, 0, '  ', context.line, context.ch + 2);
-  if (!context.indent.startsWith('  ')) return null;
-  return createEdit(context, 0, 2, '', context.line, Math.max(0, context.ch - 2));
+  if (direction > 0) return createEdit(context, 0, 0, '      ', context.line, context.ch + 6);
+  if (!context.indent.startsWith('      ')) return null;
+  return createEdit(context, 0, 6, '', context.line, Math.max(0, context.ch - 6));
 }
 
 function getBackspaceEdit(context) {
   if (context.inFence || context.ch !== context.contentStart) return null;
   if (!['heading', 'bullet', 'ordered', 'task', 'quote'].includes(context.type)) return null;
   const isList = ['bullet', 'ordered', 'task'].includes(context.type);
-  if (isList && context.indent.startsWith('  ')) {
-    return createEdit(context, 0, 2, '', context.line, context.ch - 2);
+  if (isList && context.indent.startsWith('      ')) {
+    return createEdit(context, 0, 6, '', context.line, context.ch - 6);
   }
   if (isList && context.indent) return null;
   return createEdit(context, 0, context.contentStart, '', context.line, 0);
@@ -322,6 +334,8 @@ module.exports = {
   MARKDOWN_STRUCTURE_COMMANDS,
   filterStructureCommands,
   getRenderedListPrefix,
+  shouldRenderActiveListPrefix,
+  getActiveBulletSourceCursor,
   getHeadingSectionRange,
   getDocumentOutline,
   getFencedCodeBlocks,
