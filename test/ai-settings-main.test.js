@@ -16,6 +16,8 @@ test('main process persists DeepSeek API Key through validated IPC handlers', ()
   assert.match(main, /config\.deepseekApiKey = normalizedApiKey/);
   assert.match(main, /delete config\.deepseekApiKey/);
   assert.match(main, /config\.deepseekLayoutPrompt = normalizedLayoutPrompt/);
+  assert.match(main, /ipcMain\.handle\('set-ai-stamp-position'/);
+  assert.match(main, /config\.aiStampPosition = stampPosition/);
   assert.doesNotMatch(main, /console\.(?:log|info|debug)\([^)]*deepseekApiKey/);
 });
 

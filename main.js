@@ -107,6 +107,32 @@ function saveConfig(config) {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
 }
 
+function getAiOptimizedNotePaths(config) {
+  return Array.isArray(config.aiOptimizedNotes)
+    ? config.aiOptimizedNotes.filter(notePath => typeof notePath === 'string')
+    : [];
+}
+
+function migrateAiOptimizedNotePaths(sourcePath, destinationPath = null) {
+  const config = getConfig();
+  const source = path.resolve(sourcePath);
+  const destination = destinationPath ? path.resolve(destinationPath) : null;
+  const sourcePrefix = source + path.sep;
+  const previousPaths = getAiOptimizedNotePaths(config);
+  const nextPaths = previousPaths.flatMap(notePath => {
+    const resolvedPath = path.resolve(notePath);
+    if (resolvedPath !== source && !resolvedPath.startsWith(sourcePrefix)) {
+      return [resolvedPath];
+    }
+    if (!destination) return [];
+    return [path.join(destination, path.relative(source, resolvedPath))];
+  });
+  const uniquePaths = [...new Set(nextPaths)];
+  if (JSON.stringify(previousPaths) === JSON.stringify(uniquePaths)) return;
+  config.aiOptimizedNotes = uniquePaths;
+  saveConfig(config);
+}
+
 function requestDeepSeekLayout(apiKey, prompt, content) {
   const requestBody = JSON.stringify({
     model: 'deepseek-v4-flash',
@@ -950,11 +976,16 @@ ipcMain.handle('get-ai-settings', async () => {
       && config.deepseekLayoutPrompt.trim()
       ? config.deepseekLayoutPrompt
       : defaultDeepseekLayoutPrompt;
+    const stampPosition = ['hidden', 'top-right', 'bottom-right', 'corner-ribbon']
+      .includes(config.aiStampPosition)
+      ? config.aiStampPosition
+      : 'top-right';
     return {
       success: true,
       provider: 'deepseek',
       apiKey: typeof apiKey === 'string' ? apiKey : '',
-      layoutPrompt
+      layoutPrompt,
+      stampPosition
     };
   } catch (err) {
     return { success: false, error: err.message };
@@ -992,6 +1023,20 @@ ipcMain.handle('set-ai-settings', async (event, settings) => {
   }
 });
 
+ipcMain.handle('set-ai-stamp-position', async (event, stampPosition) => {
+  try {
+    if (!['hidden', 'top-right', 'bottom-right', 'corner-ribbon'].includes(stampPosition)) {
+      throw new Error('AI 印章位置无效');
+    }
+    const config = getConfig();
+    config.aiStampPosition = stampPosition;
+    saveConfig(config);
+    return { success: true, stampPosition };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 ipcMain.handle('deepseek-optimize-layout', async (event, content) => {
   try {
     if (typeof content !== 'string' || !content.trim()) {
@@ -1008,6 +1053,37 @@ ipcMain.handle('deepseek-optimize-layout', async (event, content) => {
       : defaultDeepseekLayoutPrompt;
     const optimizedContent = await requestDeepSeekLayout(apiKey, layoutPrompt, content);
     return { success: true, content: optimizedContent };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('get-ai-optimized-state', async (event, notePath) => {
+  try {
+    if (typeof notePath !== 'string' || !notePath) throw new Error('笔记路径无效');
+    const resolvedPath = path.resolve(notePath);
+    const optimized = getAiOptimizedNotePaths(getConfig())
+      .some(storedPath => path.resolve(storedPath) === resolvedPath);
+    return { success: true, optimized };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('set-ai-optimized-state', async (event, { notePath, optimized }) => {
+  try {
+    if (typeof notePath !== 'string' || !notePath || typeof optimized !== 'boolean') {
+      throw new Error('AI 排版状态无效');
+    }
+    const config = getConfig();
+    const resolvedPath = path.resolve(notePath);
+    const paths = getAiOptimizedNotePaths(config)
+      .map(storedPath => path.resolve(storedPath))
+      .filter(storedPath => storedPath !== resolvedPath);
+    if (optimized) paths.push(resolvedPath);
+    config.aiOptimizedNotes = [...new Set(paths)];
+    saveConfig(config);
+    return { success: true, optimized };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -1292,6 +1368,7 @@ ipcMain.handle('delete-note', async (event, notePath) => {
   if (fs.existsSync(notePath)) {
     fs.unlinkSync(notePath);
   }
+  migrateAiOptimizedNotePaths(notePath);
   return true;
 });
 
@@ -1299,6 +1376,7 @@ ipcMain.handle('delete-folder', async (event, folderPath) => {
   if (fs.existsSync(folderPath)) {
     fs.rmSync(folderPath, { recursive: true, force: true });
   }
+  migrateAiOptimizedNotePaths(folderPath);
   return true;
 });
 
@@ -1308,6 +1386,7 @@ ipcMain.handle('rename-note', async (event, { oldPath, newName }) => {
   if (fs.existsSync(oldPath)) {
     fs.renameSync(oldPath, newPath);
   }
+  migrateAiOptimizedNotePaths(oldPath, newPath);
   return { name: newName, path: newPath, mtime: fs.statSync(newPath).mtime };
 });
 
@@ -1317,6 +1396,7 @@ ipcMain.handle('rename-folder', async (event, { oldPath, newName }) => {
   if (fs.existsSync(oldPath)) {
     fs.renameSync(oldPath, newPath);
   }
+  migrateAiOptimizedNotePaths(oldPath, newPath);
   return { name: newName, path: newPath };
 });
 
@@ -1346,6 +1426,7 @@ ipcMain.handle('move-item', async (event, { sourcePath, targetPath, type }) => {
   
   try {
     fs.renameSync(sourcePath, newPath);
+    migrateAiOptimizedNotePaths(sourcePath, newPath);
     return { success: true, newPath };
   } catch (err) {
     return { success: false, error: err.message };

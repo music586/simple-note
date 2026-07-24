@@ -33,8 +33,37 @@ test('settings dialog groups directory controls into responsive setting cards', 
   assert.equal((html.match(/class="settings-card"/g) || []).length, 3);
   assert.match(html, /class="settings-kicker">简记偏好/);
   assert.match(styles, /\.settings-modal-content::before\s*\{/);
+  assert.match(styles, /\.settings-modal-content\s*\{[^}]*height: fit-content;/s);
+  assert.match(styles, /\.settings-modal-body\s*\{[^}]*flex: 0 1 auto;/s);
+  assert.match(styles, /\.settings-error:empty\s*\{[^}]*display: none;/s);
+  assert.match(
+    styles,
+    /#settingsModal\s*\{[^}]*align-items: flex-start;[^}]*padding-top:/s
+  );
   assert.match(styles, /@media \(max-width: 560px\)/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
+});
+
+test('settings dialog separates preferences into three accessible tabs', () => {
+  assert.match(html, /id="settingsTabBasic"[\s\S]*role="tab"[\s\S]*>基本设置<\/button>/);
+  assert.match(html, /id="settingsTabAi"[\s\S]*role="tab"[\s\S]*>AI 设置<\/button>/);
+  assert.match(html, /id="settingsTabFeatures"[\s\S]*role="tab"[\s\S]*>功能开关<\/button>/);
+  assert.match(html, /id="settingsPanelBasic"[^>]*role="tabpanel"/);
+  assert.match(html, /id="settingsPanelAi"[^>]*role="tabpanel"[^>]*hidden/);
+  assert.match(html, /id="settingsPanelFeatures"[^>]*role="tabpanel"[^>]*hidden/);
+  assert.match(renderer, /function activateSettingsTab\(tab, shouldFocus = false\)/);
+  assert.match(
+    renderer,
+    /settingsTabList\.style\.setProperty\('--settings-tab-index', settingsTabs\.indexOf\(tab\)\)/
+  );
+  assert.match(renderer, /\['ArrowLeft', 'ArrowRight', 'Home', 'End'\]/);
+  assert.match(styles, /\.settings-tabs\s*\{[^}]*grid-template-columns: repeat\(3,/s);
+  assert.match(styles, /\.settings-tabs\s*\{[^}]*border-radius: 999px;/s);
+  assert.match(styles, /\.settings-tabs::before\s*\{[^}]*background: var\(--accent-color\);/s);
+  assert.match(styles, /transition: transform 0\.32s cubic-bezier/);
+  assert.match(styles, /@keyframes settings-panel-enter/);
+  assert.doesNotMatch(styles, /\.settings-tab\.active::after\s*\{/);
+  assert.match(styles, /\.settings-tab-panel\[hidden\]\s*\{[^}]*display: none;/s);
 });
 
 test('settings dialog supports local DeepSeek API Key configuration', () => {
@@ -48,6 +77,39 @@ test('settings dialog supports local DeepSeek API Key configuration', () => {
   assert.match(renderer, /ipcRenderer\.invoke\('set-ai-settings'/);
   assert.match(styles, /\.settings-api-key-input\s*\{/);
   assert.match(styles, /\.settings-prompt-input\s*\{/);
+  assert.match(html, /name="aiStampPosition" value="hidden"/);
+  assert.match(html, /name="aiStampPosition" value="top-right"/);
+  assert.match(html, /name="aiStampPosition" value="bottom-right"/);
+  assert.match(html, /name="aiStampPosition" value="corner-ribbon"/);
+  assert.match(html, />右上飘带<\/span>/);
+  assert.match(renderer, /function applyAiStampPosition\(position\)/);
+  assert.match(renderer, /ipcRenderer\.invoke\('set-ai-stamp-position', input\.value\)/);
+  assert.doesNotMatch(
+    renderer,
+    /ipcRenderer\.invoke\('set-ai-settings',[\s\S]{0,180}stampPosition/
+  );
+  assert.match(styles, /\.settings-stamp-section\s*\{[^}]*border-top:/s);
+  assert.match(styles, /\.settings-segmented\s*\{/);
+  assert.match(styles, /\.settings-segmented\s*\{[^}]*border-radius: 999px;/s);
+  assert.match(
+    styles,
+    /\.settings-segmented::before\s*\{[^}]*background: var\(--accent-color\);/s
+  );
+  assert.match(styles, /\.settings-segmented label\s*\{[^}]*position: relative;/s);
+  assert.match(
+    styles,
+    /\.settings-segmented input\s*\{[^}]*inset: 0;[^}]*width: 100%;[^}]*height: 100%;/s
+  );
+  assert.match(
+    renderer,
+    /aiStampPositionInputs\.forEach\(input => \{\s*input\.disabled = busy;/
+  );
+  assert.match(renderer, /--stamp-mobile-column', selectedIndex % 2/);
+  assert.match(renderer, /--stamp-mobile-row',\s*Math\.floor\(selectedIndex \/ 2\)/);
+  assert.match(
+    styles,
+    /\.settings-segmented::before\s*\{[^}]*transition: transform 0\.32s cubic-bezier/s
+  );
   assert.match(styles, /\.settings-modal-body\s*\{[^}]*overflow-y: auto;/s);
 });
 
@@ -91,7 +153,7 @@ test('settings dialog handles rejected IPC with visible Chinese errors', () => {
 
 test('settings dialog owns keyboard focus while open', () => {
   assert.match(renderer, /settingsPreviousFocus = document\.activeElement/);
-  assert.match(renderer, /imageDirectoryChoose\.focus\(\)/);
+  assert.match(renderer, /settingsTabs\[0\]\.focus\(\)/);
   assert.match(renderer, /settingsModal\.querySelectorAll\(/);
   assert.match(renderer, /event\.stopImmediatePropagation\(\)/);
   assert.match(renderer, /document\.addEventListener\('keydown',[\s\S]*true\);/);

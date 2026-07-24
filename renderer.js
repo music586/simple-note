@@ -141,6 +141,17 @@ const editorFindClose = document.getElementById('editorFindClose');
 const aiProgress = document.getElementById('aiProgress');
 const aiProgressLabel = document.getElementById('aiProgressLabel');
 const aiProgressBar = document.getElementById('aiProgressBar');
+
+function mountAiLayoutMark(editorAdapter, pane) {
+  const mark = pane.querySelector('.ai-layout-mark');
+  const lines = editorAdapter.codeMirror.getWrapperElement()
+    .querySelector('.CodeMirror-lines');
+  if (mark && lines) lines.appendChild(mark);
+}
+
+mountAiLayoutMark(editor, editorPane);
+mountAiLayoutMark(editorRight, editorPaneRight);
+
 const editorFindState = {
   editor: null,
   matches: [],
@@ -860,6 +871,9 @@ const locationsList = document.getElementById('locationsList');
 const locationsClose = document.getElementById('locationsClose');
 const locationsAdd = document.getElementById('locationsAdd');
 const settingsModal = document.getElementById('settingsModal');
+const settingsTabList = settingsModal.querySelector('[role="tablist"]');
+const settingsTabs = Array.from(settingsModal.querySelectorAll('[role="tab"]'));
+const settingsTabPanels = Array.from(settingsModal.querySelectorAll('[role="tabpanel"]'));
 const imageDirectoryPath = document.getElementById('imageDirectoryPath');
 const imageDirectoryMode = document.getElementById('imageDirectoryMode');
 const imageDirectoryChoose = document.getElementById('imageDirectoryChoose');
@@ -872,6 +886,10 @@ const deepseekApiKey = document.getElementById('deepseekApiKey');
 const deepseekLayoutPrompt = document.getElementById('deepseekLayoutPrompt');
 const deepseekApiKeySave = document.getElementById('deepseekApiKeySave');
 const aiSettingsStatus = document.getElementById('aiSettingsStatus');
+const aiStampPositionInputs = Array.from(
+  document.querySelectorAll('input[name="aiStampPosition"]')
+);
+const aiStampPositionControl = document.querySelector('.settings-segmented');
 const outlineToggle = document.getElementById('outlineToggle');
 const settingsError = document.getElementById('settingsError');
 const templateModal = document.getElementById('templateModal');
@@ -889,7 +907,25 @@ let templateDirectoryIsSet = false;
 let aiLayoutBusy = false;
 let aiProgressTimer = null;
 let aiProgressHideTimer = null;
+let aiStampRequestId = 0;
 let outlineEnabled = localStorage.getItem('outline-enabled') !== 'false';
+
+function activateSettingsTab(tab, shouldFocus = false) {
+  if (!settingsTabs.includes(tab)) return;
+  settingsTabList.style.setProperty('--settings-tab-index', settingsTabs.indexOf(tab));
+  settingsTabs.forEach(item => {
+    const isActive = item === tab;
+    item.classList.toggle('active', isActive);
+    item.setAttribute('aria-selected', String(isActive));
+    item.tabIndex = isActive ? 0 : -1;
+  });
+  settingsTabPanels.forEach(panel => {
+    const isActive = panel.id === tab.getAttribute('aria-controls');
+    panel.classList.toggle('active', isActive);
+    panel.hidden = !isActive;
+  });
+  if (shouldFocus) tab.focus();
+}
 
 function applyOutlineSetting() {
   app.classList.toggle('outline-hidden', !outlineEnabled);
@@ -897,6 +933,9 @@ function applyOutlineSetting() {
 }
 
 applyOutlineSetting();
+ipcRenderer.invoke('get-ai-settings').then(result => {
+  if (result.success) applyAiStampPosition(result.stampPosition);
+});
 
 function showModal(title, placeholder, defaultValue, callback) {
   modalTitle.textContent = title;
@@ -947,6 +986,31 @@ function renderAiSettings(data) {
   deepseekApiKey.value = data.apiKey || '';
   deepseekLayoutPrompt.value = data.layoutPrompt || '';
   aiSettingsStatus.textContent = data.apiKey ? '已配置' : '未配置';
+  applyAiStampPosition(data.stampPosition);
+}
+
+function applyAiStampPosition(position) {
+  const normalizedPosition = [
+    'hidden',
+    'top-right',
+    'bottom-right',
+    'corner-ribbon'
+  ].includes(position)
+    ? position
+    : 'top-right';
+  app.dataset.aiStampPosition = normalizedPosition;
+  const selectedIndex = aiStampPositionInputs.findIndex(
+    input => input.value === normalizedPosition
+  );
+  aiStampPositionControl.style.setProperty('--stamp-column', selectedIndex);
+  aiStampPositionControl.style.setProperty('--stamp-mobile-column', selectedIndex % 2);
+  aiStampPositionControl.style.setProperty(
+    '--stamp-mobile-row',
+    Math.floor(selectedIndex / 2)
+  );
+  aiStampPositionInputs.forEach(input => {
+    input.checked = input.value === normalizedPosition;
+  });
 }
 
 function getSettingsErrorMessage(action, error) {
@@ -963,6 +1027,9 @@ function setSettingsBusy(busy) {
   deepseekApiKey.disabled = busy;
   deepseekLayoutPrompt.disabled = busy;
   deepseekApiKeySave.disabled = busy;
+  aiStampPositionInputs.forEach(input => {
+    input.disabled = busy;
+  });
 }
 
 function resetImageDirectorySettings() {
@@ -971,7 +1038,11 @@ function resetImageDirectorySettings() {
   settingsIsCustom = false;
   imageDirectoryReset.disabled = true;
   renderTemplateDirectorySettings({ path: '', exists: false });
-  renderAiSettings({ apiKey: '', layoutPrompt: '' });
+  renderAiSettings({
+    apiKey: '',
+    layoutPrompt: '',
+    stampPosition: app.dataset.aiStampPosition
+  });
 }
 
 function renderFailedImageDirectorySettings(result) {
@@ -986,8 +1057,9 @@ async function showSettingsDialog() {
   settingsPreviousFocus = document.activeElement;
   settingsError.textContent = '';
   resetImageDirectorySettings();
+  activateSettingsTab(settingsTabs[0]);
   settingsModal.classList.add('active');
-  imageDirectoryChoose.focus();
+  settingsTabs[0].focus();
   const requestId = ++settingsRequestId;
   setSettingsBusy(true);
   try {
@@ -1108,6 +1180,15 @@ async function optimizeActiveNoteLayout() {
       updatePreview(true);
       await saveCurrentNote();
     }
+    const optimizedState = await ipcRenderer.invoke('set-ai-optimized-state', {
+      notePath: currentTargetNote.path,
+      optimized: true
+    });
+    if (!optimizedState.success) {
+      throw new Error(optimizedState.error || '无法保存 AI 排版状态');
+    }
+    const targetPanel = targetEditor === editorRight ? rightPanel : leftPanel;
+    targetPanel.classList.add('ai-layout-optimized');
     targetEditor.focus();
     completed = true;
   } catch (error) {
@@ -1336,8 +1417,16 @@ async function selectNote(note) {
   closeSlashCommandMenu();
   currentNote = note;
   noteTitle.value = note.name;
-  const content = await ipcRenderer.invoke('read-note', note.path);
+  const [content, optimizedState] = await Promise.all([
+    ipcRenderer.invoke('read-note', note.path),
+    ipcRenderer.invoke('get-ai-optimized-state', note.path)
+  ]);
+  if (!currentNote || currentNote.path !== note.path) return;
   editor.value = content;
+  leftPanel.classList.toggle(
+    'ai-layout-optimized',
+    optimizedState.success && optimizedState.optimized
+  );
   updatePreview(true);
   renderTree();
 }
@@ -2739,6 +2828,7 @@ async function createNewNote(folderPath = null) {
       currentNote = { name, path: filePath };
       noteTitle.value = name;
       editor.value = '';
+      leftPanel.classList.remove('ai-layout-optimized');
       updatePreview(true);
       await loadTree();
     }
@@ -2795,6 +2885,7 @@ async function deleteItem(data) {
         currentNote = null;
         noteTitle.value = '';
         editor.value = '';
+        leftPanel.classList.remove('ai-layout-optimized');
         updatePreview(true);
       }
       await loadTree();
@@ -2822,6 +2913,8 @@ function resetCurrentLibrary() {
   noteTitleRight.value = '';
   editor.value = '';
   editorRight.value = '';
+  leftPanel.classList.remove('ai-layout-optimized');
+  rightPanel.classList.remove('ai-layout-optimized');
   rightPanel.style.display = 'none';
   updatePreview(true);
   expandedFolders.clear();
@@ -3062,6 +3155,44 @@ deepseekApiKeySave.addEventListener('click', async () => {
 deepseekApiKey.addEventListener('keydown', event => {
   if (event.key === 'Enter') deepseekApiKeySave.click();
 });
+aiStampPositionInputs.forEach(input => {
+  input.addEventListener('change', async () => {
+    if (!input.checked) return;
+    const previousPosition = app.dataset.aiStampPosition;
+    const requestId = ++aiStampRequestId;
+    settingsError.textContent = '';
+    applyAiStampPosition(input.value);
+    try {
+      const result = await ipcRenderer.invoke('set-ai-stamp-position', input.value);
+      if (requestId !== aiStampRequestId) return;
+      if (!result.success) {
+        applyAiStampPosition(previousPosition);
+        settingsError.textContent = getSettingsErrorMessage(
+          '保存印章位置失败',
+          result.error
+        );
+      }
+    } catch (error) {
+      if (requestId !== aiStampRequestId) return;
+      applyAiStampPosition(previousPosition);
+      settingsError.textContent = getSettingsErrorMessage('保存印章位置失败', error);
+    }
+  });
+});
+settingsTabs.forEach((tab, index) => {
+  tab.addEventListener('click', () => activateSettingsTab(tab));
+  tab.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    let nextIndex = index;
+    if (event.key === 'ArrowLeft') nextIndex = (index - 1 + settingsTabs.length)
+      % settingsTabs.length;
+    if (event.key === 'ArrowRight') nextIndex = (index + 1) % settingsTabs.length;
+    if (event.key === 'Home') nextIndex = 0;
+    if (event.key === 'End') nextIndex = settingsTabs.length - 1;
+    activateSettingsTab(settingsTabs[nextIndex], true);
+  });
+});
 outlineToggle.addEventListener('click', () => {
   outlineEnabled = !outlineEnabled;
   localStorage.setItem('outline-enabled', String(outlineEnabled));
@@ -3207,8 +3338,16 @@ function openInRightPanel(note) {
   currentNoteRight = note;
   noteTitleRight.value = note.name;
   editorRight.value = '';
-  ipcRenderer.invoke('read-note', note.path).then(content => {
+  Promise.all([
+    ipcRenderer.invoke('read-note', note.path),
+    ipcRenderer.invoke('get-ai-optimized-state', note.path)
+  ]).then(([content, optimizedState]) => {
+    if (!currentNoteRight || currentNoteRight.path !== note.path) return;
     editorRight.value = content;
+    rightPanel.classList.toggle(
+      'ai-layout-optimized',
+      optimizedState.success && optimizedState.optimized
+    );
     updatePreviewRight(true);
   });
   rightPanel.style.display = 'flex';
@@ -3226,6 +3365,7 @@ function closeRightPanel() {
   currentNoteRight = null;
   noteTitleRight.value = '';
   editorRight.value = '';
+  rightPanel.classList.remove('ai-layout-optimized');
   updatePreviewRight();
   rightPanel.style.display = 'none';
   panelDivider.classList.add('hidden');
