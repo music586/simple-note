@@ -25,7 +25,7 @@ test('tag release workflow builds and publishes versioned macOS DMG files', () =
   assert.match(source, /GITHUB_REF_NAME/);
   assert.match(source, /require\('\.\/package\.json'\)\.version/);
   assert.match(source, /npm test/);
-  assert.match(source, /npm run dist:mac/);
+  assert.match(source, /npm run dist:mac -- --publish never/);
   assert.match(source, /gh release create "\$GITHUB_REF_NAME" dist\/\*\.dmg/);
   assert.match(source, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
 });
