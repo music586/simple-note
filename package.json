@@ -1,7 +1,7 @@
 {
   "name": "markdown-note",
   "productName": "简记",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "简洁的桌面 Markdown 笔记应用",
   "main": "main.js",
   "scripts": {
