@@ -1,6 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const https = require('https');
 const { fileURLToPath } = require('url');
 const {
   app,
@@ -27,6 +28,8 @@ const windowColorThemes = new WeakMap();
 const windowSidebarStates = new WeakMap();
 const windowPreviewStates = new WeakMap();
 const iconPath = path.join(__dirname, 'icon.png');
+const defaultDeepseekLayoutPrompt = '保证原文的内容，不要随意串改，优化下面的正文排版，'
+  + '使用markdown 标签优化展示，和层级结构';
 
 const appName = '简记';
 process.title = appName;
@@ -102,6 +105,70 @@ function getConfig() {
 
 function saveConfig(config) {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+}
+
+function requestDeepSeekLayout(apiKey, prompt, content) {
+  const requestBody = JSON.stringify({
+    model: 'deepseek-v4-flash',
+    messages: [
+      {
+        role: 'system',
+        content: '只返回优化排版后的完整 Markdown，不要解释，不要使用代码围栏包裹结果。'
+      },
+      {
+        role: 'user',
+        content: `${prompt}\n\n${content}`
+      }
+    ],
+    thinking: { type: 'disabled' },
+    stream: false
+  });
+
+  return new Promise((resolve, reject) => {
+    const request = https.request({
+      hostname: 'api.deepseek.com',
+      path: '/chat/completions',
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(requestBody)
+      },
+      timeout: 120000
+    }, response => {
+      let responseBody = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => {
+        responseBody += chunk;
+        if (responseBody.length > 10 * 1024 * 1024) {
+          request.destroy(new Error('DeepSeek 返回内容过大'));
+        }
+      });
+      response.on('end', () => {
+        let data;
+        try {
+          data = JSON.parse(responseBody);
+        } catch (err) {
+          reject(new Error('DeepSeek 返回了无法解析的响应'));
+          return;
+        }
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          const detail = data?.error?.message;
+          reject(new Error(detail || `DeepSeek 请求失败（HTTP ${response.statusCode}）`));
+          return;
+        }
+        const optimizedContent = data?.choices?.[0]?.message?.content;
+        if (typeof optimizedContent !== 'string' || !optimizedContent.trim()) {
+          reject(new Error('DeepSeek 未返回排版后的内容'));
+          return;
+        }
+        resolve(optimizedContent.trim());
+      });
+    });
+    request.on('timeout', () => request.destroy(new Error('DeepSeek 请求超时，请稍后重试')));
+    request.on('error', reject);
+    request.end(requestBody);
+  });
 }
 
 function getNotesDir() {
@@ -578,6 +645,15 @@ function createWindow() {
       ]
     },
     {
+      label: 'AI',
+      submenu: [
+        {
+          label: '优化排版',
+          click: () => sendToActiveWindow('ai-optimize-layout')
+        }
+      ]
+    },
+    {
       label: '视图',
       submenu: [
         {
@@ -861,6 +937,77 @@ ipcMain.handle('reset-image-directory', async () => {
     delete config.imageDirectory;
     saveConfig(config);
     return { success: true, ...getCurrentImageDirectoryState() };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('get-ai-settings', async () => {
+  try {
+    const config = getConfig();
+    const apiKey = config.deepseekApiKey;
+    const layoutPrompt = typeof config.deepseekLayoutPrompt === 'string'
+      && config.deepseekLayoutPrompt.trim()
+      ? config.deepseekLayoutPrompt
+      : defaultDeepseekLayoutPrompt;
+    return {
+      success: true,
+      provider: 'deepseek',
+      apiKey: typeof apiKey === 'string' ? apiKey : '',
+      layoutPrompt
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('set-ai-settings', async (event, settings) => {
+  try {
+    if (!settings || typeof settings !== 'object') throw new Error('AI 设置格式无效');
+    const { apiKey, layoutPrompt } = settings;
+    if (typeof apiKey !== 'string') throw new Error('API Key 格式无效');
+    const normalizedApiKey = apiKey.trim();
+    if (normalizedApiKey.length > 512 || /[\r\n\0]/.test(normalizedApiKey)) {
+      throw new Error('API Key 格式无效');
+    }
+    if (typeof layoutPrompt !== 'string' || !layoutPrompt.trim()) {
+      throw new Error('优化排版提示词不能为空');
+    }
+    const normalizedLayoutPrompt = layoutPrompt.trim();
+    if (normalizedLayoutPrompt.length > 4000 || /\0/.test(normalizedLayoutPrompt)) {
+      throw new Error('优化排版提示词格式无效');
+    }
+    const config = getConfig();
+    if (normalizedApiKey) config.deepseekApiKey = normalizedApiKey;
+    else delete config.deepseekApiKey;
+    config.deepseekLayoutPrompt = normalizedLayoutPrompt;
+    saveConfig(config);
+    return {
+      success: true,
+      configured: Boolean(normalizedApiKey),
+      layoutPrompt: normalizedLayoutPrompt
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('deepseek-optimize-layout', async (event, content) => {
+  try {
+    if (typeof content !== 'string' || !content.trim()) {
+      throw new Error('当前笔记没有可优化的内容');
+    }
+    const config = getConfig();
+    const apiKey = config.deepseekApiKey;
+    if (typeof apiKey !== 'string' || !apiKey.trim()) {
+      throw new Error('请先在设置中配置 DeepSeek API Key');
+    }
+    const layoutPrompt = typeof config.deepseekLayoutPrompt === 'string'
+      && config.deepseekLayoutPrompt.trim()
+      ? config.deepseekLayoutPrompt
+      : defaultDeepseekLayoutPrompt;
+    const optimizedContent = await requestDeepSeekLayout(apiKey, layoutPrompt, content);
+    return { success: true, content: optimizedContent };
   } catch (err) {
     return { success: false, error: err.message };
   }

@@ -25,6 +25,14 @@ const { getTaskCheckboxEdit } = require('./preview-task');
 const { getMarkdownFormatEdit } = require('./markdown-format');
 const { normalizePreviewMarkdown } = require('./preview-markdown');
 const {
+  scheduleDecorationHeightChange
+} = require('./editor-widget-height');
+const {
+  findEditorMatches,
+  getClosestEditorMatchIndex,
+  getNextEditorMatchIndex
+} = require('./editor-find');
+const {
   normalizeClipboardText,
   joinClipboardTextAndImages,
   removeGeneratedBoundaryNewlines,
@@ -109,6 +117,7 @@ const settingsBtn = document.getElementById('settingsBtn');
 const notesDirInfo = document.getElementById('notesDirInfo');
 const notesDirDisplay = document.getElementById('notesDirDisplay');
 const editorContainer = document.getElementById('editorContainer');
+const editorPane = document.getElementById('editorPane');
 const documentOutline = document.getElementById('documentOutline');
 
 const editorRight = createCodeEditor(document.getElementById('editorRight'));
@@ -116,12 +125,175 @@ lastActiveEditor = editor;
 const previewRight = document.getElementById('previewRight');
 const noteTitleRight = document.getElementById('noteTitleRight');
 const editorContainerRight = document.getElementById('editorContainerRight');
+const editorPaneRight = document.getElementById('editorPaneRight');
 const documentOutlineRight = document.getElementById('documentOutlineRight');
 const rightPanel = document.getElementById('rightPanel');
 const leftPanel = document.getElementById('leftPanel');
 const panelDivider = document.getElementById('panelDivider');
 const closeRightBtn = document.getElementById('closeRightBtn');
 const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
+const editorFindBar = document.getElementById('editorFindBar');
+const editorFindInput = document.getElementById('editorFindInput');
+const editorFindCount = document.getElementById('editorFindCount');
+const editorFindPrevious = document.getElementById('editorFindPrevious');
+const editorFindNext = document.getElementById('editorFindNext');
+const editorFindClose = document.getElementById('editorFindClose');
+const aiProgress = document.getElementById('aiProgress');
+const aiProgressLabel = document.getElementById('aiProgressLabel');
+const aiProgressBar = document.getElementById('aiProgressBar');
+const editorFindState = {
+  editor: null,
+  matches: [],
+  currentIndex: -1,
+  marks: [],
+  updateFrame: null
+};
+
+function clearEditorFindMarks() {
+  editorFindState.marks.forEach(mark => mark.clear());
+  editorFindState.marks = [];
+}
+
+function updateEditorFindControls() {
+  const count = editorFindState.matches.length;
+  const current = count ? editorFindState.currentIndex + 1 : 0;
+  editorFindCount.textContent = `${current} / ${count}`;
+  editorFindPrevious.disabled = !count;
+  editorFindNext.disabled = !count;
+}
+
+function renderEditorFindMatches(scrollToCurrent = true) {
+  clearEditorFindMarks();
+  updateEditorFindControls();
+  if (!editorFindState.editor || editorFindState.currentIndex < 0) return;
+
+  const codeMirror = editorFindState.editor.codeMirror;
+  codeMirror.operation(() => {
+    editorFindState.matches.forEach((match, index) => {
+      const className = index === editorFindState.currentIndex
+        ? 'cm-find-match cm-find-match-current'
+        : 'cm-find-match';
+      const mark = codeMirror.markText(
+        codeMirror.posFromIndex(match.from),
+        codeMirror.posFromIndex(match.to),
+        { className }
+      );
+      editorFindState.marks.push(mark);
+    });
+  });
+
+  if (!scrollToCurrent) return;
+  const current = editorFindState.matches[editorFindState.currentIndex];
+  codeMirror.setCursor(codeMirror.posFromIndex(current.from));
+  codeMirror.scrollIntoView({
+    from: codeMirror.posFromIndex(current.from),
+    to: codeMirror.posFromIndex(current.to)
+  }, 80);
+}
+
+function updateEditorFindMatches(preserveCurrent = false) {
+  if (!editorFindState.editor) return;
+
+  const codeMirror = editorFindState.editor.codeMirror;
+  const currentMark = editorFindState.marks[editorFindState.currentIndex];
+  const currentPosition = preserveCurrent ? currentMark?.find() : null;
+  const previousFrom = currentPosition
+    ? codeMirror.indexFromPos(currentPosition.from)
+    : null;
+  editorFindState.matches = findEditorMatches(
+    codeMirror.getValue(),
+    editorFindInput.value
+  );
+  const startIndex = previousFrom ?? codeMirror.indexFromPos(codeMirror.getCursor());
+  editorFindState.currentIndex = getClosestEditorMatchIndex(
+    editorFindState.matches,
+    startIndex
+  );
+  renderEditorFindMatches();
+}
+
+function scheduleEditorFindUpdate(editorAdapter) {
+  if (
+    editorFindBar.hidden
+    || editorFindState.editor !== editorAdapter
+    || editorFindState.updateFrame
+  ) return;
+  editorFindState.updateFrame = requestAnimationFrame(() => {
+    editorFindState.updateFrame = null;
+    updateEditorFindMatches(true);
+  });
+}
+
+function navigateEditorFind(direction) {
+  editorFindState.currentIndex = getNextEditorMatchIndex(
+    editorFindState.currentIndex,
+    editorFindState.matches.length,
+    direction
+  );
+  renderEditorFindMatches();
+  editorFindInput.focus();
+}
+
+function openEditorFind(editorAdapter) {
+  const previousEditor = editorFindState.editor;
+  if (previousEditor && previousEditor !== editorAdapter) {
+    clearEditorFindMarks();
+  }
+  editorFindState.editor = editorAdapter;
+  const container = editorAdapter === editorRight ? editorContainerRight : editorContainer;
+  container.before(editorFindBar);
+  editorFindBar.hidden = false;
+  updateEditorFindMatches();
+  editorFindInput.focus();
+  editorFindInput.select();
+}
+
+function closeEditorFind() {
+  const previousEditor = editorFindState.editor;
+  clearEditorFindMarks();
+  editorFindBar.hidden = true;
+  editorFindState.editor = null;
+  editorFindState.matches = [];
+  editorFindState.currentIndex = -1;
+  updateEditorFindControls();
+  previousEditor?.focus();
+}
+
+function isEditorFindUnavailable() {
+  return Boolean(
+    document.querySelector('.modal.active')
+    || app.classList.contains('reading-mode')
+  );
+}
+
+editorFindInput.addEventListener('input', () => updateEditorFindMatches());
+editorFindInput.addEventListener('keydown', event => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  navigateEditorFind(event.shiftKey ? -1 : 1);
+});
+editorFindPrevious.addEventListener('click', () => navigateEditorFind(-1));
+editorFindNext.addEventListener('click', () => navigateEditorFind(1));
+editorFindClose.addEventListener('click', closeEditorFind);
+editor.codeMirror.on('change', () => scheduleEditorFindUpdate(editor));
+editorRight.codeMirror.on('change', () => scheduleEditorFindUpdate(editorRight));
+
+document.addEventListener('keydown', event => {
+  if (
+    (event.metaKey || event.ctrlKey)
+    && !event.altKey
+    && event.key.toLowerCase() === 'f'
+  ) {
+    if (isEditorFindUnavailable()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openEditorFind(lastActiveEditor || editor);
+  } else if (event.key === 'Escape' && !editorFindBar.hidden) {
+    event.preventDefault();
+    event.stopPropagation();
+    closeEditorFind();
+  }
+}, true);
 
 [preview, previewRight].forEach(container => {
   container.addEventListener('click', event => {
@@ -308,7 +480,14 @@ function scheduleEditorDecorations(editorAdapter, getNote) {
   editorAdapter.decorationFrame = requestAnimationFrame(() => {
     editorAdapter.decorationFrame = null;
     if (editorAdapter.renderingDecorations) return;
-    renderEditorDecorations(editorAdapter, getNote());
+    const codeMirror = editorAdapter.codeMirror;
+    const scrollTop = codeMirror.getScrollInfo().top;
+    codeMirror.operation(() => {
+      renderEditorDecorations(editorAdapter, getNote());
+    });
+    if (codeMirror.getScrollInfo().top !== scrollTop) {
+      codeMirror.scrollTo(null, scrollTop);
+    }
   });
 }
 
@@ -573,6 +752,7 @@ ipcRenderer.on('reading-mode-changed', (event, enabled) => {
   app.classList.remove('reading-sidebar-visible');
   if (enabled) {
     closeSlashCommandMenu();
+    if (!editorFindBar.hidden) closeEditorFind();
     app.classList.remove('sidebar-hidden');
     toggleSidebarBtn.title = '显示目录';
     toggleSidebarBtn.setAttribute('aria-expanded', 'false');
@@ -688,6 +868,10 @@ const templateDirectoryPath = document.getElementById('templateDirectoryPath');
 const templateDirectoryMode = document.getElementById('templateDirectoryMode');
 const templateDirectoryChoose = document.getElementById('templateDirectoryChoose');
 const templateDirectoryClear = document.getElementById('templateDirectoryClear');
+const deepseekApiKey = document.getElementById('deepseekApiKey');
+const deepseekLayoutPrompt = document.getElementById('deepseekLayoutPrompt');
+const deepseekApiKeySave = document.getElementById('deepseekApiKeySave');
+const aiSettingsStatus = document.getElementById('aiSettingsStatus');
 const outlineToggle = document.getElementById('outlineToggle');
 const settingsError = document.getElementById('settingsError');
 const templateModal = document.getElementById('templateModal');
@@ -702,6 +886,9 @@ let settingsRequestId = 0;
 let settingsBusy = false;
 let settingsIsCustom = false;
 let templateDirectoryIsSet = false;
+let aiLayoutBusy = false;
+let aiProgressTimer = null;
+let aiProgressHideTimer = null;
 let outlineEnabled = localStorage.getItem('outline-enabled') !== 'false';
 
 function applyOutlineSetting() {
@@ -756,6 +943,12 @@ function renderTemplateDirectorySettings(data) {
   templateDirectoryClear.disabled = settingsBusy || !templateDirectoryIsSet;
 }
 
+function renderAiSettings(data) {
+  deepseekApiKey.value = data.apiKey || '';
+  deepseekLayoutPrompt.value = data.layoutPrompt || '';
+  aiSettingsStatus.textContent = data.apiKey ? '已配置' : '未配置';
+}
+
 function getSettingsErrorMessage(action, error) {
   const detail = typeof error === 'string' ? error : error?.message;
   return detail ? `${action}：${detail}` : action;
@@ -767,6 +960,9 @@ function setSettingsBusy(busy) {
   imageDirectoryReset.disabled = busy || !settingsIsCustom;
   templateDirectoryChoose.disabled = busy;
   templateDirectoryClear.disabled = busy || !templateDirectoryIsSet;
+  deepseekApiKey.disabled = busy;
+  deepseekLayoutPrompt.disabled = busy;
+  deepseekApiKeySave.disabled = busy;
 }
 
 function resetImageDirectorySettings() {
@@ -775,6 +971,7 @@ function resetImageDirectorySettings() {
   settingsIsCustom = false;
   imageDirectoryReset.disabled = true;
   renderTemplateDirectorySettings({ path: '', exists: false });
+  renderAiSettings({ apiKey: '', layoutPrompt: '' });
 }
 
 function renderFailedImageDirectorySettings(result) {
@@ -794,9 +991,10 @@ async function showSettingsDialog() {
   const requestId = ++settingsRequestId;
   setSettingsBusy(true);
   try {
-    const [result, templateResult] = await Promise.all([
+    const [result, templateResult, aiResult] = await Promise.all([
       ipcRenderer.invoke('get-image-directory'),
-      ipcRenderer.invoke('get-template-directory')
+      ipcRenderer.invoke('get-template-directory'),
+      ipcRenderer.invoke('get-ai-settings')
     ]);
     if (requestId !== settingsRequestId) return;
     if (!result.success) {
@@ -807,6 +1005,10 @@ async function showSettingsDialog() {
     if (templateResult.success) renderTemplateDirectorySettings(templateResult);
     else settingsError.textContent = getSettingsErrorMessage(
       '模板目录设置加载失败', templateResult.error
+    );
+    if (aiResult.success) renderAiSettings(aiResult);
+    else settingsError.textContent = getSettingsErrorMessage(
+      'AI 设置加载失败', aiResult.error
     );
   } catch (error) {
     if (requestId !== settingsRequestId) return;
@@ -823,6 +1025,101 @@ function hideSettingsDialog() {
   settingsModal.classList.remove('active');
   if (settingsPreviousFocus?.isConnected) settingsPreviousFocus.focus();
   settingsPreviousFocus = null;
+}
+
+function normalizeAiMarkdownResponse(content) {
+  const trimmed = content.trim();
+  const fenced = trimmed.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i);
+  return fenced ? fenced[1].trim() : trimmed;
+}
+
+function setAiProgress(value) {
+  const normalizedValue = Math.max(0, Math.min(100, Math.round(value)));
+  aiProgress.setAttribute('aria-valuenow', String(normalizedValue));
+  aiProgressLabel.textContent = `AI 优化排版 · 预计 ${normalizedValue}%`;
+  aiProgressBar.style.width = `${normalizedValue}%`;
+}
+
+function startAiProgress(editorAdapter) {
+  if (aiProgressTimer) clearInterval(aiProgressTimer);
+  if (aiProgressHideTimer) clearTimeout(aiProgressHideTimer);
+  const panel = editorAdapter === editorRight ? rightPanel : leftPanel;
+  panel.appendChild(aiProgress);
+  const startedAt = Date.now();
+  aiProgress.hidden = false;
+  setAiProgress(6);
+  aiProgressTimer = setInterval(() => {
+    const elapsed = Date.now() - startedAt;
+    const estimated = 8 + 84 * (1 - Math.exp(-elapsed / 18000));
+    setAiProgress(Math.min(92, estimated));
+  }, 400);
+}
+
+function finishAiProgress(completed) {
+  if (aiProgressTimer) clearInterval(aiProgressTimer);
+  aiProgressTimer = null;
+  if (!completed) {
+    aiProgress.hidden = true;
+    return;
+  }
+  setAiProgress(100);
+  aiProgressHideTimer = setTimeout(() => {
+    aiProgress.hidden = true;
+    aiProgressHideTimer = null;
+  }, 500);
+}
+
+async function optimizeActiveNoteLayout() {
+  if (aiLayoutBusy) {
+    showConfirm('AI 正在处理', '请等待当前排版优化完成。', () => {});
+    return;
+  }
+  const targetEditor = lastActiveEditor === editorRight ? editorRight : editor;
+  const targetNote = targetEditor === editorRight ? currentNoteRight : currentNote;
+  if (!targetNote) {
+    showConfirm('无法优化排版', '请先选择一篇笔记。', () => {});
+    return;
+  }
+  const originalContent = targetEditor.value;
+  if (!originalContent.trim()) {
+    showConfirm('无法优化排版', '当前笔记没有可优化的内容。', () => {});
+    return;
+  }
+
+  aiLayoutBusy = true;
+  startAiProgress(targetEditor);
+  let completed = false;
+  try {
+    const result = await ipcRenderer.invoke('deepseek-optimize-layout', originalContent);
+    if (!result.success) {
+      showConfirm('优化排版失败', result.error || 'DeepSeek 请求失败', () => {});
+      return;
+    }
+    const currentTargetNote = targetEditor === editorRight ? currentNoteRight : currentNote;
+    if (!currentTargetNote || currentTargetNote.path !== targetNote.path) {
+      showConfirm('未应用优化结果', '等待 AI 响应期间笔记已切换，请重新执行。', () => {});
+      return;
+    }
+    targetEditor.value = normalizeAiMarkdownResponse(result.content);
+    if (targetEditor === editorRight) {
+      updatePreviewRight(true);
+      await saveCurrentNoteRight();
+    } else {
+      updatePreview(true);
+      await saveCurrentNote();
+    }
+    targetEditor.focus();
+    completed = true;
+  } catch (error) {
+    showConfirm(
+      '优化排版失败',
+      getSettingsErrorMessage('DeepSeek 请求失败', error),
+      () => {}
+    );
+  } finally {
+    aiLayoutBusy = false;
+    finishAiProgress(completed);
+  }
 }
 
 modalCancel.addEventListener('click', hideModal);
@@ -1507,12 +1804,14 @@ function renderEditorDecorations(editorAdapter, note) {
     editorAdapter.decorationLines.push({ line, className });
   }
 
-  function createImageWidget(match) {
+  function createImageWidget(match, notifyHeightChange) {
     const widget = document.createElement('span');
     widget.className = 'cm-image-widget';
     widget.title = '选中图片';
     const image = document.createElement('img');
     image.alt = match[1] || '图片';
+    image.addEventListener('load', notifyHeightChange);
+    image.addEventListener('error', notifyHeightChange);
     try {
       image.src = getImageUrl(match[2], note);
     } catch (err) {
@@ -1622,6 +1921,9 @@ function renderEditorDecorations(editorAdapter, note) {
         atomic: true,
         handleMouseEvents: true
       });
+      scheduleDecorationHeightChange(() => {
+        return editorAdapter.decorationMarks.includes(codeMark) ? codeMark : null;
+      }, codeMirror);
       if (
         pendingCodeFocusEditor?.editor === editorAdapter
         && pendingCodeFocusEditor.line === block.start
@@ -1821,14 +2123,21 @@ function renderEditorDecorations(editorAdapter, note) {
       }
       let activeImageMatch;
       while ((activeImageMatch = imagePattern.exec(lineText)) !== null) {
-        const widget = createImageWidget(activeImageMatch);
+        let imageDecoration;
+        const widget = createImageWidget(activeImageMatch, () => {
+          scheduleDecorationHeightChange(() => {
+            return editorAdapter.decorationWidgets.includes(imageDecoration)
+              ? imageDecoration
+              : null;
+          }, codeMirror);
+        });
         widget.classList.add('is-source-visible');
-        const lineWidget = codeMirror.addLineWidget(lineNumber, widget, {
+        imageDecoration = codeMirror.addLineWidget(lineNumber, widget, {
           above: false,
           coverGutter: false,
           noHScroll: true
         });
-        editorAdapter.decorationWidgets.push(lineWidget);
+        editorAdapter.decorationWidgets.push(imageDecoration);
       }
       imagePattern.lastIndex = 0;
       const activeListPrefix = getRenderedListPrefix(lineText);
@@ -1891,11 +2200,18 @@ function renderEditorDecorations(editorAdapter, note) {
     let hasImage = false;
     while ((match = imagePattern.exec(lineText)) !== null) {
       hasImage = true;
-      const widget = createImageWidget(match);
+      let imageDecoration;
+      const widget = createImageWidget(match, () => {
+        scheduleDecorationHeightChange(() => {
+          return editorAdapter.decorationMarks.includes(imageDecoration)
+            ? imageDecoration
+            : null;
+        }, codeMirror);
+      });
 
       const from = { line: lineNumber, ch: match.index };
       const to = { line: lineNumber, ch: match.index + match[0].length };
-      const mark = addMark(from, to, {
+      imageDecoration = addMark(from, to, {
         replacedWith: widget,
         atomic: true,
         handleMouseEvents: true
@@ -2498,6 +2814,8 @@ async function changeNotesDir() {
 }
 
 function resetCurrentLibrary() {
+  if (editorFindState.editor === editorRight) closeEditorFind();
+  lastActiveEditor = editor;
   currentNote = null;
   currentNoteRight = null;
   noteTitle.value = '';
@@ -2719,6 +3037,31 @@ templateDirectoryClear.addEventListener('click', async () => {
     setSettingsBusy(false);
   }
 });
+deepseekApiKeySave.addEventListener('click', async () => {
+  if (settingsBusy) return;
+  settingsError.textContent = '';
+  setSettingsBusy(true);
+  try {
+    const result = await ipcRenderer.invoke('set-ai-settings', {
+      apiKey: deepseekApiKey.value,
+      layoutPrompt: deepseekLayoutPrompt.value
+    });
+    if (!result.success) {
+      settingsError.textContent = getSettingsErrorMessage('保存 API Key 失败', result.error);
+      return;
+    }
+    deepseekApiKey.value = deepseekApiKey.value.trim();
+    deepseekLayoutPrompt.value = result.layoutPrompt;
+    aiSettingsStatus.textContent = result.configured ? '已配置' : '未配置';
+  } catch (error) {
+    settingsError.textContent = getSettingsErrorMessage('保存 API Key 失败', error);
+  } finally {
+    setSettingsBusy(false);
+  }
+});
+deepseekApiKey.addEventListener('keydown', event => {
+  if (event.key === 'Enter') deepseekApiKeySave.click();
+});
 outlineToggle.addEventListener('click', () => {
   outlineEnabled = !outlineEnabled;
   localStorage.setItem('outline-enabled', String(outlineEnabled));
@@ -2740,7 +3083,8 @@ document.addEventListener('keydown', event => {
 
   if (event.key !== 'Tab') return;
   const focusable = Array.from(settingsModal.querySelectorAll(
-    'button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'
+    'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), '
+      + '[href], [tabindex]:not([tabindex="-1"])'
   ));
   if (!focusable.length) return;
   const first = focusable[0];
@@ -2803,6 +3147,7 @@ ipcRenderer.on('export-pdf', exportCurrentNoteToPdf);
 ipcRenderer.on('insert-table', insertMarkdownTable);
 ipcRenderer.on('insert-code-block', insertMarkdownCodeFence);
 ipcRenderer.on('insert-template', showTemplateDialog);
+ipcRenderer.on('ai-optimize-layout', optimizeActiveNoteLayout);
 ipcRenderer.on('notes-tree-changed', scheduleTreeRefresh);
 window.addEventListener('focus', scheduleTreeRefresh);
 ipcRenderer.on('format-markdown', (event, format) => formatActiveMarkdown(format));
@@ -2873,6 +3218,8 @@ function openInRightPanel(note) {
 
 function closeRightPanel() {
   closeSlashCommandMenu();
+  if (editorFindState.editor === editorRight) closeEditorFind();
+  lastActiveEditor = editor;
   if (currentNoteRight) {
     saveCurrentNoteRight();
   }
