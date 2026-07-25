@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-test('application and lockfile versions are synchronized at 1.1.1', () => {
+test('application and lockfile versions are synchronized at 1.1.2', () => {
   const projectRoot = path.join(__dirname, '..');
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')
@@ -12,9 +12,9 @@ test('application and lockfile versions are synchronized at 1.1.1', () => {
     fs.readFileSync(path.join(projectRoot, 'package-lock.json'), 'utf8')
   );
 
-  assert.equal(packageJson.version, '1.1.1');
-  assert.equal(packageLock.version, '1.1.1');
-  assert.equal(packageLock.packages[''].version, '1.1.1');
+  assert.equal(packageJson.version, '1.1.2');
+  assert.equal(packageLock.version, '1.1.2');
+  assert.equal(packageLock.packages[''].version, '1.1.2');
   assert.equal(packageJson.build.dmg.title, 'SimpleNote ${version}');
   assert.equal(
     packageJson.build.dmg.artifactName,

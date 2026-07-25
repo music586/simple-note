@@ -33,3 +33,17 @@ test('AI menu requests DeepSeek layout optimization for the active window', () =
   assert.match(main, /content: `\$\{prompt\}\\n\\n\$\{content\}`/);
   assert.match(main, /Authorization: `Bearer \$\{apiKey\}`/);
 });
+
+test('AI menu translates the active editor content to Chinese or English', () => {
+  assert.match(
+    main,
+    /label: 'AI 翻译'[\s\S]*label: '中文'[\s\S]*sendToActiveWindow\('ai-translate', 'zh'\)/
+  );
+  assert.match(
+    main,
+    /label: 'AI 翻译'[\s\S]*label: '英文'[\s\S]*sendToActiveWindow\('ai-translate', 'en'\)/
+  );
+  assert.match(main, /ipcMain\.handle\('deepseek-translate'/);
+  assert.match(main, /请将以下内容在中文和英文之间进行翻译/);
+  assert.match(main, /请直接输出翻译结果，不需要解释翻译过程/);
+});

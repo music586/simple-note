@@ -166,19 +166,14 @@
   <div id="locationsModal" class="modal">
     <div class="modal-content locations-modal-content">
       <div class="modal-header locations-modal-header">
-        <div class="locations-window-controls">
-          <button id="locationsClose" class="mac-window-control close" title="关闭" aria-label="关闭"><span>×</span></button>
-          <span class="mac-window-control minimize" aria-hidden="true"></span>
-          <span class="mac-window-control zoom" aria-hidden="true"></span>
-        </div>
         <div class="locations-heading">
           <span class="modal-title">存储目录</span>
+          <span>管理并切换简记使用的笔记库</span>
         </div>
-        <span class="locations-header-spacer" aria-hidden="true"></span>
       </div>
       <div class="locations-intro">
         <strong>笔记库</strong>
-        <span>选择一个目录作为当前笔记库</span>
+        <span>选择当前使用的目录，或维护已有目录</span>
       </div>
       <div id="locationsList" class="locations-list"></div>
       <div class="modal-footer locations-footer">
@@ -249,6 +244,32 @@
             <button id="templateDirectoryClear" class="btn btn-secondary">清除</button>
             <button id="templateDirectoryChoose" class="btn">选择目录</button>
           </div>
+          </section>
+          <section class="settings-card">
+            <div class="settings-card-heading">
+              <span class="settings-card-icon hidden-directory" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/>
+                  <path d="m4 4 16 16"/>
+                </svg>
+              </span>
+              <div class="settings-card-copy">
+                <div class="settings-card-title">
+                  <strong>隐藏目录</strong>
+                  <span id="hiddenDirectoryCount" class="settings-status">0 项</span>
+                </div>
+                <p>目录树不会展示这些目录，但不会删除磁盘文件。</p>
+              </div>
+            </div>
+            <div id="hiddenDirectoryList" class="hidden-directory-list"></div>
+            <p id="hiddenDirectoryEmpty" class="hidden-directory-empty" hidden>
+              暂无隐藏目录
+            </p>
+            <div class="settings-card-actions">
+              <button id="hiddenDirectoryAdd" class="btn" type="button">
+                从当前笔记库选择
+              </button>
+            </div>
           </section>
         </div>
         <div id="settingsPanelAi" class="settings-tab-panel" role="tabpanel"

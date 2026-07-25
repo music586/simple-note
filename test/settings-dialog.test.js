@@ -30,10 +30,18 @@ test('settings dialog uses the centered modal system', () => {
 });
 
 test('settings dialog groups directory controls into responsive setting cards', () => {
-  assert.equal((html.match(/class="settings-card"/g) || []).length, 3);
+  assert.equal((html.match(/class="settings-card"/g) || []).length, 4);
   assert.match(html, /class="settings-kicker">简记偏好/);
   assert.match(styles, /\.settings-modal-content::before\s*\{/);
   assert.match(styles, /\.settings-modal-content\s*\{[^}]*height: fit-content;/s);
+  assert.match(
+    styles,
+    /\.settings-modal-content\s*\{[^}]*max-height: calc\(100vh - var\(--settings-top-space\) - 20px\);/s
+  );
+  assert.doesNotMatch(
+    styles,
+    /\.settings-modal-content\s*\{[^}]*max-height: min\(680px,/s
+  );
   assert.match(styles, /\.settings-modal-body\s*\{[^}]*flex: 0 1 auto;/s);
   assert.match(styles, /\.settings-error:empty\s*\{[^}]*display: none;/s);
   assert.match(
@@ -42,6 +50,23 @@ test('settings dialog groups directory controls into responsive setting cards', 
   );
   assert.match(styles, /@media \(max-width: 560px\)/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
+});
+
+test('basic settings manage hidden directories inside the current notes library', () => {
+  for (const id of [
+    'hiddenDirectoryList',
+    'hiddenDirectoryEmpty',
+    'hiddenDirectoryCount',
+    'hiddenDirectoryAdd'
+  ]) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(html, /<strong>隐藏目录<\/strong>/);
+  assert.match(html, />\s*从当前笔记库选择\s*<\/button>/);
+  assert.match(renderer, /function renderHiddenDirectorySettings\(directories\)/);
+  assert.match(renderer, /ipcRenderer\.invoke\('get-hidden-directories'\)/);
+  assert.match(renderer, /ipcRenderer\.invoke\('select-hidden-directory'\)/);
+  assert.match(renderer, /ipcRenderer\.invoke\('update-hidden-directory'/);
+  assert.match(renderer, /ipcRenderer\.invoke\('remove-hidden-directory'/);
+  assert.match(styles, /\.hidden-directory-row\s*\{/);
 });
 
 test('settings dialog separates preferences into three accessible tabs', () => {
@@ -114,12 +139,19 @@ test('settings dialog supports local DeepSeek API Key configuration', () => {
 });
 
 test('AI layout result replaces and saves the active editor content', () => {
-  assert.match(renderer, /ipcRenderer\.on\('ai-optimize-layout', optimizeActiveNoteLayout\)/);
+  assert.match(
+    renderer,
+    /ipcRenderer\.on\('ai-optimize-layout', \(\) => optimizeActiveNoteLayout\(\)\)/
+  );
   assert.match(
     renderer,
     /ipcRenderer\.invoke\('deepseek-optimize-layout', originalContent\)/
   );
-  assert.match(renderer, /targetEditor\.value = normalizeAiMarkdownResponse\(result\.content\)/);
+  assert.match(
+    renderer,
+    /const optimizedContent = normalizeAiMarkdownResponse\(result\.content\)/
+  );
+  assert.match(renderer, /else \{\s*targetEditor\.value = optimizedContent;/);
   assert.match(renderer, /updatePreviewRight\(true\);[\s\S]*saveCurrentNoteRight\(\)/);
   assert.match(renderer, /updatePreview\(true\);[\s\S]*saveCurrentNote\(\)/);
   assert.match(renderer, /currentTargetNote\.path !== targetNote\.path/);
@@ -130,7 +162,7 @@ test('AI request displays estimated progress only in the active editor panel', (
   assert.match(html, /aria-label="AI 优化排版预计进度"/);
   assert.match(styles, /\.ai-progress\s*\{[^}]*position: absolute;[^}]*inset: 0 0 auto;/s);
   assert.match(styles, /\.ai-progress-bar\s*\{[^}]*transition: width 0\.4s ease-out;/s);
-  assert.match(renderer, /function startAiProgress\(editorAdapter\)/);
+  assert.match(renderer, /function startAiProgress\(editorAdapter(?:, [^)]*)?\)/);
   assert.match(
     renderer,
     /const panel = editorAdapter === editorRight \? rightPanel : leftPanel;[\s\S]*panel\.appendChild\(aiProgress\)/

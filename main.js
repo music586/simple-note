@@ -14,6 +14,11 @@ const {
   screen
 } = require('electron');
 const { getImageDirectoryState } = require('./image-directory');
+const {
+  normalizeHiddenDirectory,
+  getHiddenDirectories: resolveHiddenDirectories,
+  isHiddenDirectory
+} = require('./hidden-directory');
 
 let mainWindow;
 let aboutWindow;
@@ -30,6 +35,19 @@ const windowPreviewStates = new WeakMap();
 const iconPath = path.join(__dirname, 'icon.png');
 const defaultDeepseekLayoutPrompt = '保证原文的内容，不要随意串改，优化下面的正文排版，'
   + '使用markdown 标签优化展示，和层级结构';
+const deepseekTranslationPrompt = `请将以下内容在中文和英文之间进行翻译。
+
+翻译要求：
+1. 保持原文含义准确，不进行扩写或删减。
+2. 保留关键专业术语、技术名词和行业词汇的原文形式，不强行翻译，例如：
+   - 计算机领域：API、SDK、Framework、Runtime、Compiler、Docker、Kubernetes、Git、Frontend、Backend、Database、Agent、LLM、Prompt、Token 等。
+   - 产品和工程领域常用术语：Workflow、Pipeline、Architecture、Performance、Scalability 等。
+3. 对于专业词汇，可以采用「中文解释 + 英文原词」形式，例如：上下文窗口（Context Window）。
+4. 保持代码、变量名、函数名、文件路径、命令、配置项、技术品牌名称不变。
+5. 翻译结果要符合目标语言的技术文档表达习惯，避免机械直译。
+6. 如果某个词存在多种翻译方式，优先选择技术社区中最常用的表达。
+
+请直接输出翻译结果，不需要解释翻译过程。`;
 
 const appName = '简记';
 process.title = appName;
@@ -107,6 +125,10 @@ function saveConfig(config) {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
 }
 
+function getHiddenDirectories(config = getConfig()) {
+  return resolveHiddenDirectories(config);
+}
+
 function getAiOptimizedNotePaths(config) {
   return Array.isArray(config.aiOptimizedNotes)
     ? config.aiOptimizedNotes.filter(notePath => typeof notePath === 'string')
@@ -133,13 +155,14 @@ function migrateAiOptimizedNotePaths(sourcePath, destinationPath = null) {
   saveConfig(config);
 }
 
-function requestDeepSeekLayout(apiKey, prompt, content) {
+function requestDeepSeekLayout(apiKey, prompt, content, systemPrompt = null) {
   const requestBody = JSON.stringify({
     model: 'deepseek-v4-flash',
     messages: [
       {
         role: 'system',
-        content: '只返回优化排版后的完整 Markdown，不要解释，不要使用代码围栏包裹结果。'
+        content: systemPrompt
+          || '只返回优化排版后的完整 Markdown，不要解释，不要使用代码围栏包裹结果。'
       },
       {
         role: 'user',
@@ -271,9 +294,7 @@ function watchNotesDirectory() {
   ensureNotesDir();
   try {
     notesDirectoryWatcher = fs.watch(getNotesDir(), { recursive: true }, (eventType, fileName) => {
-      const pathParts = String(fileName || '').split(path.sep);
-      if (pathParts.includes('assets') || pathParts.includes('.obsidian') ||
-          pathParts.includes('.git')) return;
+      if (isHiddenDirectory(fileName, getHiddenDirectories())) return;
       notifyNotesTreeChanged();
     });
     notesDirectoryWatcher.on('error', () => {
@@ -309,7 +330,9 @@ ipcMain.handle('open-external-url', async (event, href) => {
   }
 });
 
-function getTree(dir, basePath = '') {
+ipcMain.handle('get-app-version', () => app.getVersion());
+
+function getTree(dir, basePath = '', hiddenDirectories = getHiddenDirectories()) {
   const result = [];
   if (!fs.existsSync(dir)) return result;
 
@@ -324,14 +347,12 @@ function getTree(dir, basePath = '') {
   });
 
   for (const { entry: item } of items) {
-    if (item.isDirectory() && (item.name === '.obsidian' || item.name === '.git')) continue;
-    if (!basePath && item.isDirectory() && item.name === 'assets') continue;
-
     const itemPath = path.join(dir, item.name);
     const relativePath = basePath ? path.join(basePath, item.name) : item.name;
+    if (item.isDirectory() && isHiddenDirectory(relativePath, hiddenDirectories)) continue;
 
     if (item.isDirectory()) {
-      const children = getTree(itemPath, relativePath);
+      const children = getTree(itemPath, relativePath, hiddenDirectories);
       result.push({
         type: 'folder',
         name: item.name,
@@ -676,6 +697,19 @@ function createWindow() {
         {
           label: '优化排版',
           click: () => sendToActiveWindow('ai-optimize-layout')
+        },
+        {
+          label: 'AI 翻译',
+          submenu: [
+            {
+              label: '中文',
+              click: () => sendToActiveWindow('ai-translate', 'zh')
+            },
+            {
+              label: '英文',
+              click: () => sendToActiveWindow('ai-translate', 'en')
+            }
+          ]
         }
       ]
     },
@@ -746,6 +780,15 @@ function createWindow() {
         { role: 'resetZoom', label: '重置缩放' },
         { role: 'zoomIn', label: '放大' },
         { role: 'zoomOut', label: '缩小' }
+      ]
+    },
+    {
+      label: '帮助',
+      submenu: [
+        {
+          label: '更新说明',
+          click: () => sendToActiveWindow('open-release-notes', app.getVersion())
+        }
       ]
     }
   ];
@@ -870,6 +913,86 @@ ipcMain.handle('clear-template-directory', async () => {
     delete config.templateDirectory;
     saveConfig(config);
     return { success: true, path: '', exists: false };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('get-hidden-directories', async () => {
+  try {
+    return { success: true, directories: getHiddenDirectories() };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('select-hidden-directory', async event => {
+  try {
+    const sourceWindow = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+    const notesDir = path.resolve(getNotesDir());
+    const result = await dialog.showOpenDialog(sourceWindow, {
+      title: '选择要隐藏的目录',
+      buttonLabel: '隐藏此目录',
+      properties: ['openDirectory', 'showHiddenFiles'],
+      defaultPath: notesDir
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: true, canceled: true, directories: getHiddenDirectories() };
+    }
+
+    const selectedPath = path.resolve(result.filePaths[0]);
+    const relativePath = path.relative(notesDir, selectedPath);
+    if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+      throw new Error('只能选择当前笔记库内的子目录');
+    }
+    if (!fs.existsSync(selectedPath) || !fs.statSync(selectedPath).isDirectory()) {
+      throw new Error('所选目录不存在');
+    }
+
+    const config = getConfig();
+    const directory = normalizeHiddenDirectory(relativePath);
+    config.hiddenDirectories = [...new Set([...getHiddenDirectories(config), directory])];
+    saveConfig(config);
+    notifyNotesTreeChanged();
+    return {
+      success: true,
+      canceled: false,
+      directory,
+      directories: config.hiddenDirectories
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('update-hidden-directory', async (event, data) => {
+  try {
+    if (!data || typeof data !== 'object') throw new Error('隐藏目录参数无效');
+    const previousDirectory = normalizeHiddenDirectory(data.previousDirectory);
+    const nextDirectory = normalizeHiddenDirectory(data.nextDirectory);
+    const config = getConfig();
+    const directories = getHiddenDirectories(config);
+    const index = directories.indexOf(previousDirectory);
+    if (index < 0) throw new Error('隐藏目录不存在');
+    directories[index] = nextDirectory;
+    config.hiddenDirectories = [...new Set(directories)];
+    saveConfig(config);
+    notifyNotesTreeChanged();
+    return { success: true, directories: config.hiddenDirectories };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('remove-hidden-directory', async (event, directoryPath) => {
+  try {
+    const directory = normalizeHiddenDirectory(directoryPath);
+    const config = getConfig();
+    config.hiddenDirectories = getHiddenDirectories(config)
+      .filter(item => item !== directory);
+    saveConfig(config);
+    notifyNotesTreeChanged();
+    return { success: true, directories: config.hiddenDirectories };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -1053,6 +1176,33 @@ ipcMain.handle('deepseek-optimize-layout', async (event, content) => {
       : defaultDeepseekLayoutPrompt;
     const optimizedContent = await requestDeepSeekLayout(apiKey, layoutPrompt, content);
     return { success: true, content: optimizedContent };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('deepseek-translate', async (event, data) => {
+  try {
+    if (!data || typeof data !== 'object') throw new Error('翻译参数无效');
+    const { targetLanguage, content } = data;
+    if (!['zh', 'en'].includes(targetLanguage)) throw new Error('目标语言无效');
+    if (typeof content !== 'string' || !content.trim()) {
+      throw new Error('当前笔记没有可翻译的内容');
+    }
+    const config = getConfig();
+    const apiKey = config.deepseekApiKey;
+    if (typeof apiKey !== 'string' || !apiKey.trim()) {
+      throw new Error('请先在设置中配置 DeepSeek API Key');
+    }
+    const targetName = targetLanguage === 'zh' ? '中文' : '英文';
+    const prompt = `${deepseekTranslationPrompt}\n\n目标语言：${targetName}`;
+    const translatedContent = await requestDeepSeekLayout(
+      apiKey,
+      prompt,
+      content,
+      '只返回翻译后的完整内容，不要解释，不要使用代码围栏包裹结果。'
+    );
+    return { success: true, content: translatedContent };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -1514,6 +1664,36 @@ ipcMain.on('show-table-context-menu', (event, data) => {
           label: '删除列',
           enabled: data.columnCount > 1,
           click: () => sendAction('delete-column')
+        }
+      ]
+    }
+  ]);
+  menu.popup({ window: sourceWindow });
+});
+
+ipcMain.on('show-editor-selection-context-menu', event => {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!sourceWindow || sourceWindow.isDestroyed()) return;
+
+  const menu = Menu.buildFromTemplate([
+    { role: 'cut', label: '剪切' },
+    { role: 'copy', label: '复制' },
+    { role: 'paste', label: '粘贴' },
+    { type: 'separator' },
+    {
+      label: 'AI 排版',
+      click: () => event.sender.send('ai-optimize-layout-selection')
+    },
+    {
+      label: 'AI 翻译',
+      submenu: [
+        {
+          label: '中文',
+          click: () => event.sender.send('ai-translate', 'zh')
+        },
+        {
+          label: '英文',
+          click: () => event.sender.send('ai-translate', 'en')
         }
       ]
     }
