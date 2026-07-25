@@ -131,6 +131,20 @@
     </main>
     <div id="slashCommandMenu" class="slash-command-menu" role="listbox"
       aria-label="Markdown 结构" hidden></div>
+    <div id="codeLanguagePicker" class="code-language-picker"
+      aria-label="选择代码语言" hidden>
+      <div class="code-language-search-row">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="11" cy="11" r="6"></circle>
+          <path d="m16 16 4 4"></path>
+        </svg>
+        <input id="codeLanguageSearch" type="text" placeholder="筛选语言"
+          aria-label="筛选代码语言" autocomplete="off" spellcheck="false">
+      </div>
+      <div id="codeLanguageResults" class="code-language-results"
+        role="listbox" aria-label="代码语言"></div>
+      <div class="code-language-help">输入筛选 · ↑↓ 选择 · Enter 确认</div>
+    </div>
   </div>
 
   <div id="modal" class="modal">

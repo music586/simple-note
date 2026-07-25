@@ -700,7 +700,9 @@ body {
   top: 28px;
   right: 16px;
   width: 188px;
-  max-height: calc(100% - 56px);
+  height: auto;
+  max-height: var(--document-outline-max-height, calc(100% - 56px));
+  box-sizing: border-box;
   padding: 12px 10px 12px 14px;
   border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: 12px;
@@ -712,6 +714,11 @@ body {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
   scrollbar-width: thin;
   scrollbar-color: var(--border-color) transparent;
+  transition:
+    width 0.2s ease,
+    max-height 0.2s ease,
+    padding 0.2s ease,
+    border-radius 0.2s ease;
 }
 
 .document-outline::before {
@@ -728,12 +735,70 @@ body {
   min-height: 24px;
   padding: 0 6px 8px 8px;
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
   color: var(--text-secondary);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.1em;
+}
+
+.document-outline-collapse {
+  width: 24px;
+  height: 24px;
+  margin: 0 -3px 0 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  background: transparent;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.14s ease, background-color 0.14s ease;
+}
+
+.document-outline-collapse:hover {
+  color: var(--text-primary);
+  background: var(--control-hover-bg);
+}
+
+.document-outline-collapse:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 62%, transparent);
+  outline-offset: 1px;
+}
+
+.document-outline.collapsed {
+  width: 38px;
+  height: 38px;
+  max-height: 38px;
+  padding: 6px;
+  border-radius: 11px;
+  overflow: hidden;
+}
+
+.document-outline.collapsed::before,
+.document-outline.collapsed .document-outline-title > span,
+.document-outline.collapsed .document-outline-item,
+.document-outline.collapsed .document-outline-empty {
+  display: none;
+}
+
+.document-outline.collapsed .document-outline-title {
+  min-height: 24px;
+  padding: 0;
+  justify-content: center;
+}
+
+.document-outline.collapsed .document-outline-collapse {
+  margin: 0;
 }
 
 .document-outline-count {
@@ -758,6 +823,7 @@ body {
   color: var(--text-secondary);
   background: transparent;
   display: block;
+  flex-shrink: 0;
   overflow: hidden;
   font-size: 12px;
   line-height: 1.45;
@@ -804,8 +870,30 @@ body {
   background: var(--accent-color);
 }
 
+.document-outline-target {
+  animation: document-outline-target-highlight 1.4s ease-out;
+}
+
+@keyframes document-outline-target-highlight {
+  0% {
+    background: color-mix(in srgb, var(--accent-color) 22%, transparent);
+    box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent-color) 72%, transparent);
+  }
+
+  68% {
+    background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+    box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent-color) 38%, transparent);
+  }
+
+  100% {
+    background: transparent;
+    box-shadow: inset 3px 0 0 transparent;
+  }
+}
+
 .document-outline-empty {
   padding: 10px 8px 8px 12px;
+  flex-shrink: 0;
   font-size: 12px;
   opacity: 0.62;
 }
@@ -818,6 +906,16 @@ body {
 @container (min-width: 1180px) {
   .editor-container.preview-hidden .document-outline {
     display: flex;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .document-outline {
+    transition: none;
+  }
+
+  .document-outline-target {
+    animation-duration: 0.01ms;
   }
 }
 
@@ -1056,6 +1154,113 @@ body {
 .slash-command-hint { color: var(--text-secondary); font-size: 11px; }
 @media (prefers-reduced-motion: reduce) {
   .slash-command-menu { scroll-behavior: auto; }
+}
+
+.code-language-picker {
+  position: fixed;
+  z-index: 1220;
+  width: min(268px, calc(100vw - 24px));
+  max-height: min(390px, calc(100vh - 24px));
+  padding: 7px;
+  border: 1px solid var(--border-color);
+  border-radius: 11px;
+  overflow: hidden;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.3);
+}
+
+.code-language-picker[hidden] {
+  display: none;
+}
+
+.code-language-search-row {
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: color-mix(in srgb, var(--bg-primary) 78%, transparent);
+}
+
+.code-language-search-row:focus-within {
+  border-color: color-mix(in srgb, var(--accent-color) 58%, var(--border-color));
+}
+
+.code-language-search-row svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: var(--text-tertiary);
+  stroke-width: 1.8;
+}
+
+.code-language-search-row input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: var(--text-primary);
+  background: transparent;
+  font-size: 12px;
+}
+
+.code-language-results {
+  max-height: 286px;
+  margin-top: 6px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-color) transparent;
+}
+
+.code-language-option {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-primary);
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.code-language-option[aria-selected='true'] {
+  color: var(--slash-command-selected-text);
+  background: var(--slash-command-selected-bg);
+}
+
+.code-language-option code {
+  color: var(--text-tertiary);
+  background: transparent;
+  font-size: 10px;
+}
+
+.code-language-option[aria-selected='true'] code {
+  color: inherit;
+  opacity: 0.72;
+}
+
+.code-language-empty {
+  padding: 24px 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.code-language-help {
+  margin-top: 5px;
+  padding: 7px 8px 2px;
+  border-top: 1px solid var(--border-color);
+  color: var(--text-tertiary);
+  font-size: 10px;
 }
 
 .preview-content {
@@ -3744,6 +3949,14 @@ textarea,
   font-size: 18px;
   font-weight: 680;
   letter-spacing: -0.02em;
+}
+
+.editor-release-date {
+  display: block;
+  margin: 0 0 8px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .editor-release-overview {

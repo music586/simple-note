@@ -17,6 +17,7 @@ test('Help menu opens release notes in the active editor', () => {
 
 test('release notes contain one collapsible paragraph block per version', () => {
   const versions = [
+    '1.1.3',
     '1.1.2',
     '1.1.1',
     '1.1.0',
@@ -35,6 +36,27 @@ test('release notes contain one collapsible paragraph block per version', () => 
   assert.match(renderer, /document\.createElement\('details'\)/);
   assert.match(renderer, /overview\.className = 'editor-release-overview'/);
   assert.match(renderer, /changes\.appendChild\(item\)/);
+});
+
+test('every release displays its published date inside the version content', () => {
+  const dates = [
+    '2026-07-26',
+    '2026-07-25',
+    '2026-07-24',
+    '2026-07-23',
+    '2026-07-19',
+    '2026-07-18',
+    '2026-07-17',
+    '2026-07-16'
+  ];
+
+  dates.forEach(date => {
+    assert.match(renderer, new RegExp(`date: '${date}'`));
+  });
+  assert.match(renderer, /releaseDate\.className = 'editor-release-date'/);
+  assert.match(renderer, /releaseDate\.dateTime = release\.date/);
+  assert.match(renderer, /releaseDate\.textContent = `发布于 \$\{formatReleaseDate\(release\.date\)\}`/);
+  assert.match(styles, /\.editor-release-date\s*\{/);
 });
 
 test('current release is featured inside the focused editor pane', () => {

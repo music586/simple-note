@@ -106,12 +106,37 @@ const workspaceSessionKey = 'workspace-session';
 
 const notesList = document.getElementById('notesList');
 const slashCommandMenuElement = document.getElementById('slashCommandMenu');
+const codeLanguagePicker = document.getElementById('codeLanguagePicker');
+const codeLanguageSearch = document.getElementById('codeLanguageSearch');
+const codeLanguageResults = document.getElementById('codeLanguageResults');
 const slashCommandState = {
   editor: null,
   query: '',
   commands: [],
   selectedIndex: 0,
   composing: false
+};
+const codeLanguages = [
+  { label: '纯文本', language: '', keywords: ['纯文本', 'text', 'plain', 'txt'] },
+  { label: 'JavaScript', language: 'javascript', keywords: ['javascript', 'js'] },
+  { label: 'TypeScript', language: 'typescript', keywords: ['typescript', 'ts'] },
+  { label: 'Python', language: 'python', keywords: ['python', 'py'] },
+  { label: 'JSON', language: 'json', keywords: ['json'] },
+  { label: 'YAML', language: 'yaml', keywords: ['yaml', 'yml'] },
+  { label: 'HTML / XML', language: 'html', keywords: ['html', 'xml'] },
+  { label: 'CSS', language: 'css', keywords: ['css'] },
+  { label: 'SQL', language: 'sql', keywords: ['sql'] },
+  { label: 'Shell / Bash', language: 'bash', keywords: ['shell', 'bash', 'sh', 'zsh'] },
+  { label: 'Java', language: 'java', keywords: ['java'] },
+  { label: 'C', language: 'c', keywords: ['c'] },
+  { label: 'C++', language: 'cpp', keywords: ['c++', 'cpp'] },
+  { label: 'Go', language: 'go', keywords: ['go', 'golang'] },
+  { label: 'Rust', language: 'rust', keywords: ['rust', 'rs'] },
+  { label: 'Swift', language: 'swift', keywords: ['swift'] }
+];
+const codeLanguageState = {
+  languages: codeLanguages,
+  selectedIndex: 0
 };
 let lastActiveEditor = null;
 const editor = createCodeEditor(document.getElementById('editor'));
@@ -147,7 +172,27 @@ const aiProgressLabel = document.getElementById('aiProgressLabel');
 const aiProgressBar = document.getElementById('aiProgressBar');
 const releaseNotes = [
   {
+    version: '1.1.3',
+    date: '2026-07-26',
+    title: '大纲与代码块交互',
+    content: '完善文档大纲的折叠、定位与自适应布局；新增代码语言筛选，'
+      + '并修复选择语言后的代码块焦点。',
+    paragraphs: [
+      '这一版集中优化长文档导航和代码块输入流程，让目录浏览、标题定位和代码录入'
+        + '保持连续，减少重复点击与手动寻找焦点。',
+      '文档大纲新增折叠与展开功能并记住用户选择。大纲会根据标题数量自适应高度，'
+        + '顶部位置保持不变，长目录达到窗口可用高度后在内部滚动；点击目录项时，'
+        + '对应标题会显示短暂高亮，帮助确认跳转位置。',
+      '输入代码围栏并按回车后，会打开可搜索的语言选择器。支持按语言名称或'
+        + 'js、ts、py、sh、xml 等常用简称筛选，也可以使用方向键、回车和 Esc 完成操作。',
+      '选择语言后，焦点会在代码块完成最终渲染后稳定落入可编辑内容，可立即输入代码。'
+        + '更新说明同时为每个版本补充发布日期，版本信息更完整。'
+    ],
+    highlights: ['文档大纲', '语言筛选', '焦点与版本信息']
+  },
+  {
     version: '1.1.2',
+    date: '2026-07-26',
     title: 'AI 翻译与工作区体验',
     content: '新增 DeepSeek 中英文翻译和选区 AI 操作；完善工作区恢复、隐藏目录管理、'
       + '更新说明与长文档编辑稳定性。',
@@ -169,6 +214,7 @@ const releaseNotes = [
   },
   {
     version: '1.1.1',
+    date: '2026-07-25',
     title: 'AI 标记与设置体验',
     content: '重新设计设置页面，以基本设置、AI 设置和功能开关分区展示；'
       + '增加 AI 排版印章、角标样式、展示位置与切换动画。',
@@ -186,6 +232,7 @@ const releaseNotes = [
   },
   {
     version: '1.1.0',
+    date: '2026-07-25',
     title: 'AI 排版与正文查找',
     content: '接入 DeepSeek 排版能力，支持维护 API Key 和提示词；'
       + '新增编辑器顶部查找栏、命中导航和编辑区进度展示。',
@@ -201,6 +248,7 @@ const releaseNotes = [
   },
   {
     version: '1.0.6',
+    date: '2026-07-24',
     title: '发布构建修复',
     content: '修复版本标签触发发布时的自动构建流程，提高 macOS 安装包发布的稳定性。',
     paragraphs: [
@@ -211,6 +259,7 @@ const releaseNotes = [
   },
   {
     version: '1.0.5',
+    date: '2026-07-24',
     title: '自动发布',
     content: '新增基于版本标签的自动构建与发布流程，可自动生成 macOS DMG 安装包。',
     paragraphs: [
@@ -221,6 +270,7 @@ const releaseNotes = [
   },
   {
     version: '1.0.4',
+    date: '2026-07-23',
     title: 'Markdown 阅读配色',
     content: '优化 Markdown 列表、缩进和正文层级的配色，使编辑状态与预渲染内容更协调。',
     paragraphs: [
@@ -232,6 +282,7 @@ const releaseNotes = [
   },
   {
     version: '1.0.3',
+    date: '2026-07-19',
     title: '导航与视图控制',
     content: '改进笔记导航与视图控制，完善图片存储目录设置、路径校验和异常状态恢复。',
     paragraphs: [
@@ -243,6 +294,7 @@ const releaseNotes = [
   },
   {
     version: '1.0.2',
+    date: '2026-07-18',
     title: 'Markdown 快速编辑',
     content: '新增斜杠菜单与 Markdown 结构化键盘编辑，优化列表续写、缩进、'
       + '标题和引用输入体验，并修复光标对齐。',
@@ -256,6 +308,7 @@ const releaseNotes = [
   },
   {
     version: '1.0.1',
+    date: '2026-07-17',
     title: '丰富编辑交互',
     content: '补充 Markdown 富文本式编辑交互，让常用格式在编辑区中更直观、更易操作。',
     paragraphs: [
@@ -266,6 +319,7 @@ const releaseNotes = [
   },
   {
     version: '1.0.0',
+    date: '2026-07-16',
     title: '简记首次发布',
     content: '提供 Markdown 编辑与预览、文件夹笔记管理、双栏编辑、多窗口、'
       + '主题切换、阅读模式和本地图片存储。',
@@ -306,16 +360,25 @@ function closeReleaseNotes(pane, editorAdapter, restoreFocus = true) {
   return true;
 }
 
+function formatReleaseDate(date) {
+  const [year, month, day] = date.split('-').map(Number);
+  return `${year}年${month}月${day}日`;
+}
+
 function createReleaseDetails(release, featured = false) {
   const body = document.createElement('div');
   body.className = featured
     ? 'editor-release-featured-body'
     : 'editor-release-content-body';
   const paragraphs = release.paragraphs || [release.content];
+  const releaseDate = document.createElement('time');
+  releaseDate.className = 'editor-release-date';
+  releaseDate.dateTime = release.date;
+  releaseDate.textContent = `发布于 ${formatReleaseDate(release.date)}`;
   const overview = document.createElement('p');
   overview.className = 'editor-release-overview';
   overview.textContent = paragraphs[0];
-  body.appendChild(overview);
+  body.append(releaseDate, overview);
 
   if (paragraphs.length > 1) {
     const changes = document.createElement('div');
@@ -1040,6 +1103,157 @@ function createCodeEditor(textarea) {
   return editorAdapter;
 }
 
+function filterCodeLanguages(query) {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return codeLanguages;
+  return codeLanguages.filter(language => (
+    language.keywords.some(keyword => keyword.includes(normalizedQuery))
+  ));
+}
+
+function renderCodeLanguageResults() {
+  codeLanguageResults.replaceChildren();
+  if (!codeLanguageState.languages.length) {
+    const empty = document.createElement('div');
+    empty.className = 'code-language-empty';
+    empty.textContent = '没有匹配的语言';
+    codeLanguageResults.appendChild(empty);
+    codeLanguageSearch.removeAttribute('aria-activedescendant');
+    return;
+  }
+
+  codeLanguageState.languages.forEach((item, index) => {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.id = `code-language-option-${index}`;
+    option.className = 'code-language-option';
+    option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', String(index === codeLanguageState.selectedIndex));
+    const label = document.createElement('span');
+    label.textContent = item.label;
+    const language = document.createElement('code');
+    language.textContent = item.language || 'text';
+    option.append(label, language);
+    option.addEventListener('mousemove', () => {
+      if (codeLanguageState.selectedIndex === index) return;
+      codeLanguageState.selectedIndex = index;
+      renderCodeLanguageResults();
+    });
+    option.addEventListener('mousedown', event => {
+      event.preventDefault();
+      selectCodeLanguage(item.language);
+    });
+    codeLanguageResults.appendChild(option);
+  });
+
+  const selectedId = `code-language-option-${codeLanguageState.selectedIndex}`;
+  codeLanguageSearch.setAttribute('aria-activedescendant', selectedId);
+}
+
+function positionCodeLanguagePicker(editorAdapter, cursorPosition) {
+  const panel = editorAdapter.codeMirror
+    .getWrapperElement()
+    .closest('.editor-panel')
+    .getBoundingClientRect();
+  const picker = codeLanguagePicker.getBoundingClientRect();
+  const margin = 8;
+  const left = Math.min(
+    Math.max(cursorPosition.left, panel.left + margin),
+    panel.right - picker.width - margin
+  );
+  const spaceBelow = window.innerHeight - cursorPosition.bottom - margin;
+  const top = spaceBelow >= picker.height
+    ? cursorPosition.bottom + 5
+    : Math.max(margin, cursorPosition.top - picker.height - 5);
+  codeLanguagePicker.style.left = `${Math.round(left)}px`;
+  codeLanguagePicker.style.top = `${Math.round(top)}px`;
+}
+
+function closeCodeLanguagePicker() {
+  pendingCodeFenceCompletion = null;
+  codeLanguagePicker.hidden = true;
+  codeLanguageSearch.value = '';
+  codeLanguageResults.replaceChildren();
+}
+
+function applySelectedCodeLanguage(pending, language) {
+  if (!pending || language === null) return;
+  const safeLanguage = String(language || '').replace(/[^\w+-]/g, '');
+  const codeMirror = pending.editor.codeMirror;
+  const lineText = codeMirror.getLine(pending.line);
+  pendingCodeFocusEditor = {
+    editor: pending.editor,
+    line: pending.line
+  };
+  codeMirror.replaceRange(
+    `${pending.indentation}\`\`\`${safeLanguage}\n`
+      + `${pending.indentation}\n${pending.indentation}\`\`\``,
+    { line: pending.line, ch: 0 },
+    { line: pending.line, ch: lineText.length }
+  );
+  codeMirror.setCursor({
+    line: pending.line + 1,
+    ch: pending.indentation.length
+  });
+  const targetNote = pending.editor === editorRight ? currentNoteRight : currentNote;
+  scheduleEditorDecorations(pending.editor, () => targetNote);
+}
+
+function selectCodeLanguage(language) {
+  const pending = pendingCodeFenceCompletion;
+  pendingCodeFenceCompletion = null;
+  codeLanguagePicker.hidden = true;
+  codeLanguageSearch.value = '';
+  codeLanguageResults.replaceChildren();
+  applySelectedCodeLanguage(pending, language);
+}
+
+function showCodeLanguagePicker(editorAdapter, cursorPosition) {
+  codeLanguageSearch.value = '';
+  codeLanguageState.languages = codeLanguages;
+  codeLanguageState.selectedIndex = 0;
+  codeLanguagePicker.hidden = false;
+  renderCodeLanguageResults();
+  positionCodeLanguagePicker(editorAdapter, cursorPosition);
+  requestAnimationFrame(() => codeLanguageSearch.focus());
+}
+
+codeLanguageSearch.addEventListener('input', () => {
+  codeLanguageState.languages = filterCodeLanguages(codeLanguageSearch.value);
+  codeLanguageState.selectedIndex = 0;
+  renderCodeLanguageResults();
+});
+
+codeLanguageSearch.addEventListener('keydown', event => {
+  if (!['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(event.key)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.key === 'Escape') {
+    closeCodeLanguagePicker();
+    return;
+  }
+  const count = codeLanguageState.languages.length;
+  if (!count) return;
+  if (event.key === 'ArrowDown') {
+    codeLanguageState.selectedIndex = (codeLanguageState.selectedIndex + 1) % count;
+  } else if (event.key === 'ArrowUp') {
+    codeLanguageState.selectedIndex = (codeLanguageState.selectedIndex - 1 + count) % count;
+  } else if (event.key === 'Enter') {
+    const selected = codeLanguageState.languages[codeLanguageState.selectedIndex];
+    selectCodeLanguage(selected.language);
+    return;
+  }
+  renderCodeLanguageResults();
+  codeLanguageResults
+    .querySelector('[aria-selected="true"]')
+    ?.scrollIntoView({ block: 'nearest' });
+});
+
+document.addEventListener('mousedown', event => {
+  if (codeLanguagePicker.hidden || codeLanguagePicker.contains(event.target)) return;
+  closeCodeLanguagePicker();
+});
+
 function handleOpeningCodeFence(cm, editorAdapter) {
   const cursor = cm.getCursor();
   const lineText = cm.getLine(cursor.line);
@@ -1058,10 +1272,7 @@ function handleOpeningCodeFence(cm, editorAdapter) {
     indentation: openingFence[1]
   };
   const cursorPosition = cm.cursorCoords(cursor, 'window');
-  ipcRenderer.send('show-code-language-menu', {
-    x: cursorPosition.left,
-    y: cursorPosition.bottom
-  });
+  showCodeLanguagePicker(editorAdapter, cursorPosition);
   return true;
 }
 
@@ -1304,6 +1515,8 @@ let aiProgressHideTimer = null;
 let aiProgressAction = 'AI 优化排版';
 let aiStampRequestId = 0;
 let outlineEnabled = localStorage.getItem('outline-enabled') !== 'false';
+let outlineCollapsed = localStorage.getItem('outline-collapsed') === 'true';
+const outlineHighlightStates = new WeakMap();
 
 function activateSettingsTab(tab, shouldFocus = false) {
   if (!settingsTabs.includes(tab)) return;
@@ -1327,7 +1540,36 @@ function applyOutlineSetting() {
   outlineToggle.setAttribute('aria-checked', String(outlineEnabled));
 }
 
+function applyDocumentOutlineCollapsedState() {
+  [documentOutline, documentOutlineRight].forEach(container => {
+    container.classList.toggle('collapsed', outlineCollapsed);
+    const button = container.querySelector('.document-outline-collapse');
+    if (!button) return;
+    button.setAttribute('aria-expanded', String(!outlineCollapsed));
+    button.setAttribute('aria-label', outlineCollapsed ? '展开文档大纲' : '折叠文档大纲');
+    button.title = outlineCollapsed ? '展开大纲' : '折叠大纲';
+    button.textContent = outlineCollapsed ? '‹' : '›';
+  });
+}
+
+function syncDocumentOutlineWindowSpacing(container) {
+  const outlineTop = container.getBoundingClientRect().top;
+  if (outlineTop <= 0) return;
+  const outlineHeight = Math.max(38, window.innerHeight - outlineTop * 2);
+  container.style.setProperty('--document-outline-max-height', `${outlineHeight}px`);
+}
+
 applyOutlineSetting();
+applyDocumentOutlineCollapsedState();
+[documentOutline, documentOutlineRight].forEach(container => {
+  const observer = new ResizeObserver(() => {
+    requestAnimationFrame(() => syncDocumentOutlineWindowSpacing(container));
+  });
+  observer.observe(container.parentElement);
+});
+window.addEventListener('resize', () => {
+  [documentOutline, documentOutlineRight].forEach(syncDocumentOutlineWindowSpacing);
+});
 ipcRenderer.invoke('get-ai-settings').then(result => {
   if (result.success) applyAiStampPosition(result.stampPosition);
 });
@@ -2057,6 +2299,7 @@ function bindPreviewTaskCheckboxes(container, editorAdapter) {
 }
 
 function renderDocumentOutline(editorAdapter, container) {
+  syncDocumentOutlineWindowSpacing(container);
   const headings = getDocumentOutline(editorAdapter.value.split('\n'));
   const topHeadingLevel = headings.length
     ? Math.min(...headings.map(heading => heading.level))
@@ -2071,8 +2314,19 @@ function renderDocumentOutline(editorAdapter, container) {
   const titleCount = document.createElement('span');
   titleCount.className = 'document-outline-count';
   titleCount.textContent = String(headings.length);
-  title.append(titleLabel, titleCount);
+  const collapseButton = document.createElement('button');
+  collapseButton.type = 'button';
+  collapseButton.className = 'document-outline-collapse';
+  collapseButton.setAttribute('aria-controls', container.id);
+  collapseButton.setAttribute('aria-expanded', String(!outlineCollapsed));
+  collapseButton.addEventListener('click', () => {
+    outlineCollapsed = !outlineCollapsed;
+    localStorage.setItem('outline-collapsed', String(outlineCollapsed));
+    applyDocumentOutlineCollapsedState();
+  });
+  title.append(titleLabel, titleCount, collapseButton);
   container.appendChild(title);
+  applyDocumentOutlineCollapsedState();
   if (!headings.length) {
     const empty = document.createElement('div');
     empty.className = 'document-outline-empty';
@@ -2099,10 +2353,25 @@ function renderDocumentOutline(editorAdapter, container) {
       codeMirror.focus();
       requestAnimationFrame(() => {
         codeMirror.scrollTo(null, codeMirror.heightAtLine(heading.line, 'local'));
+        highlightDocumentOutlineTarget(codeMirror, heading.line);
       });
     });
     container.appendChild(item);
   });
+}
+
+function highlightDocumentOutlineTarget(codeMirror, lineNumber) {
+  const previous = outlineHighlightStates.get(codeMirror);
+  if (previous) {
+    clearTimeout(previous.timer);
+    codeMirror.removeLineClass(previous.line, 'wrap', 'document-outline-target');
+  }
+  codeMirror.addLineClass(lineNumber, 'wrap', 'document-outline-target');
+  const timer = setTimeout(() => {
+    codeMirror.removeLineClass(lineNumber, 'wrap', 'document-outline-target');
+    outlineHighlightStates.delete(codeMirror);
+  }, 1400);
+  outlineHighlightStates.set(codeMirror, { line: lineNumber, timer });
 }
 
 function updateDocumentOutlineSelection(editorAdapter, container) {
@@ -2616,17 +2885,26 @@ function renderEditorDecorations(editorAdapter, note) {
         && pendingCodeFocusEditor.line === block.start
       ) {
         const focusCodeEditor = () => {
+          if (
+            pendingCodeFocusEditor?.editor !== editorAdapter
+            || pendingCodeFocusEditor.line !== block.start
+          ) return;
           const codeElement = widget.querySelector('code[contenteditable]');
           if (!focusEditableAtStart(codeElement)) return;
-          if (
-            pendingCodeFocusEditor?.editor === editorAdapter
-            && pendingCodeFocusEditor.line === block.start
-          ) {
-            pendingCodeFocusEditor = null;
-          }
+          setTimeout(() => {
+            if (
+              pendingCodeFocusEditor?.editor === editorAdapter
+              && pendingCodeFocusEditor.line === block.start
+              && codeElement.isConnected
+              && document.activeElement === codeElement
+            ) {
+              pendingCodeFocusEditor = null;
+            }
+          }, 220);
         };
         queueMicrotask(focusCodeEditor);
         requestAnimationFrame(focusCodeEditor);
+        setTimeout(focusCodeEditor, 50);
       }
       widget.addEventListener('mousedown', event => {
         if (event.target.closest('code')) return;
@@ -3933,25 +4211,7 @@ ipcRenderer.on('format-markdown', (event, format) => formatActiveMarkdown(format
 ipcRenderer.on('code-language-selected', (event, language) => {
   const pending = pendingCodeFenceCompletion;
   pendingCodeFenceCompletion = null;
-  if (!pending || language === null) return;
-
-  const safeLanguage = String(language || '').replace(/[^\w+-]/g, '');
-  const codeMirror = pending.editor.codeMirror;
-  const lineText = codeMirror.getLine(pending.line);
-  pendingCodeFocusEditor = {
-    editor: pending.editor,
-    line: pending.line
-  };
-  codeMirror.replaceRange(
-    `${pending.indentation}\`\`\`${safeLanguage}\n`
-      + `${pending.indentation}\n${pending.indentation}\`\`\``,
-    { line: pending.line, ch: 0 },
-    { line: pending.line, ch: lineText.length }
-  );
-  codeMirror.setCursor({
-    line: pending.line + 1,
-    ch: pending.indentation.length
-  });
+  applySelectedCodeLanguage(pending, language);
 });
 ipcRenderer.on('table-context-action', (event, action) => {
   if (!tableContextActionHandler) return;
