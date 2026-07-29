@@ -526,10 +526,20 @@ function createWindow() {
 
   mainWindow = newWindow;
   newWindow.loadFile('index.html');
+  newWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.key !== 'Escape' || !newWindow.isFullScreen()) return;
+    event.preventDefault();
+    if (zenMode) {
+      setZenMode(false, true, newWindow);
+    } else {
+      newWindow.setFullScreen(false);
+    }
+  });
   newWindow.webContents.on('did-finish-load', () => {
     syncActiveWindowAppearanceMenu(newWindow);
     syncActiveWindowSidebarMenu(newWindow);
     syncActiveWindowPreviewMenu(newWindow);
+    newWindow.webContents.send('full-screen-changed', newWindow.isFullScreen());
   });
   newWindow.on('page-title-updated', event => {
     event.preventDefault();
@@ -540,7 +550,11 @@ function createWindow() {
     syncActiveWindowSidebarMenu(newWindow);
     syncActiveWindowPreviewMenu(newWindow);
   });
+  newWindow.on('enter-full-screen', () => {
+    newWindow.webContents.send('full-screen-changed', true);
+  });
   newWindow.on('leave-full-screen', () => {
+    newWindow.webContents.send('full-screen-changed', false);
     if (zenMode) setZenMode(false, false, newWindow);
   });
   newWindow.on('closed', () => {
@@ -779,7 +793,9 @@ function createWindow() {
         { type: 'separator' },
         { role: 'resetZoom', label: '重置缩放' },
         { role: 'zoomIn', label: '放大' },
-        { role: 'zoomOut', label: '缩小' }
+        { role: 'zoomOut', label: '缩小' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: '进入全屏幕' }
       ]
     },
     {
@@ -1499,11 +1515,25 @@ ipcMain.handle('paste-clipboard-content', async (event, { notePath }) => {
 });
 
 ipcMain.handle('create-note', async (event, { name, folderPath }) => {
-  ensureNotesDir();
-  const basePath = folderPath || getNotesDir();
-  const filePath = path.join(basePath, `${name}.md`);
-  fs.writeFileSync(filePath, '', 'utf-8');
-  return filePath;
+  try {
+    ensureNotesDir();
+    const basePath = folderPath || getNotesDir();
+    const defaultName = typeof name === 'string' && name.trim() ? name.trim() : '未命名';
+    let availableName = defaultName;
+    let suffix = 2;
+    let filePath = path.join(basePath, `${availableName}.md`);
+
+    while (fs.existsSync(filePath)) {
+      availableName = `${defaultName} ${suffix}`;
+      suffix += 1;
+      filePath = path.join(basePath, `${availableName}.md`);
+    }
+
+    fs.writeFileSync(filePath, '', { encoding: 'utf-8', flag: 'wx' });
+    return { success: true, note: { name: availableName, path: filePath } };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
 ipcMain.handle('create-folder', async (event, { name, parentPath }) => {

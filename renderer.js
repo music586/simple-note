@@ -172,6 +172,25 @@ const aiProgressLabel = document.getElementById('aiProgressLabel');
 const aiProgressBar = document.getElementById('aiProgressBar');
 const releaseNotes = [
   {
+    version: '1.1.4',
+    date: '2026-07-30',
+    title: '全屏、预览与新建体验',
+    content: '新增 macOS 原生全屏入口与 Esc 退出；统一预览、阅读模式的背景和顶部布局，'
+      + '并将新建笔记改为直接创建与就地命名。',
+    paragraphs: [
+      '视图菜单新增“进入全屏幕”，支持 macOS 原生全屏切换，并修复 Esc 无法退出全屏的'
+        + '问题。阅读模式进入全屏后会隐藏边栏折叠按钮，退出全屏时自动恢复。',
+      '重新整理编辑器、预览器和阅读模式的顶部关系。预览与阅读区域恢复柔和的淡灰背景，'
+        + '顶栏与内容区保持一致；双栏分割线延伸到顶部，并在顶部 Hover 底线出现时隐藏'
+        + '横线以上的竖向分隔，让窗口顶部保持完整连贯。',
+      '预览区顶部不再显示文件名，文件名保留在编辑侧；目录展开时，顶部 Hover 底线不会'
+        + '覆盖左侧目录边栏。',
+      '新建笔记不再弹出名称对话框。应用会直接创建“未命名”笔记并全选文件名，按一次'
+        + 'Delete 或 Backspace 即可清空后输入；遇到同名文件时自动生成安全的递增名称。'
+    ],
+    highlights: ['原生全屏', '预览与阅读布局', '即时新建笔记']
+  },
+  {
     version: '1.1.3',
     date: '2026-07-26',
     title: '大纲与代码块交互',
@@ -1344,6 +1363,10 @@ reportPreviewVisibility();
 
 ipcRenderer.on('topbar-hover-changed', (event, hovered) => {
   app.classList.toggle('topbar-hovered', hovered);
+});
+
+ipcRenderer.on('full-screen-changed', (event, enabled) => {
+  app.classList.toggle('native-full-screen', enabled);
 });
 
 ipcRenderer.on('zen-mode-changed', (event, enabled) => {
@@ -3701,16 +3724,30 @@ function formatActiveMarkdown(format) {
 }
 
 async function createNewNote(folderPath = null) {
-  showModal('新建笔记', '请输入笔记名称', '', async (name) => {
-    if (name) {
-      const filePath = await ipcRenderer.invoke('create-note', { name, folderPath });
-      currentNote = { name, path: filePath };
-      noteTitle.value = name;
-      editor.value = '';
-      leftPanel.classList.remove('ai-layout-optimized');
-      updatePreview(true);
-      await loadTree();
-    }
+  if (currentNote) await saveCurrentNote();
+  closeReleaseNotes(editorPane, editor, false);
+  closeSlashCommandMenu();
+
+  const result = await ipcRenderer.invoke('create-note', {
+    name: '未命名',
+    folderPath
+  });
+  if (!result.success) {
+    showConfirm('新建失败', result.error, () => {});
+    return;
+  }
+
+  currentNote = result.note;
+  noteTitle.value = result.note.name;
+  editor.value = '';
+  leftPanel.classList.remove('ai-layout-optimized');
+  updatePreview(true);
+  await loadTree();
+  saveWorkspaceSession();
+
+  requestAnimationFrame(() => {
+    noteTitle.focus();
+    noteTitle.select();
   });
 }
 

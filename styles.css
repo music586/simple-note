@@ -323,6 +323,24 @@ body {
   position: relative;
 }
 
+.app:not(.reading-mode, .zen-mode)
+  .editor-panel:has(.editor-container.view-both:not(.preview-hidden))::after {
+  content: '';
+  position: absolute;
+  z-index: 20;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--border-color);
+  pointer-events: none;
+}
+
+.app.topbar-hovered:not(.reading-mode, .zen-mode)
+  .editor-panel:has(.editor-container.view-both:not(.preview-hidden))::after {
+  top: var(--header-height);
+}
+
 .panel-divider {
   width: 4px;
   background-color: var(--border-color);
@@ -2638,6 +2656,10 @@ textarea,
   display: flex !important;
 }
 
+.app.reading-mode.native-full-screen #toggleSidebarBtn {
+  display: none !important;
+}
+
 .app.reading-mode #leftPanel > .toolbar .note-title-input {
   display: none;
 }
@@ -2811,12 +2833,17 @@ textarea,
   z-index: 20;
   top: calc(var(--header-height) - 1px);
   right: 0;
-  left: 0;
+  left: var(--sidebar-width);
   height: 1px;
   background: rgba(255, 255, 255, 0.075);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.16s ease;
+}
+
+.app.sidebar-hidden::after,
+.app.reading-mode:not(.reading-sidebar-visible)::after {
+  left: 0;
 }
 
 .app.topbar-hovered::after {
@@ -2855,6 +2882,7 @@ textarea,
     calc((100% - var(--editor-page-width)) / 2 + var(--editor-gutter))
   );
   background: var(--bg-primary);
+  border-bottom: 1px solid transparent;
 }
 
 .note-heading-row .note-title-input {
@@ -2873,6 +2901,75 @@ textarea,
   box-shadow: none;
   cursor: text;
   -webkit-app-region: no-drag;
+}
+
+/* Keep file chrome over the editor while the preview starts with a clean header. */
+.editor-panel:has(.editor-container.view-both:not(.preview-hidden)) .note-heading-row {
+  padding-right: calc(
+    50% + 1px + max(
+      var(--editor-gutter),
+      calc((50% - var(--editor-page-width)) / 2 + var(--editor-gutter))
+    )
+  );
+  padding-left: max(
+    var(--editor-gutter),
+    calc((50% - var(--editor-page-width)) / 2 + var(--editor-gutter))
+  );
+  border-bottom-color: transparent;
+}
+
+.editor-panel:has(.editor-container.view-preview) .note-heading-row {
+  border-bottom-color: transparent;
+}
+
+.editor-panel:has(.editor-container.view-preview) .note-heading-row .note-title-input {
+  visibility: hidden;
+}
+
+.editor-panel:has(.editor-container.view-both:not(.preview-hidden)) .note-heading-row {
+  background: linear-gradient(
+    to right,
+    var(--bg-primary) 0 50%,
+    var(--bg-secondary) 50% 100%
+  );
+}
+
+.editor-panel:has(.editor-container.view-both:not(.preview-hidden)) > .toolbar {
+  background: linear-gradient(
+    to right,
+    var(--bg-primary) 0 50%,
+    var(--bg-secondary) 50% 100%
+  );
+}
+
+.editor-panel:has(.editor-container.view-preview) .note-heading-row {
+  background-color: var(--bg-secondary);
+}
+
+.editor-panel:has(.editor-container.view-preview) > .toolbar,
+.app.reading-mode #leftPanel > .toolbar {
+  background: var(--bg-secondary);
+}
+
+.editor-container.view-both:not(.preview-hidden) .preview-pane,
+.editor-container.view-preview .preview-pane,
+.editor-container.view-both:not(.preview-hidden) .preview-content,
+.editor-container.view-preview .preview-content {
+  background-color: var(--bg-secondary);
+}
+
+.app.reading-mode #editorContainer .preview-pane,
+.app.reading-mode #editorContainer .preview-content {
+  background-color: var(--bg-secondary);
+}
+
+.editor-panel:has(.editor-container.view-both:not(.preview-hidden)) .note-heading-row
+  .note-title-input,
+.editor-panel:has(.editor-container.view-preview) .note-heading-row .note-title-input {
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 580;
+  letter-spacing: 0.01em;
 }
 
 .note-heading-row-right {
