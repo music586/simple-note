@@ -15,8 +15,17 @@ test('Help menu opens release notes in the active editor', () => {
   assert.match(renderer, /ipcRenderer\.on\('open-release-notes', showReleaseNotes\)/);
 });
 
+test('Help menu opens the update page in the system browser', () => {
+  assert.match(
+    main,
+    /label: '帮助'[\s\S]*label: '更新页面'[\s\S]*shell\.openExternal\('https:\/\/github\.com\/music586\/simple-note\/releases'\)/
+  );
+});
+
 test('release notes contain one collapsible paragraph block per version', () => {
   const versions = [
+    '1.1.5',
+    '1.1.4',
     '1.1.3',
     '1.1.2',
     '1.1.1',
@@ -40,6 +49,8 @@ test('release notes contain one collapsible paragraph block per version', () => 
 
 test('every release displays its published date inside the version content', () => {
   const dates = [
+    '2026-08-01',
+    '2026-07-30',
     '2026-07-26',
     '2026-07-25',
     '2026-07-24',

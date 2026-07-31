@@ -8,6 +8,7 @@ const {
   shouldRenderActiveListPrefix,
   getActiveBulletSourceCursor,
   getHeadingSectionRange,
+  getHeadingSectionMap,
   getDocumentOutline,
   getFencedCodeBlocks,
   analyzeLineContext,
@@ -102,6 +103,16 @@ test('headings inside fenced code do not end a collapsible section', () => {
     startLine: 1,
     endLine: 4
   });
+});
+
+test('heading section map computes every visible heading in one pass', () => {
+  const lines = ['# A', 'body', '## child', '```', '# code', '```', '# B', 'tail'];
+  const sections = getHeadingSectionMap(lines);
+
+  assert.deepEqual(sections.get(0), { level: 1, startLine: 1, endLine: 5 });
+  assert.deepEqual(sections.get(2), { level: 2, startLine: 3, endLine: 5 });
+  assert.equal(sections.has(4), false);
+  assert.deepEqual(sections.get(6), { level: 1, startLine: 7, endLine: 7 });
 });
 
 test('slash menu update refreshes deletion back to the full command catalog', () => {

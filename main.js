@@ -75,26 +75,38 @@ function setZenMode(enabled, updateWindow = true, preferredWindow = null) {
   if (menuItem) menuItem.checked = enabled;
 }
 
+function restoreReadingWindowState(targetWindow) {
+  const previousState = readingWindowStates.get(targetWindow);
+  if (!previousState) return;
+
+  readingWindowStates.delete(targetWindow);
+  if (targetWindow.isDestroyed()) return;
+  if (previousState.wasMaximized) {
+    if (!targetWindow.isMaximized()) targetWindow.maximize();
+  } else {
+    if (targetWindow.isMaximized()) targetWindow.unmaximize();
+    targetWindow.setBounds(previousState.bounds);
+  }
+}
+
 function setReadingMode(enabled, preferredWindow = null) {
   const targetWindow = getActiveWindow(preferredWindow);
   if (!targetWindow) return;
-  if (enabled && zenMode) setZenMode(false, true, targetWindow);
+  if (enabled && zenMode) setZenMode(false, false, targetWindow);
   if (enabled && !readingWindowStates.has(targetWindow)) {
     readingWindowStates.set(targetWindow, {
       wasMaximized: targetWindow.isMaximized(),
       bounds: targetWindow.getBounds()
     });
-    if (!targetWindow.isMaximized()) targetWindow.maximize();
   }
   readingMode = enabled;
   targetWindow.webContents.send('reading-mode-changed', enabled);
-  if (!enabled) {
-    const previousState = readingWindowStates.get(targetWindow);
-    if (previousState && !previousState.wasMaximized && !targetWindow.isDestroyed()) {
-      targetWindow.unmaximize();
-      targetWindow.setBounds(previousState.bounds);
-    }
-    readingWindowStates.delete(targetWindow);
+  if (enabled && !targetWindow.isFullScreen()) {
+    targetWindow.setFullScreen(true);
+  } else if (!enabled && targetWindow.isFullScreen()) {
+    targetWindow.setFullScreen(false);
+  } else if (!enabled) {
+    restoreReadingWindowState(targetWindow);
   }
   const menuItem = Menu.getApplicationMenu()?.getMenuItemById('reading-mode');
   if (menuItem) menuItem.checked = enabled;
@@ -330,6 +342,40 @@ ipcMain.handle('open-external-url', async (event, href) => {
   }
 });
 
+ipcMain.handle('open-relative-link', async (event, data) => {
+  try {
+    const notesDir = path.resolve(getNotesDir());
+    const sourceNotePath = path.resolve(String(data?.sourceNotePath || ''));
+    const sourceRelativePath = path.relative(notesDir, sourceNotePath);
+    if (
+      !data
+      || typeof data.href !== 'string'
+      || sourceRelativePath.startsWith('..')
+      || path.isAbsolute(sourceRelativePath)
+    ) {
+      throw new Error('相对链接来源无效');
+    }
+
+    const linkPath = decodeURI(data.href.split(/[?#]/, 1)[0]).trim();
+    if (!linkPath) return { success: false, error: '相对链接目标为空' };
+    const targetPath = path.resolve(path.dirname(sourceNotePath), linkPath);
+    const targetRelativePath = path.relative(notesDir, targetPath);
+    if (targetRelativePath.startsWith('..') || path.isAbsolute(targetRelativePath)) {
+      throw new Error('相对链接不能指向笔记库外部');
+    }
+    if (!fs.existsSync(targetPath)) throw new Error('相对链接目标不存在');
+
+    if (path.extname(targetPath).toLowerCase() === '.md') {
+      return { success: true, type: 'note', path: targetPath };
+    }
+    const error = await shell.openPath(targetPath);
+    if (error) throw new Error(error);
+    return { success: true, type: 'file', path: targetPath };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 ipcMain.handle('get-app-version', () => app.getVersion());
 
 function getTree(dir, basePath = '', hiddenDirectories = getHiddenDirectories()) {
@@ -556,6 +602,7 @@ function createWindow() {
   newWindow.on('leave-full-screen', () => {
     newWindow.webContents.send('full-screen-changed', false);
     if (zenMode) setZenMode(false, false, newWindow);
+    if (readingWindowStates.has(newWindow)) setReadingMode(false, newWindow);
   });
   newWindow.on('closed', () => {
     if (mainWindow === newWindow) {
@@ -775,17 +822,26 @@ function createWindow() {
           ]
         },
         {
-          id: 'reading-mode',
-          type: 'checkbox',
-          label: '纯阅读模式',
-          click: (menuItem, browserWindow) => setReadingMode(menuItem.checked, browserWindow)
-        },
-        {
-          id: 'zen-mode',
-          type: 'checkbox',
-          label: '禅模式',
-          accelerator: 'CmdOrCtrl+Shift+Z',
-          click: (menuItem, browserWindow) => setZenMode(menuItem.checked, true, browserWindow)
+          label: '专注模式',
+          submenu: [
+            {
+              id: 'reading-mode',
+              type: 'checkbox',
+              label: '阅读',
+              click: (menuItem, browserWindow) => {
+                setReadingMode(menuItem.checked, browserWindow);
+              }
+            },
+            {
+              id: 'zen-mode',
+              type: 'checkbox',
+              label: '写作',
+              accelerator: 'CmdOrCtrl+Shift+Z',
+              click: (menuItem, browserWindow) => {
+                setZenMode(menuItem.checked, true, browserWindow);
+              }
+            }
+          ]
         },
         { type: 'separator' },
         { role: 'reload', label: '刷新' },
@@ -804,6 +860,10 @@ function createWindow() {
         {
           label: '更新说明',
           click: () => sendToActiveWindow('open-release-notes', app.getVersion())
+        },
+        {
+          label: '更新页面',
+          click: () => shell.openExternal('https://github.com/music586/simple-note/releases')
         }
       ]
     }

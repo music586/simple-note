@@ -19,6 +19,11 @@ test('checked task controls use the dedicated completion color', () => {
   assert.match(styles, /--md-task-checked: #218a72;/);
   assert.match(styles, /\.cm-rendered-checkbox\.is-checked\s*\{[^}]*var\(--md-task-checked\)/s);
   assert.match(styles, /accent-color: var\(--md-task-checked\)/);
+  assert.match(styles, /\.cm-task-completed-text,[\s\S]*text-decoration: line-through/);
+  assert.match(
+    styles,
+    /\.preview-content li\.task-list-item:has\(> input\[type='checkbox'\]:checked\)/
+  );
 });
 
 test('links keep their interaction color and visible underline treatment', () => {

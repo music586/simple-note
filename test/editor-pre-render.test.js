@@ -11,8 +11,9 @@ const renderer = fs.readFileSync(
 test('pre-render determines fenced code state independently for every visible line', () => {
   assert.match(
     renderer,
-    /const containingCodeBlock = codeBlocks\.find\(block => \([\s\S]*block\.start <= lineNumber[\s\S]*block\.end >= lineNumber/
+    /const containingCodeBlock = findContainingCodeBlock\(codeBlocks, lineNumber\)/
   );
+  assert.match(renderer, /function findContainingCodeBlock\(codeBlocks, lineNumber\)/);
   assert.match(
     renderer,
     /const inCodeFence = Boolean\(containingCodeBlock && !fenceLine\)/

@@ -56,3 +56,32 @@ test('view menu exposes explicit light and dark appearance choices', () => {
   assert.match(renderer, /ipcRenderer\.on\('request-color-theme'/);
   assert.match(renderer, /event\.key !== 'color-theme'/);
 });
+
+test('view menu groups reading and writing under focus mode', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+
+  assert.match(
+    main,
+    /label: '视图',[\s\S]*label: '专注模式',[\s\S]*submenu: \[[\s\S]*id: 'reading-mode',[\s\S]*label: '阅读',[\s\S]*id: 'zen-mode',[\s\S]*label: '写作'/
+  );
+  assert.doesNotMatch(main, /label: '纯阅读模式'/);
+  assert.doesNotMatch(main, /label: '禅模式'/);
+  assert.doesNotMatch(main, /label: '页面全屏'/);
+});
+
+test('reading mode uses native fullscreen and restores the previous window state', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+
+  assert.match(
+    main,
+    /function setReadingMode[\s\S]*readingWindowStates\.set[\s\S]*wasMaximized:[\s\S]*bounds:[\s\S]*setFullScreen\(true\)/
+  );
+  assert.match(
+    main,
+    /function restoreReadingWindowState[\s\S]*previousState\.wasMaximized[\s\S]*targetWindow\.maximize\(\)[\s\S]*targetWindow\.setBounds\(previousState\.bounds\)/
+  );
+  assert.match(
+    main,
+    /newWindow\.on\('leave-full-screen',[\s\S]*readingWindowStates\.has\(newWindow\)[\s\S]*setReadingMode\(false, newWindow\)/
+  );
+});

@@ -1,9 +1,11 @@
+const crypto = require('crypto');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const { ipcRenderer } = require('electron');
 const { marked } = require('marked');
 const hljs = require('highlight.js');
 const CodeMirror = require('codemirror');
+const mermaidVersion = require('mermaid/package.json').version;
 require('codemirror/mode/markdown/markdown');
 const {
   getEditorCursorAlignment,
@@ -23,8 +25,12 @@ const {
 const { getTableAddControlState } = require('./table-ui');
 const { getTaskCheckboxEdit } = require('./preview-task');
 const { getMarkdownFormatEdit } = require('./markdown-format');
-const { normalizePreviewMarkdown } = require('./preview-markdown');
 const {
+  isMermaidDiagramStart,
+  normalizePreviewMarkdown
+} = require('./preview-markdown');
+const {
+  preserveEditorScrollPosition,
   scheduleDecorationHeightChange
 } = require('./editor-widget-height');
 const {
@@ -46,7 +52,7 @@ const {
   getRenderedListPrefix,
   shouldRenderActiveListPrefix,
   getActiveBulletSourceCursor,
-  getHeadingSectionRange,
+  getHeadingSectionMap,
   getDocumentOutline,
   getFencedCodeBlocks,
   getEnterEdit,
@@ -125,6 +131,11 @@ const codeLanguages = [
   { label: 'YAML', language: 'yaml', keywords: ['yaml', 'yml'] },
   { label: 'HTML / XML', language: 'html', keywords: ['html', 'xml'] },
   { label: 'CSS', language: 'css', keywords: ['css'] },
+  {
+    label: 'Mermaid',
+    language: 'mermaid',
+    keywords: ['mermaid', '图表', '流程图']
+  },
   { label: 'SQL', language: 'sql', keywords: ['sql'] },
   { label: 'Shell / Bash', language: 'bash', keywords: ['shell', 'bash', 'sh', 'zsh'] },
   { label: 'Java', language: 'java', keywords: ['java'] },
@@ -171,6 +182,26 @@ const aiProgress = document.getElementById('aiProgress');
 const aiProgressLabel = document.getElementById('aiProgressLabel');
 const aiProgressBar = document.getElementById('aiProgressBar');
 const releaseNotes = [
+  {
+    version: '1.1.5',
+    date: '2026-08-01',
+    title: 'Mermaid 图表与编辑稳定性',
+    content: '新增 Mermaid 多类型图表预渲染和真实尺寸查看器，并优化源码编辑、'
+      + '焦点切换及高度变化时的滚动稳定性。',
+    paragraphs: [
+      '新增 Mermaid 图表支持，可识别 flowchart、sequenceDiagram、stateDiagram-v2、'
+        + 'classDiagram、gantt、pie 和 journey；无语言标记的围栏代码块及直接书写的'
+        + '图表声明也可以自动识别。',
+      '图表渲染采用安全模式、主题适配、内容哈希缓存和异步版本校验。语法错误会在原位置'
+        + '显示中文提示并保留源码，单个图表失败不会影响整篇笔记预览。',
+      '单击图表可打开真实尺寸查看器，弹窗宽高以预渲染容器为最小尺寸，并在真实图表超过'
+        + '最小尺寸时按内容和合理边距扩展；超出窗口后可在弹窗内部滚动，点击遮罩或按 Esc'
+        + '即可关闭。编辑区图表支持双击进入 Mermaid 源码。',
+      '完善预渲染高度变化时的视觉锚点，保持变化区域上方内容和滚动位置稳定；普通文本获得'
+        + '焦点、同一行移动光标或点击编辑器空白区域时，会跳过无效装饰重建，减少页面闪烁。'
+    ],
+    highlights: ['多类型 Mermaid', '安全预渲染', '真实尺寸查看器', '滚动与重绘稳定性']
+  },
   {
     version: '1.1.4',
     date: '2026-07-30',
@@ -766,12 +797,38 @@ document.addEventListener('keydown', event => {
   }
 }, true);
 
-[preview, previewRight].forEach(container => {
+async function openRenderedMarkdownLink(href, note) {
+  const target = String(href || '').trim();
+  if (!target) return;
+  if (/^(?:https?:)?\/\//i.test(target)) {
+    const externalUrl = target.startsWith('//') ? `https:${target}` : target;
+    await ipcRenderer.invoke('open-external-url', externalUrl);
+    return;
+  }
+  if (!note || /^(?:[a-z]+:|#)/i.test(target)) return;
+
+  const result = await ipcRenderer.invoke('open-relative-link', {
+    sourceNotePath: note.path,
+    href: target
+  });
+  if (!result.success || result.type !== 'note') return;
+  const linkedNote = getTreeNoteByPath(tree, result.path) || {
+    type: 'file',
+    path: result.path,
+    name: path.basename(result.path, path.extname(result.path))
+  };
+  await selectNote(linkedNote);
+}
+
+[
+  [preview, () => currentNote],
+  [previewRight, () => currentNoteRight]
+].forEach(([container, getNote]) => {
   container.addEventListener('click', event => {
     const link = event.target.closest('a[href]');
     if (!link || !container.contains(link)) return;
     event.preventDefault();
-    ipcRenderer.invoke('open-external-url', link.href);
+    openRenderedMarkdownLink(link.getAttribute('href'), getNote());
   });
 });
 
@@ -947,19 +1004,76 @@ function updateSlashCommandForEditor(editorAdapter) {
 }
 
 function scheduleEditorDecorations(editorAdapter, getNote) {
+  if (editorAdapter.decorationViewportTimer) {
+    clearTimeout(editorAdapter.decorationViewportTimer);
+    editorAdapter.decorationViewportTimer = null;
+  }
   if (editorAdapter.decorationFrame || editorAdapter.renderingDecorations) return;
   editorAdapter.decorationFrame = requestAnimationFrame(() => {
     editorAdapter.decorationFrame = null;
     if (editorAdapter.renderingDecorations) return;
     const codeMirror = editorAdapter.codeMirror;
-    const scrollTop = codeMirror.getScrollInfo().top;
-    codeMirror.operation(() => {
-      renderEditorDecorations(editorAdapter, getNote());
+    preserveEditorScrollPosition(codeMirror, () => {
+      codeMirror.operation(() => {
+        renderEditorDecorations(editorAdapter, getNote());
+      });
     });
-    if (codeMirror.getScrollInfo().top !== scrollTop) {
-      codeMirror.scrollTo(null, scrollTop);
-    }
+    editorAdapter.decorationCursorState = getEditorDecorationCursorState(editorAdapter);
   });
+}
+
+function getEditorDecorationCursorState(editorAdapter) {
+  const codeMirror = editorAdapter.codeMirror;
+  const cursor = codeMirror.getCursor();
+  const lineText = codeMirror.getLine(cursor.line) || '';
+  const listPrefix = getRenderedListPrefix(lineText);
+  if (listPrefix) {
+    const listCursorCh = getActiveBulletSourceCursor(listPrefix, cursor.ch);
+    const showsRenderedPrefix = shouldRenderActiveListPrefix(listPrefix, listCursorCh);
+    return `line:${cursor.line}:list-prefix:${showsRenderedPrefix}`;
+  }
+
+  const structure = editorAdapter.decorationStructure;
+  const codeBlock = structure
+    ? findContainingCodeBlock(structure.blocks, cursor.line)
+    : null;
+  const hasSourceVisibilityChange = Boolean(
+    codeBlock
+    || /^\s*(?:#{1,6}\s+|>\s?)/.test(lineText)
+    || /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(lineText)
+    || /!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\)/.test(lineText)
+    || /\*\*[^*]+\*\*|~~[^~]+~~|==[^=]+==|`[^`]+`/.test(lineText)
+    || /(?<!\*)\*[^*]+\*(?!\*)/.test(lineText)
+  );
+  return hasSourceVisibilityChange ? `line:${cursor.line}` : 'stable';
+}
+
+function scheduleCursorEditorDecorations(editorAdapter, getNote) {
+  const nextState = getEditorDecorationCursorState(editorAdapter);
+  if (
+    !editorAdapter.decorationStructureDirty
+    && editorAdapter.decorationCursorState === nextState
+  ) return;
+  scheduleEditorDecorations(editorAdapter, getNote);
+}
+
+function scheduleViewportEditorDecorations(editorAdapter, getNote) {
+  if (editorAdapter.renderingDecorations) return;
+  const viewport = editorAdapter.codeMirror.getViewport();
+  const range = editorAdapter.decorationRange;
+  const lineCount = editorAdapter.codeMirror.lineCount();
+  if (range) {
+    const stableFrom = range.from === 0 ? 0 : range.from + 20;
+    const stableTo = range.to === lineCount ? lineCount : range.to - 20;
+    if (viewport.from >= stableFrom && viewport.to <= stableTo) return;
+  }
+  if (editorAdapter.decorationViewportTimer) {
+    clearTimeout(editorAdapter.decorationViewportTimer);
+  }
+  editorAdapter.decorationViewportTimer = setTimeout(() => {
+    editorAdapter.decorationViewportTimer = null;
+    scheduleEditorDecorations(editorAdapter, getNote);
+  }, 100);
 }
 
 editor.codeMirror.on('cursorActivity', () => {
@@ -968,7 +1082,7 @@ editor.codeMirror.on('cursorActivity', () => {
     slashCommandMenu.close();
   }
   updateSlashCommandForEditor(editor);
-  scheduleEditorDecorations(editor, () => currentNote);
+  scheduleCursorEditorDecorations(editor, () => currentNote);
   updateDocumentOutlineSelection(editor, documentOutline);
 });
 editor.codeMirror.on('focus', () => {
@@ -977,7 +1091,7 @@ editor.codeMirror.on('focus', () => {
   updateSlashCommandForEditor(editor);
 });
 editor.codeMirror.on('viewportChange', () => {
-  scheduleEditorDecorations(editor, () => currentNote);
+  scheduleViewportEditorDecorations(editor, () => currentNote);
 });
 editorRight.codeMirror.on('cursorActivity', () => {
   lastActiveEditor = editorRight;
@@ -985,7 +1099,7 @@ editorRight.codeMirror.on('cursorActivity', () => {
     slashCommandMenu.close();
   }
   updateSlashCommandForEditor(editorRight);
-  scheduleEditorDecorations(editorRight, () => currentNoteRight);
+  scheduleCursorEditorDecorations(editorRight, () => currentNoteRight);
   updateDocumentOutlineSelection(editorRight, documentOutlineRight);
 });
 editorRight.codeMirror.on('focus', () => {
@@ -996,7 +1110,7 @@ editorRight.codeMirror.on('focus', () => {
   updateSlashCommandForEditor(editorRight);
 });
 editorRight.codeMirror.on('viewportChange', () => {
-  scheduleEditorDecorations(editorRight, () => currentNoteRight);
+  scheduleViewportEditorDecorations(editorRight, () => currentNoteRight);
 });
 
 function bindEditorSelectionContextMenu(editorAdapter) {
@@ -1053,6 +1167,8 @@ function createCodeEditor(textarea) {
 
   codeMirror.on('change', () => {
     editorAdapter.decorationStructureDirty = true;
+    editorAdapter.decorationRange = null;
+    editorAdapter.decorationCursorState = null;
     if (!suppressChange) inputHandlers.forEach(handler => handler());
   });
 
@@ -1061,6 +1177,20 @@ function createCodeEditor(textarea) {
   });
 
   const inputField = codeMirror.getInputField();
+  const codeMirrorWrapper = codeMirror.getWrapperElement();
+  codeMirrorWrapper.addEventListener('mousedown', event => {
+    if (event.button !== 0) return;
+    if (event.target.closest('.CodeMirror-line')) return;
+    if (event.target.closest(
+      '.cm-code-widget, .cm-mermaid-widget, .cm-table-widget, .cm-image-widget'
+    )) return;
+    if (!event.target.closest(
+      '.CodeMirror-scroll, .CodeMirror-sizer, .CodeMirror-lines, .CodeMirror-code'
+    )) return;
+
+    event.preventDefault();
+    inputField.focus({ preventScroll: true });
+  }, true);
   inputField.addEventListener('compositionstart', () => {
     slashCommandState.composing = true;
   });
@@ -1075,11 +1205,15 @@ function createCodeEditor(textarea) {
     decorationLines: [],
     decorationWidgets: [],
     decorationFrame: null,
+    decorationViewportTimer: null,
+    decorationRange: null,
+    decorationCursorState: null,
     cursorAlignmentFrame: null,
     renderingDecorations: false,
     decorationStructureDirty: true,
+    decorationStructure: null,
+    codeHighlightCache: new Map(),
     collapsedHeadings: new Set(),
-    codeBlocks: [],
     get value() {
       return codeMirror.getValue();
     },
@@ -1307,6 +1441,8 @@ function setColorTheme(theme) {
   if (theme !== 'light' && theme !== 'dark') return;
   applyColorTheme(theme);
   localStorage.setItem('color-theme', theme);
+  updatePreview(true);
+  updatePreviewRight(true);
 }
 
 applyColorTheme(colorTheme);
@@ -1320,6 +1456,8 @@ window.addEventListener('storage', event => {
     return;
   }
   applyColorTheme(event.newValue);
+  updatePreview(true);
+  updatePreviewRight(true);
 });
 
 panelDivider.classList.add('hidden');
@@ -1438,14 +1576,33 @@ function toggleSidebar() {
   setSidebarVisibility(!isSidebarVisible());
 }
 
+let sidebarTransitionTimer = null;
+let sidebarToggleMoveTimer = null;
+let sidebarToggleRevealTimer = null;
+
+function beginSidebarTransition() {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
+  if (sidebarTransitionTimer) clearTimeout(sidebarTransitionTimer);
+  app.classList.add('sidebar-transitioning');
+  sidebarTransitionTimer = setTimeout(() => {
+    app.classList.remove('sidebar-transitioning');
+    sidebarTransitionTimer = null;
+    editor.codeMirror.refresh();
+    editorRight.codeMirror.refresh();
+  }, 440);
+  return true;
+}
+
 function setSidebarVisibility(visible) {
   if (typeof visible !== 'boolean') return;
+  if (visible === isSidebarVisible()) return;
+  const animate = beginSidebarTransition();
   if (app.classList.contains('reading-mode')) {
     readingSidebarVisible = visible;
     app.classList.toggle('reading-sidebar-visible', readingSidebarVisible);
     toggleSidebarBtn.title = readingSidebarVisible ? '隐藏目录' : '显示目录';
     toggleSidebarBtn.setAttribute('aria-expanded', String(readingSidebarVisible));
-    updateSidebarTogglePlacement(readingSidebarVisible);
+    updateSidebarTogglePlacement(readingSidebarVisible, animate);
     reportSidebarVisibility();
     return;
   }
@@ -1453,19 +1610,36 @@ function setSidebarVisibility(visible) {
   app.classList.toggle('sidebar-hidden', sidebarHidden);
   toggleSidebarBtn.title = sidebarHidden ? '显示目录' : '隐藏目录';
   toggleSidebarBtn.setAttribute('aria-expanded', String(!sidebarHidden));
-  updateSidebarTogglePlacement(!sidebarHidden);
+  updateSidebarTogglePlacement(!sidebarHidden, animate);
   reportSidebarVisibility();
   localStorage.setItem('sidebar-hidden', sidebarHidden);
 }
 
-function updateSidebarTogglePlacement(expanded) {
+function updateSidebarTogglePlacement(expanded, animate = false) {
   const sidebarHeader = document.querySelector('.sidebar-header');
   const leftToolbar = document.querySelector('#leftPanel > .toolbar');
-  if (expanded) {
-    sidebarHeader.appendChild(toggleSidebarBtn);
-  } else {
-    leftToolbar.prepend(toggleSidebarBtn);
+  const destination = expanded ? sidebarHeader : leftToolbar;
+  const moveToggle = () => {
+    if (expanded) destination.appendChild(toggleSidebarBtn);
+    else destination.prepend(toggleSidebarBtn);
+  };
+  if (!animate) {
+    moveToggle();
+    toggleSidebarBtn.classList.remove('sidebar-toggle-relocating');
+    return;
   }
+
+  if (sidebarToggleMoveTimer) clearTimeout(sidebarToggleMoveTimer);
+  if (sidebarToggleRevealTimer) clearTimeout(sidebarToggleRevealTimer);
+  toggleSidebarBtn.classList.add('sidebar-toggle-relocating');
+  sidebarToggleMoveTimer = setTimeout(() => {
+    moveToggle();
+    sidebarToggleMoveTimer = null;
+  }, 110);
+  sidebarToggleRevealTimer = setTimeout(() => {
+    toggleSidebarBtn.classList.remove('sidebar-toggle-relocating');
+    sidebarToggleRevealTimer = null;
+  }, 190);
 }
 
 toggleSidebarBtn.addEventListener('click', toggleSidebar);
@@ -2298,6 +2472,240 @@ async function selectNote(note) {
 }
 
 let previewTimeout = null;
+let mermaidModulePromise = null;
+let mermaidRenderQueue = Promise.resolve();
+let mermaidRenderId = 0;
+const maxMermaidCacheEntries = 100;
+const mermaidSvgCache = new Map();
+const previewRenderVersions = new WeakMap();
+const mermaidViewer = document.createElement('div');
+mermaidViewer.className = 'modal mermaid-viewer';
+mermaidViewer.setAttribute('role', 'dialog');
+mermaidViewer.setAttribute('aria-modal', 'true');
+mermaidViewer.setAttribute('aria-labelledby', 'mermaidViewerTitle');
+mermaidViewer.tabIndex = -1;
+mermaidViewer.innerHTML = `
+  <div class="mermaid-viewer-shell">
+    <div class="mermaid-viewer-toolbar">
+      <div>
+        <strong id="mermaidViewerTitle">图表查看器</strong>
+        <span>原始尺寸 · 可滚动查看</span>
+      </div>
+    </div>
+    <div class="mermaid-viewer-canvas"></div>
+  </div>
+`;
+document.body.appendChild(mermaidViewer);
+const mermaidViewerShell = mermaidViewer.querySelector('.mermaid-viewer-shell');
+const mermaidViewerCanvas = mermaidViewer.querySelector('.mermaid-viewer-canvas');
+
+function getMermaidDiagramLabel(source) {
+  const declaration = String(source || '').trimStart();
+  if (/^gantt\b/i.test(declaration)) return '甘特图';
+  if (/^sequenceDiagram\b/i.test(declaration)) return '时序图';
+  if (/^stateDiagram-v2\b/i.test(declaration)) return '状态图';
+  if (/^classDiagram\b/i.test(declaration)) return '类图';
+  if (/^pie\b/i.test(declaration)) return '饼图';
+  if (/^journey\b/i.test(declaration)) return '用户旅程';
+  return '流程图';
+}
+
+function closeMermaidViewer() {
+  if (!mermaidViewer.classList.contains('active')) return;
+  mermaidViewer.classList.remove('active');
+  mermaidViewerCanvas.replaceChildren();
+}
+
+function openMermaidViewer(svg, source) {
+  if (!svg) return;
+  const previewContainer = svg.closest('.cm-mermaid-widget, .mermaid-diagram') || svg;
+  const previewBounds = previewContainer.getBoundingClientRect();
+  const clonedSvg = svg.cloneNode(true);
+  const viewBox = clonedSvg.viewBox.baseVal;
+  if (viewBox?.width) {
+    const diagramWidth = Math.ceil(viewBox.width);
+    const diagramHeight = Math.ceil(viewBox.height);
+    const viewerOuterGap = 48;
+    const viewerContentPadding = 64;
+    const viewerToolbarHeight = 59;
+    const availableWidth = Math.max(0, window.innerWidth - viewerOuterGap);
+    const availableHeight = Math.max(0, window.innerHeight - viewerOuterGap);
+    const minimumWidth = Math.ceil(previewBounds.width);
+    const minimumHeight = Math.ceil(previewBounds.height);
+    const trueSizeWidth = diagramWidth + viewerContentPadding;
+    const trueSizeHeight = diagramHeight + viewerContentPadding + viewerToolbarHeight;
+    const shellWidth = Math.min(
+      availableWidth,
+      Math.max(minimumWidth, trueSizeWidth)
+    );
+    const shellHeight = Math.min(
+      availableHeight,
+      Math.max(minimumHeight, trueSizeHeight)
+    );
+
+    clonedSvg.style.width = `${diagramWidth}px`;
+    clonedSvg.style.height = `${diagramHeight}px`;
+    mermaidViewerShell.style.width = `${shellWidth}px`;
+    mermaidViewerShell.style.height = `${shellHeight}px`;
+  }
+  mermaidViewer.querySelector('#mermaidViewerTitle').textContent = getMermaidDiagramLabel(source);
+  mermaidViewerCanvas.replaceChildren(clonedSvg);
+  mermaidViewer.classList.add('active');
+}
+
+function bindMermaidViewer(wrapper, source, onEdit = null) {
+  wrapper.tabIndex = 0;
+  wrapper.setAttribute(
+    'aria-label',
+    `${getMermaidDiagramLabel(source)}，单击查看原始大小${onEdit ? '，双击编辑源码' : ''}`
+  );
+  wrapper.addEventListener('mousedown', event => {
+    if (event.button === 0) event.preventDefault();
+  });
+  let clickTimer = null;
+  wrapper.addEventListener('click', () => {
+    if (!onEdit) {
+      openMermaidViewer(wrapper.querySelector('svg'), source);
+      return;
+    }
+    if (clickTimer) clearTimeout(clickTimer);
+    clickTimer = setTimeout(() => {
+      clickTimer = null;
+      openMermaidViewer(wrapper.querySelector('svg'), source);
+    }, 220);
+  });
+  wrapper.addEventListener('dblclick', event => {
+    if (!onEdit) return;
+    event.preventDefault();
+    if (clickTimer) clearTimeout(clickTimer);
+    clickTimer = null;
+    onEdit();
+  });
+  wrapper.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    openMermaidViewer(wrapper.querySelector('svg'), source);
+  });
+}
+
+mermaidViewer.addEventListener('click', event => {
+  if (event.target === mermaidViewer) closeMermaidViewer();
+});
+
+function getMermaidModule() {
+  if (globalThis.mermaid) return Promise.resolve(globalThis.mermaid);
+  if (mermaidModulePromise) return mermaidModulePromise;
+
+  mermaidModulePromise = new Promise((resolve, reject) => {
+    const mermaidModulePath = require.resolve('mermaid');
+    const mermaidBundlePath = path.join(
+      path.dirname(mermaidModulePath),
+      'mermaid.min.js'
+    );
+    const script = document.createElement('script');
+    script.src = pathToFileURL(mermaidBundlePath).href;
+    script.addEventListener('load', () => {
+      if (globalThis.mermaid) resolve(globalThis.mermaid);
+      else reject(new Error('Mermaid 浏览器模块加载失败'));
+    }, { once: true });
+    script.addEventListener('error', () => {
+      reject(new Error('无法加载 Mermaid 浏览器模块'));
+    }, { once: true });
+    document.head.appendChild(script);
+  }).catch(error => {
+    mermaidModulePromise = null;
+    throw error;
+  });
+  return mermaidModulePromise;
+}
+
+function getMermaidCacheKey(source, theme) {
+  return crypto.createHash('sha256')
+    .update(`${mermaidVersion}\0${theme}\0strict\0${source}`)
+    .digest('hex');
+}
+
+function renderMermaidSvg(source, theme) {
+  const cacheKey = getMermaidCacheKey(source, theme);
+  const cachedRender = mermaidSvgCache.get(cacheKey);
+  if (cachedRender) return cachedRender;
+
+  const renderTask = mermaidRenderQueue.then(async () => {
+    const mermaid = await getMermaidModule();
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme
+    });
+    mermaidRenderId += 1;
+    const result = await mermaid.render(`mermaid-preview-${mermaidRenderId}`, source);
+    return result.svg;
+  });
+  mermaidSvgCache.set(cacheKey, renderTask);
+  if (mermaidSvgCache.size > maxMermaidCacheEntries) {
+    const oldestCacheKey = mermaidSvgCache.keys().next().value;
+    mermaidSvgCache.delete(oldestCacheKey);
+  }
+  renderTask.catch(() => mermaidSvgCache.delete(cacheKey));
+  mermaidRenderQueue = renderTask.catch(() => {});
+  return renderTask;
+}
+
+function createMermaidError(source, error) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'mermaid-error';
+  const title = document.createElement('strong');
+  title.textContent = 'Mermaid 图表语法错误';
+  const message = document.createElement('p');
+  message.textContent = error?.message || '无法渲染此图表';
+  const details = document.createElement('details');
+  const summary = document.createElement('summary');
+  summary.textContent = '查看原始代码';
+  const pre = document.createElement('pre');
+  const code = document.createElement('code');
+  code.textContent = source;
+  pre.appendChild(code);
+  details.append(summary, pre);
+  wrapper.append(title, message, details);
+  return wrapper;
+}
+
+function isGanttDiagram(source) {
+  return /^\s*gantt\b/i.test(source);
+}
+
+async function renderMermaidBlocks(container, theme) {
+  const blocks = Array.from(container.querySelectorAll('pre > code.language-mermaid'));
+  await Promise.all(blocks.map(async code => {
+    const source = code.textContent;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'mermaid-diagram';
+    wrapper.classList.toggle('is-gantt', isGanttDiagram(source));
+    wrapper.setAttribute('role', 'img');
+    wrapper.setAttribute('aria-label', 'Mermaid 图表');
+    try {
+      wrapper.innerHTML = await renderMermaidSvg(source, theme);
+    } catch (error) {
+      code.parentElement.replaceWith(createMermaidError(source, error));
+      return;
+    }
+    bindMermaidViewer(wrapper, source);
+    code.parentElement.replaceWith(wrapper);
+  }));
+}
+
+async function renderMarkdownPreview(container, content, editorAdapter, note) {
+  const renderVersion = (previewRenderVersions.get(container) || 0) + 1;
+  previewRenderVersions.set(container, renderVersion);
+  const staging = document.createElement('div');
+  staging.innerHTML = marked.parse(normalizePreviewMarkdown(content));
+  await renderMermaidBlocks(staging, colorTheme);
+  if (previewRenderVersions.get(container) !== renderVersion) return;
+
+  container.replaceChildren(...staging.childNodes);
+  bindPreviewTaskCheckboxes(container, editorAdapter);
+  resolvePreviewImages(container, note);
+}
 
 function bindPreviewTaskCheckboxes(container, editorAdapter) {
   const checkboxes = container.querySelectorAll('li > input[type="checkbox"]');
@@ -2423,9 +2831,7 @@ function updatePreview(immediate = false) {
   }
   previewTimeout = null;
   const content = editor.value;
-  preview.innerHTML = marked.parse(normalizePreviewMarkdown(content));
-  bindPreviewTaskCheckboxes(preview, editor);
-  resolvePreviewImages(preview, currentNote);
+  renderMarkdownPreview(preview, content, editor, currentNote);
 }
 
 function resolvePreviewImages(container, note) {
@@ -2665,26 +3071,47 @@ const highlightLanguageAliases = {
   conf: 'ini'
 };
 
-function createEditorCodeWidget(code, requestedLanguage, onCommit) {
+function getCachedCodeHighlight(code, requestedLanguage, cache) {
+  const normalizedLanguage = String(requestedLanguage || '').trim().toLowerCase();
+  const language = highlightLanguageAliases[normalizedLanguage] || normalizedLanguage;
+  const cacheKey = `${language}\u0000${code}`;
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    cache.delete(cacheKey);
+    cache.set(cacheKey, cached);
+    return cached;
+  }
+
+  const highlighted = language && hljs.getLanguage(language)
+    ? hljs.highlight(code, { language })
+    : hljs.highlightAuto(
+      code,
+      commonHighlightLanguages.filter(item => hljs.getLanguage(item))
+    );
+  const result = {
+    html: highlighted.value,
+    languageLabel: language && hljs.getLanguage(language)
+      ? normalizedLanguage || language
+      : highlighted.language
+  };
+  if (code.length <= 100000) {
+    cache.set(cacheKey, result);
+    while (cache.size > 80) cache.delete(cache.keys().next().value);
+  }
+  return result;
+}
+
+function createEditorCodeWidget(code, requestedLanguage, onCommit, highlightCache) {
   const widget = document.createElement('span');
   widget.className = 'cm-code-widget';
   widget.title = '代码块预览';
   widget.tabIndex = 0;
   const pre = document.createElement('pre');
   const codeElement = document.createElement('code');
-  const normalizedLanguage = String(requestedLanguage || '').trim().toLowerCase();
-  const language = highlightLanguageAliases[normalizedLanguage] || normalizedLanguage;
-  let highlighted;
-
-  if (language && hljs.getLanguage(language)) {
-    highlighted = hljs.highlight(code, { language });
-  } else {
-    const availableLanguages = commonHighlightLanguages.filter(item => hljs.getLanguage(item));
-    highlighted = hljs.highlightAuto(code, availableLanguages);
-  }
+  const highlighted = getCachedCodeHighlight(code, requestedLanguage, highlightCache);
 
   codeElement.className = 'hljs';
-  codeElement.innerHTML = highlighted.value;
+  codeElement.innerHTML = highlighted.html;
   codeElement.contentEditable = 'plaintext-only';
   codeElement.spellcheck = false;
   codeElement.addEventListener('mousedown', event => {
@@ -2698,9 +3125,7 @@ function createEditorCodeWidget(code, requestedLanguage, onCommit) {
   pre.appendChild(codeElement);
   widget.appendChild(pre);
 
-  const languageLabel = language && hljs.getLanguage(language)
-    ? normalizedLanguage || language
-    : highlighted.language;
+  const { languageLabel } = highlighted;
   if (languageLabel) {
     const badge = document.createElement('span');
     badge.className = 'cm-code-language';
@@ -2719,18 +3144,61 @@ function createEditorCodeWidget(code, requestedLanguage, onCommit) {
   return widget;
 }
 
-function getCachedCodeBlocks(editorAdapter) {
-  if (!editorAdapter.decorationStructureDirty) return editorAdapter.codeBlocks;
+function createEditorMermaidWidget(source, theme, onEdit, onHeightChange) {
+  const widget = document.createElement('span');
+  widget.className = 'cm-mermaid-widget';
+  widget.classList.toggle('is-gantt', isGanttDiagram(source));
+  widget.title = 'Mermaid 图表，单击放大，双击编辑源码';
+  const status = document.createElement('span');
+  status.className = 'cm-mermaid-status';
+  status.textContent = '正在渲染图表…';
+  widget.appendChild(status);
+
+  renderMermaidSvg(source, theme).then(svg => {
+    widget.innerHTML = svg;
+    bindMermaidViewer(widget, source, onEdit);
+    onHeightChange();
+  }).catch(error => {
+    widget.classList.add('is-error');
+    status.textContent = `Mermaid 图表语法错误：${error?.message || '无法渲染'}`;
+    onHeightChange();
+  });
+  return widget;
+}
+
+function getCachedDecorationStructure(editorAdapter) {
+  if (!editorAdapter.decorationStructureDirty) return editorAdapter.decorationStructure;
   const codeMirror = editorAdapter.codeMirror;
   const lines = Array.from(
     { length: codeMirror.lineCount() },
     (_, line) => codeMirror.getLine(line)
   );
   const blocks = getFencedCodeBlocks(lines);
+  const headingSections = getHeadingSectionMap(lines, blocks);
 
-  editorAdapter.codeBlocks = blocks;
+  editorAdapter.decorationStructure = { lines, blocks, headingSections };
   editorAdapter.decorationStructureDirty = false;
-  return blocks;
+  return editorAdapter.decorationStructure;
+}
+
+function findContainingCodeBlock(codeBlocks, lineNumber) {
+  let low = 0;
+  let high = codeBlocks.length - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const block = codeBlocks[middle];
+    if (lineNumber < block.start) high = middle - 1;
+    else if (lineNumber > block.end) low = middle + 1;
+    else return block;
+  }
+  return null;
+}
+
+function isMermaidCodeBlock(block, documentLines) {
+  const language = String(block?.language || '').trim().toLowerCase();
+  if (language === 'mermaid') return true;
+  if (language || !block) return false;
+  return isMermaidDiagramStart(documentLines[block.start + 1] || '');
 }
 
 function renderEditorDecorations(editorAdapter, note) {
@@ -2750,6 +3218,7 @@ function renderEditorDecorations(editorAdapter, note) {
     editorAdapter.decorationWidgets = [];
   });
   if (!note) {
+    editorAdapter.decorationRange = null;
     wrapper.style.removeProperty('--editor-cursor-height');
     wrapper.style.removeProperty('--editor-cursor-offset');
     return;
@@ -2757,14 +3226,14 @@ function renderEditorDecorations(editorAdapter, note) {
 
   const activeLine = codeMirror.getCursor().line;
   const viewport = codeMirror.getViewport();
-  const firstLine = Math.max(0, viewport.from - 20);
-  const lastLine = Math.min(codeMirror.lineCount(), viewport.to + 20);
-  const documentLines = Array.from(
-    { length: codeMirror.lineCount() },
-    (_, line) => codeMirror.getLine(line)
-  );
+  const firstLine = Math.max(0, viewport.from - 80);
+  const lastLine = Math.min(codeMirror.lineCount(), viewport.to + 80);
+  editorAdapter.decorationRange = { from: firstLine, to: lastLine };
+  const structure = getCachedDecorationStructure(editorAdapter);
+  const documentLines = structure.lines;
   const imagePattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
-  const codeBlocks = getCachedCodeBlocks(editorAdapter);
+  const codeBlocks = structure.blocks;
+  const headingSections = structure.headingSections;
 
   function addMark(from, to, options) {
     const mark = codeMirror.markText(from, to, options);
@@ -2832,13 +3301,45 @@ function renderEditorDecorations(editorAdapter, note) {
     return checkbox;
   }
 
+  function markCompletedTaskText(lineNumber, lineText, listPrefix) {
+    if (!listPrefix?.checked || listPrefix.toCh >= lineText.length) return;
+    addMark(
+      { line: lineNumber, ch: listPrefix.toCh },
+      { line: lineNumber, ch: lineText.length },
+      { className: 'cm-task-completed-text' }
+    );
+  }
+
+  function createEditorLinkWidget(label, href) {
+    const link = document.createElement('span');
+    const external = /^(?:https?:)?\/\//i.test(href);
+    link.className = `cm-rendered-link ${external ? 'is-external' : 'is-relative'}`;
+    link.textContent = label;
+    link.title = href;
+    link.tabIndex = 0;
+    link.setAttribute('role', 'link');
+    const openLink = event => {
+      if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      event.stopPropagation();
+      openRenderedMarkdownLink(href, note);
+    };
+    link.addEventListener('mousedown', event => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    link.addEventListener('click', openLink);
+    link.addEventListener('keydown', openLink);
+    return link;
+  }
+
   Array.from(editorAdapter.collapsedHeadings).forEach(lineHandle => {
     const headingLine = codeMirror.getLineNumber(lineHandle);
     if (headingLine === null) {
       editorAdapter.collapsedHeadings.delete(lineHandle);
       return;
     }
-    const section = getHeadingSectionRange(documentLines, headingLine);
+    const section = headingSections.get(headingLine);
     if (!section || section.startLine > section.endLine) return;
     addMark(
       { line: section.startLine, ch: 0 },
@@ -2888,13 +3389,44 @@ function renderEditorDecorations(editorAdapter, note) {
       const from = { line: block.start, ch: 0 };
       const to = { line: block.end, ch: codeMirror.getLine(block.end).length };
       let codeMark;
+      if (isMermaidCodeBlock(block, documentLines)) {
+        if (activeLine >= block.start && activeLine <= block.end) return;
+        const widget = createEditorMermaidWidget(
+          code,
+          colorTheme,
+          () => {
+            const pageScrollX = window.scrollX;
+            const pageScrollY = window.scrollY;
+            const restorePageScroll = () => {
+              window.scrollTo(pageScrollX, pageScrollY);
+            };
+            preserveEditorScrollPosition(codeMirror, () => {
+              if (codeMark) codeMark.clear();
+              codeMirror.setCursor({ line: block.start + 1, ch: 0 });
+              codeMirror.getInputField().focus({ preventScroll: true });
+            });
+            restorePageScroll();
+            requestAnimationFrame(restorePageScroll);
+          },
+          () => scheduleDecorationHeightChange(() => {
+            return editorAdapter.decorationMarks.includes(codeMark) ? codeMark : null;
+          }, codeMirror)
+        );
+        codeMark = addMark(from, to, {
+          replacedWith: widget,
+          atomic: true,
+          handleMouseEvents: true
+        });
+        renderedCodeLines.add(block.start);
+        return;
+      }
       const widget = createEditorCodeWidget(code, block.language, nextCode => {
         if (codeMark) codeMark.clear();
         const safeLanguage = String(block.language || '').replace(/[^\w+-]/g, '');
         const fence = `\`\`\`${safeLanguage}\n${nextCode}\n\`\`\``;
         codeMirror.replaceRange(fence, from, to);
         scheduleEditorDecorations(editorAdapter, () => note);
-      });
+      }, editorAdapter.codeHighlightCache);
       codeMark = addMark(from, to, {
         replacedWith: widget,
         atomic: true,
@@ -3053,9 +3585,7 @@ function renderEditorDecorations(editorAdapter, note) {
     const lineText = lineHandle.text;
     if (renderedCodeLines.has(lineNumber)) return;
     if (renderedTableLines.has(lineNumber)) return;
-    const containingCodeBlock = codeBlocks.find(block => (
-      block.start <= lineNumber && block.end >= lineNumber
-    ));
+    const containingCodeBlock = findContainingCodeBlock(codeBlocks, lineNumber);
     const fenceLine = Boolean(containingCodeBlock && (
       containingCodeBlock.start === lineNumber
       || (containingCodeBlock.closed && containingCodeBlock.end === lineNumber)
@@ -3063,7 +3593,7 @@ function renderEditorDecorations(editorAdapter, note) {
     const inCodeFence = Boolean(containingCodeBlock && !fenceLine);
     const headingPrefix = !inCodeFence && lineText.match(/^(#{1,6})\s+/);
     if (headingPrefix) {
-      const section = getHeadingSectionRange(documentLines, lineNumber);
+      const section = headingSections.get(lineNumber);
       if (section && section.startLine <= section.endLine) {
         const collapsed = editorAdapter.collapsedHeadings.has(lineHandle);
         const toggle = document.createElement('button');
@@ -3166,6 +3696,7 @@ function renderEditorDecorations(editorAdapter, note) {
           { replacedWith: marker }
         );
       }
+      markCompletedTaskText(lineNumber, lineText, activeListPrefix);
       return;
     }
 
@@ -3282,6 +3813,7 @@ function renderEditorDecorations(editorAdapter, note) {
         { replacedWith: marker }
       );
     }
+    markCompletedTaskText(lineNumber, lineText, listPrefix);
 
     const patterns = [
       { regex: /\*\*([^*]+)\*\*/g, open: 2, close: 2, className: 'cm-rendered-strong' },
@@ -3304,7 +3836,15 @@ function renderEditorDecorations(editorAdapter, note) {
 
     const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
     while ((match = linkPattern.exec(lineText)) !== null) {
-      hideDelimiters(lineNumber, match, 1, match[1].length + 1, 'cm-rendered-link');
+      addMark(
+        { line: lineNumber, ch: match.index },
+        { line: lineNumber, ch: match.index + match[0].length },
+        {
+          replacedWith: createEditorLinkWidget(match[1], match[2]),
+          atomic: true,
+          handleMouseEvents: true
+        }
+      );
     }
     });
   });
@@ -4144,7 +4684,9 @@ templateModal.addEventListener('click', event => {
 });
 
 function closeTopmostModal() {
-  if (confirmModal.classList.contains('active')) {
+  if (mermaidViewer.classList.contains('active')) {
+    closeMermaidViewer();
+  } else if (confirmModal.classList.contains('active')) {
     hideConfirm();
   } else if (modal.classList.contains('active')) {
     hideModal();
@@ -4331,9 +4873,7 @@ function updatePreviewRight(immediate = false) {
   }
   previewTimeoutRight = null;
   const content = editorRight.value;
-  previewRight.innerHTML = marked.parse(normalizePreviewMarkdown(content));
-  bindPreviewTaskCheckboxes(previewRight, editorRight);
-  resolvePreviewImages(previewRight, currentNoteRight);
+  renderMarkdownPreview(previewRight, content, editorRight, currentNoteRight);
 }
 
 async function saveCurrentNoteRight() {

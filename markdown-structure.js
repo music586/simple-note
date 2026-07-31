@@ -162,6 +162,41 @@ function getHeadingSectionRange(lines, headingLine) {
   return { level, startLine: headingLine + 1, endLine };
 }
 
+function getHeadingSectionMap(lines, codeBlocks = getFencedCodeBlocks(lines)) {
+  const sections = new Map();
+  const openHeadings = [];
+  let codeBlockIndex = 0;
+
+  lines.forEach((line, lineNumber) => {
+    while (codeBlocks[codeBlockIndex]?.end < lineNumber) codeBlockIndex += 1;
+    const codeBlock = codeBlocks[codeBlockIndex];
+    if (codeBlock && codeBlock.start <= lineNumber && codeBlock.end >= lineNumber) return;
+
+    const heading = line.match(/^(#{1,6})\s+/);
+    if (!heading) return;
+    const level = heading[1].length;
+    while (openHeadings.length && openHeadings.at(-1).level >= level) {
+      const previous = openHeadings.pop();
+      sections.set(previous.line, {
+        level: previous.level,
+        startLine: previous.line + 1,
+        endLine: lineNumber - 1
+      });
+    }
+    openHeadings.push({ line: lineNumber, level });
+  });
+
+  while (openHeadings.length) {
+    const heading = openHeadings.pop();
+    sections.set(heading.line, {
+      level: heading.level,
+      startLine: heading.line + 1,
+      endLine: lines.length - 1
+    });
+  }
+  return sections;
+}
+
 function getDocumentOutline(lines) {
   const outline = [];
   const fencedLines = new Set();
@@ -337,6 +372,7 @@ module.exports = {
   shouldRenderActiveListPrefix,
   getActiveBulletSourceCursor,
   getHeadingSectionRange,
+  getHeadingSectionMap,
   getDocumentOutline,
   getFencedCodeBlocks,
   analyzeLineContext,
