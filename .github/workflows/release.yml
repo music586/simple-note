@@ -57,6 +57,24 @@ jobs:
             exit 1
           fi
 
+      - name: Verify unsigned application bundles
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          for arch in arm64 x64; do
+            mountPoint="$(mktemp -d)"
+            dmg="dist/SimpleNote-${version}-${arch}.dmg"
+            hdiutil attach -readonly -nobrowse -mountpoint "$mountPoint" "$dmg"
+            appPath="$mountPoint/简记.app"
+            verification="$(codesign --verify --deep --strict "$appPath" 2>&1 || true)"
+            hdiutil detach "$mountPoint"
+            rmdir "$mountPoint"
+            if ! grep -q 'code object is not signed at all' <<< "$verification"; then
+              echo "Expected a fully unsigned $arch application bundle."
+              echo "$verification"
+              exit 1
+            fi
+          done
+
       - name: Create GitHub Release
         run: |
           version="$(node -p "require('./package.json').version")"

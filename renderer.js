@@ -184,6 +184,22 @@ const aiProgressLabel = document.getElementById('aiProgressLabel');
 const aiProgressBar = document.getElementById('aiProgressBar');
 const releaseNotes = [
   {
+    version: '1.2.0',
+    date: '2026-08-01',
+    title: 'macOS 安装包兼容性修复',
+    content: '修复分架构 macOS 安装包中的残留签名问题，避免下载后的应用被系统误判为损坏。',
+    paragraphs: [
+      '修复 Apple Silicon（arm64）和 Intel（x64）安装包中 Electron 可执行文件残留的'
+        + '不完整签名，使应用恢复为一致的未签名状态，避免 macOS 将签名结构异常误报为'
+        + '“应用已损坏”。',
+      '打包流程会在生成 DMG 前识别应用内的 Mach-O 文件，移除残留签名及签名资源目录，'
+        + '同时保留按处理器架构拆分安装包带来的下载体积优势。',
+      '发布流程新增最终产物检查：分别挂载 arm64 和 x64 DMG，并验证其中的应用不存在'
+        + '残缺签名；检查失败时会停止发布，防止问题安装包上传。'
+    ],
+    highlights: ['残留签名清理', '分架构安装兼容性', 'DMG 发布校验']
+  },
+  {
     version: '1.1.6',
     date: '2026-08-01',
     title: 'Markdown 粘贴与安装包优化',
