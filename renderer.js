@@ -43,6 +43,7 @@ const {
   joinClipboardTextAndImages,
   removeGeneratedBoundaryNewlines,
   shouldConvertClipboardHtml,
+  isMarkdownDocumentText,
   applyClipboardMarkdownMarks,
   optimizeClipboardPlainText
 } = require('./clipboard-format');
@@ -182,6 +183,22 @@ const aiProgress = document.getElementById('aiProgress');
 const aiProgressLabel = document.getElementById('aiProgressLabel');
 const aiProgressBar = document.getElementById('aiProgressBar');
 const releaseNotes = [
+  {
+    version: '1.1.6',
+    date: '2026-08-01',
+    title: 'Markdown 粘贴与安装包优化',
+    content: '优化 Markdown 文档粘贴识别，并将 macOS 安装包按处理器架构拆分发布，'
+      + '减少用户单次下载的安装包体积。',
+    paragraphs: [
+      '从剪贴板粘贴包含标题、围栏代码块或表格分隔行的 Markdown 文档时，现在会直接保留'
+        + '原始 Markdown 源码，不再误识别为代码并额外添加围栏。',
+      'macOS 安装包由通用架构改为分别提供 Apple Silicon（arm64）和 Intel（x64）版本，'
+        + '用户可以根据 Mac 的处理器类型下载更精简的安装包。',
+      '发布流程升级至 Node.js 22，并在发布前分别构建和校验两种架构的 DMG 文件，避免上传'
+        + '错误架构或残留的通用安装包。'
+    ],
+    highlights: ['Markdown 源码粘贴', '分架构 macOS 安装包', '发布流程校验']
+  },
   {
     version: '1.1.5',
     date: '2026-08-01',
@@ -4062,6 +4079,12 @@ async function pasteImages(event, editorElement, getCurrentNote) {
   } else {
     const htmlSource = clipboardHtml || result.html || '';
     const text = normalizeClipboardText(result.text || clipboardText);
+    if (isMarkdownDocumentText(text)) {
+      pastedContent = text;
+      editorElement.setRangeText(pastedContent, start, end, 'end');
+      editorElement.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
     const editorCode = getClipboardEditorCode(event, htmlSource, text);
     const htmlBlock = /<(?:table|pre)[\s>]/i.test(htmlSource)
       ? clipboardHtmlToMarkdown(htmlSource, [])

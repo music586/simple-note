@@ -23,7 +23,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -41,12 +41,28 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Build macOS DMG
-        run: npm run dist:mac -- --publish never
+      - name: Build Apple Silicon DMG
+        run: npm run dist:mac:arm64 -- --publish never
+
+      - name: Build Intel DMG
+        run: npm run dist:mac:x64 -- --publish never
+
+      - name: Verify architecture-specific DMGs
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          test -f "dist/SimpleNote-${version}-arm64.dmg"
+          test -f "dist/SimpleNote-${version}-x64.dmg"
+          if find dist -maxdepth 1 -name '*-universal.dmg' -print -quit | grep -q .; then
+            echo "Unexpected universal DMG found."
+            exit 1
+          fi
 
       - name: Create GitHub Release
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.dmg \
+          version="$(node -p "require('./package.json').version")"
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/SimpleNote-${version}-arm64.dmg" \
+            "dist/SimpleNote-${version}-x64.dmg" \
             --verify-tag \
             --generate-notes \
             --title "$GITHUB_REF_NAME"

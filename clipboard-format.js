@@ -25,6 +25,14 @@ function shouldConvertClipboardHtml(html) {
     .test(String(html || ''));
 }
 
+function isMarkdownDocumentText(text) {
+  const normalizedText = normalizeClipboardText(text);
+  if (!normalizedText.includes('\n')) return false;
+  return /(?:^|\n)\s{0,3}#{1,6}\s+\S/.test(normalizedText)
+    || /(?:^|\n)\s{0,3}(?:`{3,}|~{3,})[^\n]*\n/.test(normalizedText)
+    || /(?:^|\n)\s*\|?\s*:?-{3,}:?\s*\|/.test(normalizedText);
+}
+
 function applyClipboardMarkdownMarks(text, marks) {
   const normalizedText = normalizeClipboardText(text);
   const validMarks = (Array.isArray(marks) ? marks : []).filter(mark => (
@@ -79,6 +87,7 @@ module.exports = {
   joinClipboardTextAndImages,
   removeGeneratedBoundaryNewlines,
   shouldConvertClipboardHtml,
+  isMarkdownDocumentText,
   applyClipboardMarkdownMarks,
   optimizeClipboardPlainText
 };

@@ -1,14 +1,16 @@
 {
   "name": "markdown-note",
   "productName": "简记",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "简洁的桌面 Markdown 笔记应用",
   "main": "main.js",
   "scripts": {
     "start": "node scripts/launch.js",
     "dev": "node scripts/launch.js",
     "test": "node --test test/*.test.js",
-    "dist:mac": "electron-builder --mac dmg --universal"
+    "dist:mac": "npm run dist:mac:arm64 && npm run dist:mac:x64",
+    "dist:mac:arm64": "electron-builder --mac dmg --arm64",
+    "dist:mac:x64": "electron-builder --mac dmg --x64"
   },
   "keywords": [
     "electron",
@@ -17,6 +19,9 @@
   ],
   "author": "",
   "license": "MIT",
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "devDependencies": {
     "electron": "^28.0.0",
     "electron-builder": "^26.15.3"
@@ -65,7 +70,8 @@
         {
           "target": "dmg",
           "arch": [
-            "universal"
+            "arm64",
+            "x64"
           ]
         }
       ]

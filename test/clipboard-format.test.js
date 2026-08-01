@@ -8,6 +8,7 @@ const {
   joinClipboardTextAndImages,
   removeGeneratedBoundaryNewlines,
   shouldConvertClipboardHtml,
+  isMarkdownDocumentText,
   applyClipboardMarkdownMarks,
   optimizeClipboardPlainText
 } = require('../clipboard-format');
@@ -40,6 +41,22 @@ test('formatted and multiline clipboard HTML is converted instead of flattened t
   assert.equal(shouldConvertClipboardHtml(''), false);
 });
 
+test('Markdown documents are pasted as source text instead of fenced code', () => {
+  const document = [
+    '# macOS DMG 包体积优化方案',
+    '',
+    '日期：2026-08-01',
+    '',
+    '## 当前情况',
+    '',
+    '- 第一项'
+  ].join('\n');
+
+  assert.equal(isMarkdownDocumentText(document), true);
+  assert.equal(isMarkdownDocumentText('普通的单行文本'), false);
+  assert.equal(isMarkdownDocumentText('第一行\n第二行'), false);
+});
+
 test('renderer converts clipboard bold tags and line breaks to Markdown', () => {
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
   const packageJson = require('../package.json');
@@ -47,6 +64,7 @@ test('renderer converts clipboard bold tags and line breaks to Markdown', () => 
   assert.match(renderer, /if \(tag === 'br'\) return '\\n'/);
   assert.match(renderer, /tag === 'strong' \|\| tag === 'b'/);
   assert.match(renderer, /clipboardHtmlToFormattedText\(htmlSource, text\)/);
+  assert.match(renderer, /if \(isMarkdownDocumentText\(text\)\) \{\s+pastedContent = text/);
   assert.match(renderer, /optimizeClipboardPlainText\(formattedText\)/);
   assert.match(renderer, /htmlBlock \|\| editorCode \|\| textTable/);
   assert.ok(packageJson.build.files.includes('clipboard-format.js'));
