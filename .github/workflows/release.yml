@@ -57,7 +57,7 @@ jobs:
             exit 1
           fi
 
-      - name: Verify unsigned application bundles
+      - name: Verify ad-hoc application signatures
         run: |
           version="$(node -p "require('./package.json').version")"
           for arch in arm64 x64; do
@@ -65,12 +65,13 @@ jobs:
             dmg="dist/SimpleNote-${version}-${arch}.dmg"
             hdiutil attach -readonly -nobrowse -mountpoint "$mountPoint" "$dmg"
             appPath="$mountPoint/简记.app"
-            verification="$(codesign --verify --deep --strict "$appPath" 2>&1 || true)"
+            codesign --verify --deep --strict --verbose=2 "$appPath"
+            signature="$(codesign --display --verbose=2 "$appPath" 2>&1)"
             hdiutil detach "$mountPoint"
             rmdir "$mountPoint"
-            if ! grep -q 'code object is not signed at all' <<< "$verification"; then
-              echo "Expected a fully unsigned $arch application bundle."
-              echo "$verification"
+            if ! grep -q 'Signature=adhoc' <<< "$signature"; then
+              echo "Expected an ad-hoc signed $arch application bundle."
+              echo "$signature"
               exit 1
             fi
           done

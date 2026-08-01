@@ -31,8 +31,9 @@ test('tag release workflow builds and publishes arm64 and x64 macOS DMGs', () =>
   assert.match(source, /SimpleNote-\$\{version\}-arm64\.dmg/);
   assert.match(source, /SimpleNote-\$\{version\}-x64\.dmg/);
   assert.match(source, /Unexpected universal DMG found/);
-  assert.match(source, /Verify unsigned application bundles/);
-  assert.match(source, /code object is not signed at all/);
+  assert.match(source, /Verify ad-hoc application signatures/);
+  assert.match(source, /codesign --verify --deep --strict --verbose=2/);
+  assert.match(source, /Signature=adhoc/);
   assert.doesNotMatch(source, /gh release create[^\n]*dist\/\*\.dmg/);
   assert.match(source, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
 });
@@ -49,35 +50,17 @@ test('package scripts build separate Apple Silicon and Intel installers', () => 
   assert.equal(packageJson.scripts['dist:mac:arm64'], 'electron-builder --mac dmg --arm64');
   assert.equal(packageJson.scripts['dist:mac:x64'], 'electron-builder --mac dmg --x64');
   assert.deepEqual(target.arch, ['arm64', 'x64']);
-  assert.equal(packageJson.build.afterPack, 'scripts/strip-macos-signatures.js');
+  assert.equal(packageJson.build.afterPack, 'scripts/sign-macos-adhoc.js');
   assert.equal(packageJson.build.dmg.artifactName, 'SimpleNote-${version}-${arch}.${ext}');
 });
 
-test('macOS packaging hook removes Mach-O signatures and signature resources', async () => {
-  const os = require('node:os');
-  const { stripResidualSignatures } = require('../scripts/strip-macos-signatures');
-  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'simple-note-signatures-'));
-  const appPath = path.join(temporaryDirectory, '简记.app');
-  const executablePath = path.join(appPath, 'Contents', 'MacOS', '简记');
-  const signaturePath = path.join(appPath, 'Contents', '_CodeSignature');
-  const textPath = path.join(appPath, 'Contents', 'Resources', 'note.txt');
+test('macOS packaging hook applies one consistent ad-hoc signature', async () => {
+  const { signApplication } = require('../scripts/sign-macos-adhoc');
+  const signedApplications = [];
 
-  fs.mkdirSync(path.dirname(executablePath), { recursive: true });
-  fs.mkdirSync(signaturePath, { recursive: true });
-  fs.mkdirSync(path.dirname(textPath), { recursive: true });
-  fs.writeFileSync(executablePath, Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x00]));
-  fs.writeFileSync(path.join(signaturePath, 'CodeResources'), 'signature');
-  fs.writeFileSync(textPath, 'plain text');
-
-  const removedSignatures = [];
-  const result = stripResidualSignatures(appPath, filePath => {
-    removedSignatures.push(filePath);
+  signApplication('/tmp/简记.app', appPath => {
+    signedApplications.push(appPath);
   });
 
-  assert.deepEqual(removedSignatures, [executablePath]);
-  assert.equal(fs.existsSync(signaturePath), false);
-  assert.equal(fs.existsSync(textPath), true);
-  assert.deepEqual(result, { binaries: 1, signatureDirectories: 1 });
-
-  fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  assert.deepEqual(signedApplications, ['/tmp/简记.app']);
 });
