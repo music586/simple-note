@@ -29,7 +29,10 @@ test('sidebar expansion uses a restrained motion sequence', () => {
     styles,
     /\.app\.sidebar-transitioning \.sidebar\s*\{[^}]*will-change: width, min-width/s
   );
-  assert.match(styles, /\.app\.sidebar-transitioning[^{]*\.CodeMirror-vscrollbar/);
+  assert.doesNotMatch(
+    styles,
+    /\.app\.sidebar-transitioning[^{]*\.cm-scroller\s*\{[^}]*(?:width|opacity|display)/s
+  );
   assert.match(styles, /transform: translateX\(-14px\)/);
   assert.match(renderer, /function beginSidebarTransition\(\)/);
   assert.match(renderer, /classList\.add\('sidebar-toggle-relocating'\)/);

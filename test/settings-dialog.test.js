@@ -69,10 +69,11 @@ test('basic settings manage hidden directories inside the current notes library'
   assert.match(styles, /\.hidden-directory-row\s*\{/);
 });
 
-test('settings dialog separates preferences into three accessible tabs', () => {
+test('settings dialog separates preferences into four accessible tabs', () => {
   assert.match(html, /id="settingsTabBasic"[\s\S]*role="tab"[\s\S]*>基本设置<\/button>/);
   assert.match(html, /id="settingsTabAi"[\s\S]*role="tab"[\s\S]*>AI 设置<\/button>/);
   assert.match(html, /id="settingsTabFeatures"[\s\S]*role="tab"[\s\S]*>功能开关<\/button>/);
+  assert.match(html, /id="settingsTabHistory"[\s\S]*role="tab"[\s\S]*>历史版本<\/button>/);
   assert.match(html, /id="settingsPanelBasic"[^>]*role="tabpanel"/);
   assert.match(html, /id="settingsPanelAi"[^>]*role="tabpanel"[^>]*hidden/);
   assert.match(html, /id="settingsPanelFeatures"[^>]*role="tabpanel"[^>]*hidden/);
@@ -82,7 +83,7 @@ test('settings dialog separates preferences into three accessible tabs', () => {
     /settingsTabList\.style\.setProperty\('--settings-tab-index', settingsTabs\.indexOf\(tab\)\)/
   );
   assert.match(renderer, /\['ArrowLeft', 'ArrowRight', 'Home', 'End'\]/);
-  assert.match(styles, /\.settings-tabs\s*\{[^}]*grid-template-columns: repeat\(3,/s);
+  assert.match(styles, /\.settings-tabs\s*\{[^}]*grid-template-columns: repeat\(4,/s);
   assert.match(styles, /\.settings-tabs\s*\{[^}]*border-radius: 999px;/s);
   assert.match(styles, /\.settings-tabs::before\s*\{[^}]*background: var\(--accent-color\);/s);
   assert.match(styles, /transition: transform 0\.32s cubic-bezier/);

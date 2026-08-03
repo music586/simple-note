@@ -54,7 +54,7 @@ test('view menu exposes explicit light and dark appearance choices', () => {
   assert.match(main, /newWindow\.on\('focus'/);
   assert.match(main, /webContents\.send\('request-color-theme'\)/);
   assert.match(renderer, /ipcRenderer\.on\('request-color-theme'/);
-  assert.match(renderer, /event\.key !== 'color-theme'/);
+  assert.match(renderer, /event\.key === 'color-theme'/);
 });
 
 test('view menu groups reading and writing under focus mode', () => {

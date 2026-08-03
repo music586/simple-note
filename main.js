@@ -14,6 +14,13 @@ const {
   screen
 } = require('electron');
 const { getImageDirectoryState } = require('./image-directory');
+const { NoteHistoryStore, hashContent } = require('./note-history');
+const {
+  isPathInside,
+  resolveLibraryPath,
+  validateEntryName,
+  writeFileAtomically
+} = require('./note-path-security');
 const {
   normalizeHiddenDirectory,
   getHiddenDirectories: resolveHiddenDirectories,
@@ -24,14 +31,16 @@ let mainWindow;
 let aboutWindow;
 let zenMode = false;
 let readingMode = false;
-let notesDirectoryWatcher = null;
-let notesTreeRefreshTimer = null;
 let topbarHoverTimer = null;
 const readingWindowStates = new WeakMap();
 const topbarHoverStates = new WeakMap();
 const windowColorThemes = new WeakMap();
 const windowSidebarStates = new WeakMap();
 const windowPreviewStates = new WeakMap();
+const windowWorkspaces = new Map();
+let nextWorkspaceId = 1;
+let windowSessionSaveTimer = null;
+let isQuitting = false;
 const iconPath = path.join(__dirname, 'icon.png');
 const defaultDeepseekLayoutPrompt = '保证原文的内容，不要随意串改，优化下面的正文排版，'
   + '使用markdown 标签优化展示，和层级结构';
@@ -137,6 +146,42 @@ function saveConfig(config) {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
 }
 
+function getPersistedWindowSessions(config = getConfig()) {
+  const sessions = Array.isArray(config.openWindows)
+    ? config.openWindows.filter(session => session && typeof session.notesDir === 'string')
+    : [];
+  return sessions.slice(0, 20).map(session => ({
+    notesDir: fs.existsSync(session.notesDir) && fs.statSync(session.notesDir).isDirectory()
+      ? path.resolve(session.notesDir)
+      : config.notesDir,
+    bounds: session.bounds && ['x', 'y', 'width', 'height'].every(key => (
+      Number.isFinite(session.bounds[key])
+    )) ? session.bounds : null,
+    maximized: Boolean(session.maximized)
+  }));
+}
+
+function persistWindowSessions() {
+  const config = getConfig();
+  config.openWindows = BrowserWindow.getAllWindows()
+    .filter(window => !window.isDestroyed() && windowWorkspaces.has(window))
+    .map(window => ({
+      notesDir: getNotesDir(window),
+      bounds: window.getNormalBounds(),
+      maximized: window.isMaximized()
+    }));
+  saveConfig(config);
+}
+
+function scheduleWindowSessionSave() {
+  if (isQuitting) return;
+  if (windowSessionSaveTimer) clearTimeout(windowSessionSaveTimer);
+  windowSessionSaveTimer = setTimeout(() => {
+    windowSessionSaveTimer = null;
+    persistWindowSessions();
+  }, 200);
+}
+
 function getHiddenDirectories(config = getConfig()) {
   return resolveHiddenDirectories(config);
 }
@@ -232,8 +277,56 @@ function requestDeepSeekLayout(apiKey, prompt, content, systemPrompt = null) {
   });
 }
 
-function getNotesDir() {
-  return getConfig().notesDir;
+function getWorkspaceWindow(source = null) {
+  if (source instanceof BrowserWindow) return source;
+  if (source?.sender) return BrowserWindow.fromWebContents(source.sender);
+  return null;
+}
+
+function getWindowWorkspace(source = null) {
+  const targetWindow = getWorkspaceWindow(source);
+  if (!targetWindow || targetWindow.isDestroyed()) return null;
+  let workspace = windowWorkspaces.get(targetWindow);
+  if (!workspace) {
+    workspace = {
+      id: nextWorkspaceId++,
+      notesDir: getConfig().notesDir,
+      watcher: null,
+      refreshTimer: null,
+      historyStore: null
+    };
+    windowWorkspaces.set(targetWindow, workspace);
+  }
+  return workspace;
+}
+
+function getNotesDir(source = null) {
+  return getWindowWorkspace(source)?.notesDir || getConfig().notesDir;
+}
+
+function setWindowNotesDir(source, notesDir) {
+  const workspace = getWindowWorkspace(source);
+  if (!workspace) return;
+  workspace.notesDir = path.resolve(notesDir);
+  workspace.historyStore = null;
+  scheduleWindowSessionSave();
+}
+
+function getHistoryStore(source) {
+  const workspace = getWindowWorkspace(source);
+  if (!workspace) throw new Error('找不到当前窗口工作区');
+  if (!workspace.historyStore) {
+    workspace.historyStore = new NoteHistoryStore({
+      historyRoot: path.join(app.getPath('userData'), 'history'),
+      workspacePath: workspace.notesDir
+    });
+  }
+  return workspace.historyStore;
+}
+
+function resolveNotesPath(source, inputPath, options = {}) {
+  ensureNotesDir(source);
+  return resolveLibraryPath(getNotesDir(source), inputPath, options);
 }
 
 function validateTemplateDirectory(directoryPath) {
@@ -244,17 +337,17 @@ function validateTemplateDirectory(directoryPath) {
   fs.accessSync(directoryPath, fs.constants.R_OK | fs.constants.X_OK);
 }
 
-function getRawCurrentImageDirectoryState() {
+function getRawCurrentImageDirectoryState(source = null) {
   const config = getConfig();
-  const state = getImageDirectoryState(config, getNotesDir());
+  const state = getImageDirectoryState(config, getNotesDir(source));
   return {
     ...state,
     exists: fs.existsSync(state.effectivePath)
   };
 }
 
-function getCurrentImageDirectoryState() {
-  const state = getRawCurrentImageDirectoryState();
+function getCurrentImageDirectoryState(source = null) {
+  const state = getRawCurrentImageDirectoryState(source);
   if (state.isCustom) validateCustomImageDirectory(state.customPath);
   return state;
 }
@@ -281,45 +374,55 @@ function validateCustomImageDirectory(directoryPath) {
   }
 }
 
-function ensureNotesDir() {
-  const notesDir = getNotesDir();
+function ensureNotesDir(source = null) {
+  const notesDir = getNotesDir(source);
   if (!fs.existsSync(notesDir)) {
     fs.mkdirSync(notesDir, { recursive: true });
   }
 }
 
-function notifyNotesTreeChanged() {
-  clearTimeout(notesTreeRefreshTimer);
-  notesTreeRefreshTimer = setTimeout(() => {
-    BrowserWindow.getAllWindows().forEach(window => {
-      if (!window.isDestroyed()) window.webContents.send('notes-tree-changed');
-    });
+function notifyNotesTreeChanged(source = null) {
+  const targetWindow = getWorkspaceWindow(source);
+  if (!targetWindow) {
+    BrowserWindow.getAllWindows().forEach(window => notifyNotesTreeChanged(window));
+    return;
+  }
+  const workspace = getWindowWorkspace(targetWindow);
+  clearTimeout(workspace.refreshTimer);
+  workspace.refreshTimer = setTimeout(() => {
+    if (!targetWindow.isDestroyed()) targetWindow.webContents.send('notes-tree-changed');
   }, 150);
 }
 
-function watchNotesDirectory() {
-  if (notesDirectoryWatcher) {
-    notesDirectoryWatcher.close();
-    notesDirectoryWatcher = null;
+function watchNotesDirectory(source) {
+  const targetWindow = getWorkspaceWindow(source);
+  if (!targetWindow) return;
+  const workspace = getWindowWorkspace(targetWindow);
+  if (workspace.watcher) {
+    workspace.watcher.close();
+    workspace.watcher = null;
   }
 
-  ensureNotesDir();
+  ensureNotesDir(targetWindow);
   try {
-    notesDirectoryWatcher = fs.watch(getNotesDir(), { recursive: true }, (eventType, fileName) => {
+    workspace.watcher = fs.watch(
+      getNotesDir(targetWindow),
+      { recursive: true },
+      (eventType, fileName) => {
       if (isHiddenDirectory(fileName, getHiddenDirectories())) return;
-      notifyNotesTreeChanged();
+      notifyNotesTreeChanged(targetWindow);
     });
-    notesDirectoryWatcher.on('error', () => {
-      notesDirectoryWatcher?.close();
-      notesDirectoryWatcher = null;
+    workspace.watcher.on('error', () => {
+      workspace.watcher?.close();
+      workspace.watcher = null;
     });
   } catch (err) {
-    notesDirectoryWatcher = null;
+    workspace.watcher = null;
   }
 }
 
-function showItemInFileManager(itemPath) {
-  const notesDir = path.resolve(getNotesDir());
+function showItemInFileManager(source, itemPath) {
+  const notesDir = path.resolve(getNotesDir(source));
   const resolvedItemPath = path.resolve(itemPath || '');
   const relativePath = path.relative(notesDir, resolvedItemPath);
 
@@ -344,7 +447,7 @@ ipcMain.handle('open-external-url', async (event, href) => {
 
 ipcMain.handle('open-relative-link', async (event, data) => {
   try {
-    const notesDir = path.resolve(getNotesDir());
+    const notesDir = path.resolve(getNotesDir(event));
     const sourceNotePath = path.resolve(String(data?.sourceNotePath || ''));
     const sourceRelativePath = path.relative(notesDir, sourceNotePath);
     if (
@@ -551,10 +654,15 @@ function startTopbarHoverTracking() {
   }, 80);
 }
 
-function createWindow() {
+function createWindow(session = {}) {
+  const initialBounds = session.bounds || {};
   const newWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: initialBounds.width || 1200,
+    height: initialBounds.height || 800,
+    ...(Number.isFinite(initialBounds.x) && Number.isFinite(initialBounds.y) ? {
+      x: initialBounds.x,
+      y: initialBounds.y
+    } : {}),
     minWidth: 800,
     minHeight: 600,
     title: appName,
@@ -570,8 +678,14 @@ function createWindow() {
     icon: iconPath
   });
 
+  const workspace = getWindowWorkspace(newWindow);
+  if (session.notesDir) workspace.notesDir = path.resolve(session.notesDir);
   mainWindow = newWindow;
-  newWindow.loadFile('index.html');
+  newWindow.loadFile(path.join(__dirname, 'index.html'), session.showWelcome ? {
+    query: { welcome: '1' }
+  } : undefined);
+  newWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  newWindow.webContents.on('will-navigate', event => event.preventDefault());
   newWindow.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown' || input.key !== 'Escape' || !newWindow.isFullScreen()) return;
     event.preventDefault();
@@ -582,20 +696,26 @@ function createWindow() {
     }
   });
   newWindow.webContents.on('did-finish-load', () => {
+    watchNotesDirectory(newWindow);
     syncActiveWindowAppearanceMenu(newWindow);
     syncActiveWindowSidebarMenu(newWindow);
     syncActiveWindowPreviewMenu(newWindow);
     newWindow.webContents.send('full-screen-changed', newWindow.isFullScreen());
+    if (session.maximized) newWindow.maximize();
+    scheduleWindowSessionSave();
   });
   newWindow.on('page-title-updated', event => {
     event.preventDefault();
     newWindow.setTitle(appName);
   });
   newWindow.on('focus', () => {
+    rebuildApplicationMenu();
     syncActiveWindowAppearanceMenu(newWindow);
     syncActiveWindowSidebarMenu(newWindow);
     syncActiveWindowPreviewMenu(newWindow);
   });
+  newWindow.on('resize', scheduleWindowSessionSave);
+  newWindow.on('move', scheduleWindowSessionSave);
   newWindow.on('enter-full-screen', () => {
     newWindow.webContents.send('full-screen-changed', true);
   });
@@ -605,10 +725,46 @@ function createWindow() {
     if (readingWindowStates.has(newWindow)) setReadingMode(false, newWindow);
   });
   newWindow.on('closed', () => {
+    const workspace = windowWorkspaces.get(newWindow);
+    clearTimeout(workspace?.refreshTimer);
+    workspace?.watcher?.close();
+    windowWorkspaces.delete(newWindow);
     if (mainWindow === newWindow) {
       mainWindow = BrowserWindow.getAllWindows().find(window => !window.isDestroyed()) || null;
     }
+    rebuildApplicationMenu();
+    if (!isQuitting) scheduleWindowSessionSave();
   });
+
+  rebuildApplicationMenu();
+  syncActiveWindowAppearanceMenu(newWindow);
+}
+
+function getWindowMenuItems() {
+  const focusedWindow = BrowserWindow.getFocusedWindow();
+  return BrowserWindow.getAllWindows()
+    .filter(window => !window.isDestroyed() && windowWorkspaces.has(window))
+    .map((window, index) => {
+      const workspace = getWindowWorkspace(window);
+      const config = getConfig();
+      const location = config.notesLocations.find(item => item.path === workspace.notesDir);
+      const workspaceName = location?.alias || path.basename(workspace.notesDir);
+      return {
+        label: `${index + 1}. ${workspaceName}`,
+        type: 'checkbox',
+        checked: window === focusedWindow,
+        accelerator: index < 9 ? `CmdOrCtrl+${index + 1}` : undefined,
+        click: () => {
+          if (window.isDestroyed()) return;
+          if (window.isMinimized()) window.restore();
+          window.show();
+          window.focus();
+        }
+      };
+    });
+}
+
+function rebuildApplicationMenu() {
 
   const menuTemplate = [
     ...(process.platform === 'darwin' ? [{
@@ -633,7 +789,17 @@ function createWindow() {
         {
           label: '新建窗口',
           accelerator: 'CmdOrCtrl+Alt+N',
-          click: createWindow
+          click: () => createWindow({ showWelcome: true })
+        },
+        { type: 'separator' },
+        {
+          label: '快速打开…',
+          accelerator: 'CmdOrCtrl+O',
+          click: () => sendToActiveWindow('quick-open')
+        },
+        {
+          label: '查看历史版本…',
+          click: () => sendToActiveWindow('open-note-history')
         },
         { type: 'separator' },
         {
@@ -655,11 +821,6 @@ function createWindow() {
           label: '导出 PDF…',
           accelerator: 'CmdOrCtrl+Shift+E',
           click: () => sendToActiveWindow('export-pdf')
-        },
-        { type: 'separator' },
-        {
-          label: '修改存储目录',
-          click: () => sendToActiveWindow('change-dir')
         },
         { type: 'separator' },
         {
@@ -855,6 +1016,15 @@ function createWindow() {
       ]
     },
     {
+      label: '窗口',
+      submenu: [
+        { role: 'minimize', label: '最小化' },
+        { role: 'zoom', label: '缩放' },
+        { type: 'separator' },
+        ...getWindowMenuItems()
+      ]
+    },
+    {
       label: '帮助',
       submenu: [
         {
@@ -871,7 +1041,6 @@ function createWindow() {
 
   const menu = Menu.buildFromTemplate(menuTemplate);
   Menu.setApplicationMenu(menu);
-  syncActiveWindowAppearanceMenu(newWindow);
 }
 
 app.whenReady().then(() => {
@@ -889,9 +1058,12 @@ app.whenReady().then(() => {
     app.dock.setIcon(iconPath);
   }
 
-  ensureNotesDir();
-  watchNotesDirectory();
-  createWindow();
+  const windowSessions = getPersistedWindowSessions();
+  if (windowSessions.length) {
+    windowSessions.forEach(session => createWindow(session));
+  } else {
+    createWindow();
+  }
   startTopbarHoverTracking();
 
   app.on('activate', () => {
@@ -908,13 +1080,26 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
-  clearTimeout(notesTreeRefreshTimer);
+  isQuitting = true;
+  if (windowSessionSaveTimer) clearTimeout(windowSessionSaveTimer);
+  windowSessionSaveTimer = null;
+  persistWindowSessions();
   clearInterval(topbarHoverTimer);
-  notesDirectoryWatcher?.close();
+  windowWorkspaces.forEach(workspace => {
+    clearTimeout(workspace.refreshTimer);
+    workspace.watcher?.close();
+  });
 });
 
-ipcMain.handle('get-notes-dir', async () => {
-  return getNotesDir();
+ipcMain.handle('get-notes-dir', async event => {
+  return getNotesDir(event);
+});
+
+ipcMain.handle('close-current-window', async event => {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!sourceWindow || sourceWindow.isDestroyed()) return false;
+  sourceWindow.close();
+  return true;
 });
 
 ipcMain.on('theme-changed', (event, theme) => {
@@ -938,12 +1123,12 @@ ipcMain.on('preview-visibility-changed', (event, visible) => {
   if (sourceWindow && getActiveWindow() === sourceWindow) updatePreviewMenu(visible);
 });
 
-ipcMain.handle('get-image-directory', async () => {
+ipcMain.handle('get-image-directory', async event => {
   try {
-    return { success: true, ...getCurrentImageDirectoryState() };
+    return { success: true, ...getCurrentImageDirectoryState(event) };
   } catch (err) {
     try {
-      const state = getRawCurrentImageDirectoryState();
+      const state = getRawCurrentImageDirectoryState(event);
       return { success: false, ...state, exists: false, error: err.message };
     } catch (stateErr) {
       return { success: false, error: err.message };
@@ -1005,7 +1190,7 @@ ipcMain.handle('get-hidden-directories', async () => {
 ipcMain.handle('select-hidden-directory', async event => {
   try {
     const sourceWindow = BrowserWindow.fromWebContents(event.sender) || mainWindow;
-    const notesDir = path.resolve(getNotesDir());
+    const notesDir = path.resolve(getNotesDir(event));
     const result = await dialog.showOpenDialog(sourceWindow, {
       title: '选择要隐藏的目录',
       buttonLabel: '隐藏此目录',
@@ -1112,7 +1297,7 @@ ipcMain.handle('read-template', async (event, fileName) => {
 ipcMain.handle('select-image-directory', async event => {
   try {
     const sourceWindow = BrowserWindow.fromWebContents(event.sender) || mainWindow;
-    const state = getRawCurrentImageDirectoryState();
+    const state = getRawCurrentImageDirectoryState(event);
     let pickerDefaultPath = state.defaultPath;
     let stateError = null;
     if (!state.isCustom) {
@@ -1142,7 +1327,7 @@ ipcMain.handle('select-image-directory', async event => {
           error: stateError.message
         };
       }
-      return { success: true, canceled: true, ...getRawCurrentImageDirectoryState() };
+      return { success: true, canceled: true, ...getRawCurrentImageDirectoryState(event) };
     }
 
     const selectedPath = path.resolve(result.filePaths[0]);
@@ -1150,18 +1335,18 @@ ipcMain.handle('select-image-directory', async event => {
     const config = getConfig();
     config.imageDirectory = selectedPath;
     saveConfig(config);
-    return { success: true, canceled: false, ...getCurrentImageDirectoryState() };
+    return { success: true, canceled: false, ...getCurrentImageDirectoryState(event) };
   } catch (err) {
     return { success: false, error: err.message };
   }
 });
 
-ipcMain.handle('reset-image-directory', async () => {
+ipcMain.handle('reset-image-directory', async event => {
   try {
     const config = getConfig();
     delete config.imageDirectory;
     saveConfig(config);
-    return { success: true, ...getCurrentImageDirectoryState() };
+    return { success: true, ...getCurrentImageDirectoryState(event) };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -1353,22 +1538,29 @@ ipcMain.handle('exit-reading-mode', async event => {
   if (readingMode) setReadingMode(false, BrowserWindow.fromWebContents(event.sender));
 });
 
-ipcMain.handle('get-notes-info', async () => {
+ipcMain.handle('get-notes-info', async event => {
   const config = getConfig();
+  const workspace = getWindowWorkspace(event);
+  const notesDir = getNotesDir(event);
+  const location = config.notesLocations.find(item => item.path === notesDir);
   return {
-    path: config.notesDir,
-    alias: config.notesAlias || '',
-    name: path.basename(config.notesDir)
+    path: notesDir,
+    alias: location?.alias || '',
+    name: path.basename(notesDir),
+    workspaceId: workspace?.id || 0
   };
 });
 
 ipcMain.handle('set-notes-alias', async (event, alias) => {
   const config = getConfig();
-  config.notesAlias = typeof alias === 'string' ? alias.trim().slice(0, 60) : '';
-  const location = config.notesLocations.find(item => item.path === config.notesDir);
-  if (location) location.alias = config.notesAlias;
+  const notesDir = getNotesDir(event);
+  const notesAlias = typeof alias === 'string' ? alias.trim().slice(0, 60) : '';
+  const location = config.notesLocations.find(item => item.path === notesDir);
+  if (location) location.alias = notesAlias;
+  if (config.notesDir === notesDir) config.notesAlias = notesAlias;
   saveConfig(config);
-  return config.notesAlias;
+  rebuildApplicationMenu();
+  return notesAlias;
 });
 
 ipcMain.handle('set-location-alias', async (event, { locationPath, alias }) => {
@@ -1378,13 +1570,14 @@ ipcMain.handle('set-location-alias', async (event, { locationPath, alias }) => {
   location.alias = typeof alias === 'string' ? alias.trim().slice(0, 60) : '';
   if (config.notesDir === locationPath) config.notesAlias = location.alias;
   saveConfig(config);
+  rebuildApplicationMenu();
   return { success: true };
 });
 
-ipcMain.handle('get-notes-locations', async () => {
+ipcMain.handle('get-notes-locations', async event => {
   const config = getConfig();
   return {
-    activePath: config.notesDir,
+    activePath: getNotesDir(event),
     locations: config.notesLocations.map(location => ({
       path: location.path,
       alias: location.alias || '',
@@ -1398,21 +1591,24 @@ ipcMain.handle('select-notes-dir', async event => {
   const result = await dialog.showOpenDialog(sourceWindow, {
     title: '选择笔记存储目录',
     properties: ['openDirectory', 'createDirectory'],
-    defaultPath: getNotesDir()
+    defaultPath: getNotesDir(event)
   });
 
   if (!result.canceled && result.filePaths.length > 0) {
     const config = getConfig();
-    config.notesDir = result.filePaths[0];
-    let location = config.notesLocations.find(item => item.path === config.notesDir);
+    const selectedPath = path.resolve(result.filePaths[0]);
+    config.notesDir = selectedPath;
+    let location = config.notesLocations.find(item => item.path === selectedPath);
     if (!location) {
-      location = { path: config.notesDir, alias: '' };
+      location = { path: selectedPath, alias: '' };
       config.notesLocations.push(location);
     }
     config.notesAlias = location.alias || '';
     saveConfig(config);
-    watchNotesDirectory();
-    return result.filePaths[0];
+    setWindowNotesDir(sourceWindow, selectedPath);
+    watchNotesDirectory(sourceWindow);
+    rebuildApplicationMenu();
+    return selectedPath;
   }
   return null;
 });
@@ -1425,12 +1621,17 @@ ipcMain.handle('switch-notes-dir', async (event, locationPath) => {
   config.notesDir = location.path;
   config.notesAlias = location.alias || '';
   saveConfig(config);
-  watchNotesDirectory();
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  setWindowNotesDir(sourceWindow, location.path);
+  watchNotesDirectory(sourceWindow);
+  rebuildApplicationMenu();
   return { success: true };
 });
 
 ipcMain.handle('remove-notes-dir', async (event, locationPath) => {
   const config = getConfig();
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  const activePath = getNotesDir(sourceWindow);
   if (config.notesLocations.length <= 1) {
     return { success: false, error: '至少需要保留一个存储目录' };
   }
@@ -1440,26 +1641,208 @@ ipcMain.handle('remove-notes-dir', async (event, locationPath) => {
     config.notesDir = nextLocation.path;
     config.notesAlias = nextLocation.alias || '';
   }
+  let nextActivePath = activePath;
+  if (activePath === locationPath) {
+    nextActivePath = config.notesLocations[0].path;
+    setWindowNotesDir(sourceWindow, nextActivePath);
+    watchNotesDirectory(sourceWindow);
+  }
   saveConfig(config);
-  watchNotesDirectory();
-  return { success: true, activePath: config.notesDir };
+  rebuildApplicationMenu();
+  return { success: true, activePath: nextActivePath };
 });
 
-ipcMain.handle('get-tree', async () => {
-  ensureNotesDir();
-  return getTree(getNotesDir());
+ipcMain.handle('get-tree', async event => {
+  ensureNotesDir(event);
+  return getTree(getNotesDir(event));
 });
 
 ipcMain.handle('read-note', async (event, notePath) => {
-  return fs.readFileSync(notePath, 'utf-8');
+  const filePath = resolveNotesPath(event, notePath, {
+    expectedType: 'file',
+    markdownOnly: true
+  });
+  const content = fs.readFileSync(filePath, 'utf-8');
+  getHistoryStore(event).record(filePath, content, {
+    reason: 'baseline',
+    force: true
+  });
+  return content;
 });
 
-ipcMain.handle('save-note', async (event, { notePath, content }) => {
-  ensureNotesDir();
-  const notesDir = getNotesDir();
-  const filePath = notePath || path.join(notesDir, `untitled-${Date.now()}.md`);
-  fs.writeFileSync(filePath, content, 'utf-8');
+ipcMain.handle('save-note', async (event, { notePath, content, historyReason }) => {
+  ensureNotesDir(event);
+  if (typeof content !== 'string') throw new Error('笔记内容无效');
+  if (Buffer.byteLength(content, 'utf8') > 50 * 1024 * 1024) {
+    throw new Error('单篇笔记不能超过 50MB');
+  }
+  const candidatePath = notePath
+    || path.join(getNotesDir(event), `untitled-${Date.now()}.md`);
+  const filePath = resolveNotesPath(event, candidatePath, {
+    mustExist: false,
+    markdownOnly: true
+  });
+  const historyStore = getHistoryStore(event);
+  if (fs.existsSync(filePath)) {
+    historyStore.record(filePath, fs.readFileSync(filePath, 'utf8'), {
+      reason: 'baseline',
+      force: true
+    });
+  }
+  writeFileAtomically(filePath, content);
+  const allowedHistoryReasons = new Set(['manual-save', 'partial-restore']);
+  historyStore.record(filePath, content, {
+    reason: allowedHistoryReasons.has(historyReason) ? historyReason : 'auto-save',
+    force: allowedHistoryReasons.has(historyReason)
+  });
   return filePath;
+});
+
+ipcMain.handle('get-note-history', async (event, notePath) => {
+  try {
+    const filePath = resolveNotesPath(event, notePath, {
+      expectedType: 'file',
+      markdownOnly: true
+    });
+    const currentContent = fs.readFileSync(filePath, 'utf8');
+    const historyStore = getHistoryStore(event);
+    historyStore.record(filePath, currentContent, { reason: 'baseline', force: true });
+    return {
+      success: true,
+      currentHash: hashContent(currentContent),
+      versions: historyStore.list(filePath, currentContent)
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('read-note-history-version', async (event, data) => {
+  try {
+    const filePath = resolveNotesPath(event, data?.notePath, {
+      expectedType: 'file',
+      markdownOnly: true
+    });
+    const result = getHistoryStore(event).read(filePath, data?.versionId);
+    return { success: true, content: result.content, version: result.version };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('update-note-history-version', async (event, data) => {
+  try {
+    const filePath = resolveNotesPath(event, data?.notePath, {
+      expectedType: 'file',
+      markdownOnly: true
+    });
+    const version = getHistoryStore(event).updateVersion(filePath, data?.versionId, {
+      label: data?.label,
+      note: data?.note,
+      pinned: data?.pinned
+    });
+    return { success: true, version };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('get-history-storage', async event => {
+  try {
+    return { success: true, ...getHistoryStore(event).getStats() };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('set-history-settings', async (event, settings) => {
+  try {
+    const store = getHistoryStore(event);
+    return {
+      success: true,
+      settings: store.updateSettings(settings),
+      stats: store.getStats()
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('cleanup-note-history', async (event, data) => {
+  try {
+    let notePath = null;
+    if (data?.notePath) {
+      notePath = resolveNotesPath(event, data.notePath, {
+        expectedType: 'file',
+        markdownOnly: true
+      });
+    }
+    return { success: true, ...getHistoryStore(event).cleanup(notePath) };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('restore-note-history-version', async (event, data) => {
+  try {
+    const filePath = resolveNotesPath(event, data?.notePath, {
+      expectedType: 'file',
+      markdownOnly: true
+    });
+    const currentContent = fs.readFileSync(filePath, 'utf8');
+    if (typeof data?.expectedHash !== 'string' || hashContent(currentContent) !== data.expectedHash) {
+      throw new Error('笔记内容已经变化，请重新打开历史版本后再恢复');
+    }
+    const historyStore = getHistoryStore(event);
+    const historical = historyStore.read(filePath, data?.versionId);
+    historyStore.record(filePath, currentContent, {
+      reason: 'before-restore',
+      force: true
+    });
+    writeFileAtomically(filePath, historical.content);
+    historyStore.record(filePath, historical.content, {
+      reason: 'restore',
+      force: true
+    });
+    return {
+      success: true,
+      content: historical.content,
+      currentHash: hashContent(historical.content)
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('apply-note-history-selection', async (event, data) => {
+  try {
+    const filePath = resolveNotesPath(event, data?.notePath, {
+      expectedType: 'file',
+      markdownOnly: true
+    });
+    const currentContent = fs.readFileSync(filePath, 'utf8');
+    if (typeof data?.expectedHash !== 'string' || hashContent(currentContent) !== data.expectedHash) {
+      throw new Error('笔记内容已经变化，请重新打开历史版本后再操作');
+    }
+    const start = Number(data?.start);
+    const end = Number(data?.end);
+    const text = data?.text;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0
+      || end < start || end > currentContent.length || typeof text !== 'string') {
+      throw new Error('局部恢复范围无效');
+    }
+    if (Buffer.byteLength(text, 'utf8') > 10 * 1024 * 1024) {
+      throw new Error('单次恢复的内容不能超过 10MB');
+    }
+    const nextContent = currentContent.slice(0, start) + text + currentContent.slice(end);
+    const historyStore = getHistoryStore(event);
+    historyStore.record(filePath, currentContent, { reason: 'before-restore', force: true });
+    writeFileAtomically(filePath, nextContent);
+    historyStore.record(filePath, nextContent, { reason: 'partial-restore', force: true });
+    return { success: true, content: nextContent, currentHash: hashContent(nextContent) };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
 ipcMain.handle('paste-clipboard-content', async (event, { notePath }) => {
@@ -1478,7 +1861,7 @@ ipcMain.handle('paste-clipboard-content', async (event, { notePath }) => {
     }
     if (imageSources.length > 20) throw new Error('一次最多粘贴 20 张图片');
 
-    const notesDir = path.resolve(getNotesDir());
+    const notesDir = path.resolve(getNotesDir(event));
     const resolvedNotePath = path.resolve(notePath || '');
     const noteRelativePath = path.relative(notesDir, resolvedNotePath);
     if (!notePath || noteRelativePath.startsWith('..') || path.isAbsolute(noteRelativePath)) {
@@ -1576,9 +1959,15 @@ ipcMain.handle('paste-clipboard-content', async (event, { notePath }) => {
 
 ipcMain.handle('create-note', async (event, { name, folderPath }) => {
   try {
-    ensureNotesDir();
-    const basePath = folderPath || getNotesDir();
-    const defaultName = typeof name === 'string' && name.trim() ? name.trim() : '未命名';
+    ensureNotesDir(event);
+    const basePath = folderPath
+      ? resolveNotesPath(event, folderPath, { expectedType: 'directory' })
+      : fs.realpathSync(getNotesDir(event));
+    const requestedName = validateEntryName(
+      typeof name === 'string' && name.trim() ? name : '未命名',
+      '笔记名称'
+    ).replace(/\.md$/i, '');
+    const defaultName = validateEntryName(requestedName, '笔记名称');
     let availableName = defaultName;
     let suffix = 2;
     let filePath = path.join(basePath, `${availableName}.md`);
@@ -1597,76 +1986,115 @@ ipcMain.handle('create-note', async (event, { name, folderPath }) => {
 });
 
 ipcMain.handle('create-folder', async (event, { name, parentPath }) => {
-  ensureNotesDir();
-  const basePath = parentPath || getNotesDir();
-  const folderPath = path.join(basePath, name);
+  ensureNotesDir(event);
+  const basePath = parentPath
+    ? resolveNotesPath(event, parentPath, { expectedType: 'directory' })
+    : fs.realpathSync(getNotesDir(event));
+  const folderName = validateEntryName(name, '文件夹名称');
+  const folderPath = resolveNotesPath(
+    event,
+    path.join(basePath, folderName),
+    { mustExist: false }
+  );
   fs.mkdirSync(folderPath, { recursive: true });
   return folderPath;
 });
 
 ipcMain.handle('delete-note', async (event, notePath) => {
-  if (fs.existsSync(notePath)) {
-    fs.unlinkSync(notePath);
+  const filePath = resolveNotesPath(event, notePath, {
+    expectedType: 'file',
+    markdownOnly: true
+  });
+  getHistoryStore(event).archivePath(filePath);
+  if (fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath);
   }
-  migrateAiOptimizedNotePaths(notePath);
+  migrateAiOptimizedNotePaths(filePath);
   return true;
 });
 
 ipcMain.handle('delete-folder', async (event, folderPath) => {
-  if (fs.existsSync(folderPath)) {
-    fs.rmSync(folderPath, { recursive: true, force: true });
+  const resolvedFolderPath = resolveNotesPath(
+    event,
+    folderPath,
+    { expectedType: 'directory' }
+  );
+  getHistoryStore(event).archivePath(resolvedFolderPath);
+  if (fs.existsSync(resolvedFolderPath)) {
+    fs.rmSync(resolvedFolderPath, { recursive: true, force: true });
   }
-  migrateAiOptimizedNotePaths(folderPath);
+  migrateAiOptimizedNotePaths(resolvedFolderPath);
   return true;
 });
 
 ipcMain.handle('rename-note', async (event, { oldPath, newName }) => {
-  const dir = path.dirname(oldPath);
-  const newPath = path.join(dir, `${newName}.md`);
-  if (fs.existsSync(oldPath)) {
-    fs.renameSync(oldPath, newPath);
-  }
-  migrateAiOptimizedNotePaths(oldPath, newPath);
-  return { name: newName, path: newPath, mtime: fs.statSync(newPath).mtime };
+  const filePath = resolveNotesPath(event, oldPath, {
+    expectedType: 'file',
+    markdownOnly: true
+  });
+  const requestedName = validateEntryName(newName, '笔记名称').replace(/\.md$/i, '');
+  const safeName = validateEntryName(requestedName, '笔记名称');
+  const newPath = resolveNotesPath(event, path.join(path.dirname(filePath), `${safeName}.md`), {
+    mustExist: false,
+    markdownOnly: true
+  });
+  if (newPath !== filePath && fs.existsSync(newPath)) throw new Error('目标笔记已存在');
+  if (newPath !== filePath) fs.renameSync(filePath, newPath);
+  getHistoryStore(event).migratePath(filePath, newPath);
+  migrateAiOptimizedNotePaths(filePath, newPath);
+  return { name: safeName, path: newPath, mtime: fs.statSync(newPath).mtime };
 });
 
 ipcMain.handle('rename-folder', async (event, { oldPath, newName }) => {
-  const parentDir = path.dirname(oldPath);
-  const newPath = path.join(parentDir, newName);
-  if (fs.existsSync(oldPath)) {
-    fs.renameSync(oldPath, newPath);
-  }
-  migrateAiOptimizedNotePaths(oldPath, newPath);
-  return { name: newName, path: newPath };
+  const folderPath = resolveNotesPath(event, oldPath, { expectedType: 'directory' });
+  const safeName = validateEntryName(newName, '文件夹名称');
+  const newPath = resolveNotesPath(event, path.join(path.dirname(folderPath), safeName), {
+    mustExist: false
+  });
+  if (newPath !== folderPath && fs.existsSync(newPath)) throw new Error('目标文件夹已存在');
+  if (newPath !== folderPath) fs.renameSync(folderPath, newPath);
+  getHistoryStore(event).migratePath(folderPath, newPath);
+  migrateAiOptimizedNotePaths(folderPath, newPath);
+  return { name: safeName, path: newPath };
 });
 
 ipcMain.handle('move-item', async (event, { sourcePath, targetPath, type }) => {
-  const itemName = path.basename(sourcePath);
+  if (!['file', 'folder'].includes(type)) {
+    return { success: false, error: '移动项目类型无效' };
+  }
+  const resolvedSourcePath = resolveNotesPath(event, sourcePath, {
+    expectedType: type === 'file' ? 'file' : 'directory',
+    markdownOnly: type === 'file'
+  });
+  const resolvedTargetPath = targetPath === null
+    ? fs.realpathSync(getNotesDir(event))
+    : resolveNotesPath(event, targetPath, { expectedType: 'directory' });
+  const itemName = path.basename(resolvedSourcePath);
   let newPath;
   
-  if (targetPath === null) {
-    newPath = path.join(getNotesDir(), itemName);
-  } else {
-    newPath = path.join(targetPath, itemName);
-  }
+  newPath = resolveNotesPath(event, path.join(resolvedTargetPath, itemName), {
+    mustExist: false,
+    markdownOnly: type === 'file'
+  });
   
+  if (resolvedSourcePath === newPath) {
+    return { success: true, newPath };
+  }
+
   if (fs.existsSync(newPath)) {
     return { success: false, error: '目标位置已存在同名文件或文件夹' };
   }
   
-  if (sourcePath === newPath) {
-    return { success: true, newPath };
-  }
-  
   if (type === 'folder') {
-    if (newPath.startsWith(sourcePath + path.sep)) {
+    if (isPathInside(resolvedSourcePath, newPath)) {
       return { success: false, error: '不能将文件夹移动到其子文件夹中' };
     }
   }
   
   try {
-    fs.renameSync(sourcePath, newPath);
-    migrateAiOptimizedNotePaths(sourcePath, newPath);
+    fs.renameSync(resolvedSourcePath, newPath);
+    getHistoryStore(event).migratePath(resolvedSourcePath, newPath);
+    migrateAiOptimizedNotePaths(resolvedSourcePath, newPath);
     return { success: true, newPath };
   } catch (err) {
     return { success: false, error: err.message };
@@ -1674,59 +2102,61 @@ ipcMain.handle('move-item', async (event, { sourcePath, targetPath, type }) => {
 });
 
 ipcMain.on('show-context-menu', (event, data) => {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!sourceWindow || sourceWindow.isDestroyed()) return;
   const { type, path: itemPath } = data;
   const template = [];
   
   if (type === 'file') {
     template.push({
       label: '在访达中显示',
-      click: () => showItemInFileManager(itemPath)
+      click: () => showItemInFileManager(sourceWindow, itemPath)
     });
     template.push({ type: 'separator' });
     template.push({
       label: '重命名',
-      click: () => mainWindow.webContents.send('context-menu-rename', data)
+      click: () => event.sender.send('context-menu-rename', data)
     });
     template.push({
       label: '删除',
-      click: () => mainWindow.webContents.send('context-menu-delete', data)
+      click: () => event.sender.send('context-menu-delete', data)
     });
   } else if (type === 'folder') {
     template.push({
       label: '新建笔记',
-      click: () => mainWindow.webContents.send('context-menu-new-note', data)
+      click: () => event.sender.send('context-menu-new-note', data)
     });
     template.push({
       label: '新建文件夹',
-      click: () => mainWindow.webContents.send('context-menu-new-folder', data)
+      click: () => event.sender.send('context-menu-new-folder', data)
     });
     template.push({ type: 'separator' });
     template.push({
       label: '在访达中显示',
-      click: () => showItemInFileManager(itemPath)
+      click: () => showItemInFileManager(sourceWindow, itemPath)
     });
     template.push({ type: 'separator' });
     template.push({
       label: '重命名',
-      click: () => mainWindow.webContents.send('context-menu-rename', data)
+      click: () => event.sender.send('context-menu-rename', data)
     });
     template.push({
       label: '删除',
-      click: () => mainWindow.webContents.send('context-menu-delete', data)
+      click: () => event.sender.send('context-menu-delete', data)
     });
   } else if (type === 'root') {
     template.push({
       label: '新建笔记',
-      click: () => mainWindow.webContents.send('context-menu-new-note', data)
+      click: () => event.sender.send('context-menu-new-note', data)
     });
     template.push({
       label: '新建文件夹',
-      click: () => mainWindow.webContents.send('context-menu-new-folder', data)
+      click: () => event.sender.send('context-menu-new-folder', data)
     });
   }
   
   const menu = Menu.buildFromTemplate(template);
-  menu.popup({ window: mainWindow });
+  menu.popup({ window: sourceWindow });
 });
 
 ipcMain.on('show-table-context-menu', (event, data) => {

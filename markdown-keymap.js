@@ -1,5 +1,6 @@
 function applyCodeMirrorEdit(cm, edit) {
   if (!edit) return false;
+  if (typeof cm.applyEdit === 'function') return cm.applyEdit(edit);
   cm.operation(() => {
     cm.replaceRange(edit.text, edit.from, edit.to, 'markdown-structure');
     cm.setCursor(edit.cursor);

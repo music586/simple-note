@@ -78,7 +78,7 @@ test('current release is featured inside the focused editor pane', () => {
   assert.match(renderer, /createReleaseDetails\(currentRelease, true\)/);
   assert.match(renderer, /release\.highlights\?\.\[index\] \|\| '体验改进'/);
   assert.match(renderer, /pane\.classList\.add\('release-notes-open'\)/);
-  assert.match(styles, /\.editor-pane\.release-notes-open > \.CodeMirror/);
+  assert.match(styles, /\.editor-pane\.release-notes-open > \.cm-editor/);
   assert.match(styles, /\.editor-release-change strong/);
 });
 

@@ -13,7 +13,8 @@ test('editor pre-renders external and relative links with distinct indicators', 
   assert.match(styles, /\.cm-rendered-link\.is-external::after\s*\{[^}]*content: '↗'/s);
   assert.match(styles, /\.cm-rendered-link\.is-relative::after\s*\{[^}]*content: '›'/s);
   assert.match(renderer, /function createEditorLinkWidget\(label, href\)/);
-  assert.match(renderer, /replacedWith: createEditorLinkWidget\(match\[1\], match\[2\]\)/);
+  assert.match(renderer, /const link = createEditorLinkWidget\('', match\[2\]\)/);
+  assert.match(renderer, /replaceInlineRange\(match\.index, match\.index \+ match\[0\]\.length, link\)/);
 });
 
 test('right preview normalizes an accidental space after an HTTP protocol', () => {

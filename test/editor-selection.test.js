@@ -11,6 +11,6 @@ const styles = fs.readFileSync(
 test('multi-line selections stay inside the editor reading area', () => {
   assert.match(
     styles,
-    /\.editor-pane > \.CodeMirror \.CodeMirror-lines\s*\{[^}]*width: min\(100%, var\(--editor-page-width\)\);[^}]*overflow-x: clip;/s
+    /\.editor-pane > \.cm-editor \.cm-content\s*\{[^}]*flex-grow: 0;[^}]*flex-basis: var\(--editor-page-width\);[^}]*width: min\(100%, var\(--editor-page-width\)\);[^}]*margin-right: auto;[^}]*margin-left: auto;[^}]*overflow-x: clip;/s
   );
 });

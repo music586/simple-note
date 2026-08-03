@@ -30,7 +30,7 @@ test('image directory settings IPC returns errors instead of throwing', () => {
 
 test('reading configured image directory state validates the custom path', () => {
   const stateHelper = source.slice(
-    source.indexOf('function getCurrentImageDirectoryState()'),
+    source.indexOf('function getCurrentImageDirectoryState(source = null)'),
     source.indexOf('function validateCustomImageDirectory(directoryPath)')
   );
   assert.match(stateHelper, /if \(state\.isCustom\) validateCustomImageDirectory\(state\.customPath\)/);
@@ -58,10 +58,10 @@ test('an invalid saved custom directory still opens the native picker', () => {
     source.indexOf("ipcMain.handle('select-image-directory'"),
     source.indexOf("ipcMain.handle('reset-image-directory'")
   );
-  assert.match(handler, /getRawCurrentImageDirectoryState\(\)/);
+  assert.match(handler, /getRawCurrentImageDirectoryState\(event\)/);
   assert.match(handler, /pickerDefaultPath = state\.defaultPath/);
   assert.match(handler, /defaultPath: pickerDefaultPath/);
-  assert.doesNotMatch(handler, /const state = getCurrentImageDirectoryState\(\)/);
+  assert.doesNotMatch(handler, /const state = getCurrentImageDirectoryState\(event\)/);
 });
 
 test('failed image directory reads include recoverable raw state', () => {
@@ -69,7 +69,7 @@ test('failed image directory reads include recoverable raw state', () => {
     source.indexOf("ipcMain.handle('get-image-directory'"),
     source.indexOf("ipcMain.handle('select-image-directory'")
   );
-  assert.match(handler, /getRawCurrentImageDirectoryState\(\)/);
+  assert.match(handler, /getRawCurrentImageDirectoryState\(event\)/);
   assert.match(handler, /success: false,[\s\S]*exists: false,[\s\S]*error: err\.message/);
 });
 

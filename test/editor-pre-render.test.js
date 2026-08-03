@@ -7,6 +7,14 @@ const renderer = fs.readFileSync(
   path.join(__dirname, '..', 'renderer.js'),
   'utf8'
 );
+const adapter = fs.readFileSync(
+  path.join(__dirname, '..', 'codemirror6-adapter.js'),
+  'utf8'
+);
+const diagnostic = fs.readFileSync(
+  path.join(__dirname, '..', 'scripts', 'editor-prerender-diagnostic.js'),
+  'utf8'
+);
 
 test('pre-render determines fenced code state independently for every visible line', () => {
   assert.match(
@@ -20,4 +28,38 @@ test('pre-render determines fenced code state independently for every visible li
   );
   assert.doesNotMatch(renderer, /let inCodeFence = codeBlocks\.some/);
   assert.doesNotMatch(renderer, /inCodeFence = !inCodeFence/);
+});
+
+test('CM6 pre-render regression covers inline marks links and block widgets', () => {
+  for (const selector of [
+    'cm-rendered-heading',
+    'cm-rendered-strong',
+    'cm-rendered-em',
+    'cm-rendered-strike',
+    'cm-rendered-highlight',
+    'cm-rendered-code',
+    'cm-rendered-link',
+    'cm-rendered-quote',
+    'cm-rendered-list-line',
+    'cm-rendered-checkbox',
+    'cm-rendered-rule',
+    'cm-table-widget',
+    'cm-code-widget',
+    'cm-frontmatter-widget',
+    'cm-math-widget',
+    'cm-callout-widget',
+    'is-wiki-link',
+    'cm-rich-inline-widget'
+  ]) {
+    assert.match(diagnostic, new RegExp(selector));
+  }
+  assert.match(diagnostic, /result\.links === 3/);
+  assert.match(diagnostic, /result\.tables === 1/);
+});
+
+test('Markdown highlighting does not override application pre-render styles', () => {
+  assert.match(adapter, /const markdownHighlightStyle = HighlightStyle\.define/);
+  assert.match(adapter, /tag: tags\.heading[\s\S]*textDecoration: 'none'/);
+  assert.match(adapter, /tag: \[tags\.link, tags\.url\][\s\S]*textDecoration: 'none'/);
+  assert.doesNotMatch(adapter, /defaultHighlightStyle/);
 });

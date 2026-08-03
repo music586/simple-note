@@ -107,14 +107,14 @@ app.whenReady().then(async () => {
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 
   const passed = result.opened.hidden === false
-    && result.opened.panel === 'editorPane'
+    && result.opened.panel === 'leftPanel'
     && result.opened.count === '1 / 4'
     && result.opened.matches === 4
     && result.opened.current === 1
     && result.nextCount === '2 / 4'
     && result.closed.hidden === true
     && result.closed.matches === 0
-    && result.rightPanelId === 'editorPaneRight';
+    && result.rightPanelId === 'rightPanel';
   await window.close();
   app.exit(passed ? 0 : 1);
 });

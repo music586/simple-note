@@ -16,7 +16,7 @@ app.whenReady().then(async () => {
   await window.loadFile(path.join(__dirname, '..', 'index.html'));
   const result = await window.webContents.executeJavaScript(`
     new Promise(async resolve => {
-      const cm = document.querySelector('#leftPanel .CodeMirror').CodeMirror;
+      const cm = document.querySelector('#leftPanel .cm-editor').simpleNoteEditor;
       const projectPath = ${JSON.stringify(path.join(__dirname, '..', 'diagnostic.md'))};
       const lines = [
         ...Array.from({ length: 12 }, (_, index) => '图片前 ' + index),
@@ -74,7 +74,14 @@ app.whenReady().then(async () => {
         clientX: coords.left,
         clientY: coords.top + 3
       }));
-      samples.push(sample('after-mousedown', targetLine));
+      target.dispatchEvent(new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        clientX: coords.left,
+        clientY: coords.top + 3
+      }));
+      samples.push(sample('after-click', targetLine));
       await waitFrames(1);
       samples.push(sample('after-one-frame', targetLine));
       await waitFrames(4);

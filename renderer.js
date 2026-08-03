@@ -1,12 +1,16 @@
 const crypto = require('crypto');
 const path = require('path');
 const { pathToFileURL } = require('url');
-const { ipcRenderer } = require('electron');
+const { ipcRenderer, clipboard } = require('electron');
 const { marked } = require('marked');
 const hljs = require('highlight.js');
-const CodeMirror = require('codemirror');
+const katex = require('katex');
+const CodeMirror = require('./codemirror6-adapter');
+const { EditorPanePersistence } = require('./editor-pane-persistence');
+const { configureMarkdownDialect } = require('./markdown-dialect');
+const { createPreviewSanitizer } = require('./preview-security');
 const mermaidVersion = require('mermaid/package.json').version;
-require('codemirror/mode/markdown/markdown');
+const sanitizePreviewHtml = createPreviewSanitizer(window);
 const {
   getEditorCursorAlignment,
   getFallbackTextRect,
@@ -25,6 +29,8 @@ const {
 const { getTableAddControlState } = require('./table-ui');
 const { getTaskCheckboxEdit } = require('./preview-task');
 const { getMarkdownFormatEdit } = require('./markdown-format');
+const { buildQuickOpenItems, filterQuickOpenItems } = require('./quick-open');
+const { compareLines, buildDiffSummary } = require('./note-history-diff');
 const {
   isMermaidDiagramStart,
   normalizePreviewMarkdown
@@ -63,38 +69,7 @@ const {
   getSlashCommandEdit
 } = require('./markdown-structure');
 
-marked.setOptions({
-  highlight: function(code, lang) {
-    if (lang && hljs.getLanguage(lang)) {
-      return hljs.highlight(code, { language: lang }).value;
-    }
-    return hljs.highlightAuto(code).value;
-  },
-  breaks: true,
-  gfm: true
-});
-
-marked.use({
-  extensions: [{
-    name: 'highlight',
-    level: 'inline',
-    start(source) {
-      return source.indexOf('==');
-    },
-    tokenizer(source) {
-      const match = source.match(/^==([^=\n]+)==/);
-      if (!match) return undefined;
-      return {
-        type: 'highlight',
-        raw: match[0],
-        tokens: this.lexer.inlineTokens(match[1])
-      };
-    },
-    renderer(token) {
-      return `<mark>${this.parser.parseInline(token.tokens)}</mark>`;
-    }
-  }]
-});
+configureMarkdownDialect({ marked, hljs, katex });
 
 let currentNote = null;
 let currentNoteRight = null;
@@ -109,13 +84,48 @@ let pendingCodeFenceCompletion = null;
 let workspaceSessionRestored = false;
 let restoringWorkspaceSession = false;
 let openReleaseNotesVersion = null;
-const workspaceSessionKey = 'workspace-session';
+let workspaceSessionKey = 'workspace-session:pending';
+let currentWorkspaceId = null;
+let lineNumbersEnabled = localStorage.getItem('line-numbers-enabled') === 'true';
 
 const notesList = document.getElementById('notesList');
 const slashCommandMenuElement = document.getElementById('slashCommandMenu');
 const codeLanguagePicker = document.getElementById('codeLanguagePicker');
 const codeLanguageSearch = document.getElementById('codeLanguageSearch');
 const codeLanguageResults = document.getElementById('codeLanguageResults');
+const quickOpenModal = document.getElementById('quickOpenModal');
+const quickOpenInput = document.getElementById('quickOpenInput');
+const quickOpenResults = document.getElementById('quickOpenResults');
+const noteHistoryModal = document.getElementById('noteHistoryModal');
+const noteHistoryNoteName = document.getElementById('noteHistoryNoteName');
+const noteHistoryVersions = document.getElementById('noteHistoryVersions');
+const noteHistoryMeta = document.getElementById('noteHistoryMeta');
+const noteHistoryPreview = document.getElementById('noteHistoryPreview');
+const noteHistoryCurrent = document.getElementById('noteHistoryCurrent');
+const noteHistoryDiffSummary = document.getElementById('noteHistoryDiffSummary');
+const noteHistoryPin = document.getElementById('noteHistoryPin');
+const noteHistoryLabel = document.getElementById('noteHistoryLabel');
+const noteHistoryNote = document.getElementById('noteHistoryNote');
+const noteHistoryMetadataSave = document.getElementById('noteHistoryMetadataSave');
+const noteHistoryCopySelection = document.getElementById('noteHistoryCopySelection');
+const noteHistoryInsertSelection = document.getElementById('noteHistoryInsertSelection');
+const noteHistoryReplaceSelection = document.getElementById('noteHistoryReplaceSelection');
+const noteHistoryError = document.getElementById('noteHistoryError');
+const noteHistoryCancel = document.getElementById('noteHistoryCancel');
+const noteHistoryRestore = document.getElementById('noteHistoryRestore');
+const noteHistoryState = {
+  target: null,
+  versions: [],
+  selectedIndex: -1,
+  currentHash: null,
+  historicalContent: '',
+  requestId: 0
+};
+const quickOpenState = {
+  items: [],
+  results: [],
+  selectedIndex: 0
+};
 const slashCommandState = {
   editor: null,
   query: '',
@@ -157,6 +167,10 @@ const noteTitle = document.getElementById('noteTitle');
 const settingsBtn = document.getElementById('settingsBtn');
 const notesDirInfo = document.getElementById('notesDirInfo');
 const notesDirDisplay = document.getElementById('notesDirDisplay');
+const newWindowWelcome = document.getElementById('newWindowWelcome');
+const welcomeChooseDirectory = document.getElementById('welcomeChooseDirectory');
+const welcomeUseCurrent = document.getElementById('welcomeUseCurrent');
+const welcomeCloseWindow = document.getElementById('welcomeCloseWindow');
 const editorContainer = document.getElementById('editorContainer');
 const editorPane = document.getElementById('editorPane');
 const documentOutline = document.getElementById('documentOutline');
@@ -172,6 +186,32 @@ const rightPanel = document.getElementById('rightPanel');
 const leftPanel = document.getElementById('leftPanel');
 const panelDivider = document.getElementById('panelDivider');
 const closeRightBtn = document.getElementById('closeRightBtn');
+
+function createEditorPanePersistence({ getNote, setNote, titleInput, editorAdapter }) {
+  return new EditorPanePersistence({
+    getNote,
+    setNote,
+    getName: () => titleInput.value,
+    getContent: () => editorAdapter.value,
+    renameNote: data => ipcRenderer.invoke('rename-note', data),
+    saveNote: data => ipcRenderer.invoke('save-note', data),
+    onRenamed: loadTree,
+    onError: error => showConfirm('保存失败', error.message, () => {})
+  });
+}
+
+const leftPanePersistence = createEditorPanePersistence({
+  getNote: () => currentNote,
+  setNote: note => { currentNote = note; },
+  titleInput: noteTitle,
+  editorAdapter: editor
+});
+const rightPanePersistence = createEditorPanePersistence({
+  getNote: () => currentNoteRight,
+  setNote: note => { currentNoteRight = note; },
+  titleInput: noteTitleRight,
+  editorAdapter: editorRight
+});
 const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
 const editorFindBar = document.getElementById('editorFindBar');
 const editorFindInput = document.getElementById('editorFindInput');
@@ -665,16 +705,6 @@ async function restoreWorkspaceSession() {
   }
 }
 
-function mountAiLayoutMark(editorAdapter, pane) {
-  const mark = pane.querySelector('.ai-layout-mark');
-  const lines = editorAdapter.codeMirror.getWrapperElement()
-    .querySelector('.CodeMirror-lines');
-  if (mark && lines) lines.appendChild(mark);
-}
-
-mountAiLayoutMark(editor, editorPane);
-mountAiLayoutMark(editorRight, editorPaneRight);
-
 const editorFindState = {
   editor: null,
   matches: [],
@@ -707,7 +737,7 @@ function renderEditorFindMatches(scrollToCurrent = true) {
       const className = index === editorFindState.currentIndex
         ? 'cm-find-match cm-find-match-current'
         : 'cm-find-match';
-      const mark = codeMirror.markText(
+      const mark = codeMirror.addMarkDecoration(
         codeMirror.posFromIndex(match.from),
         codeMirror.posFromIndex(match.to),
         { className }
@@ -1109,6 +1139,41 @@ function scheduleViewportEditorDecorations(editorAdapter, getNote) {
   }, 100);
 }
 
+function preserveEditorScrollOnClick(editorAdapter) {
+  const codeMirror = editorAdapter.codeMirror;
+  const input = codeMirror.getInputField();
+  let pointerStart = null;
+
+  input.addEventListener('mousedown', event => {
+    if (event.button !== 0) return;
+    pointerStart = {
+      x: event.clientX,
+      y: event.clientY,
+      top: codeMirror.getScrollInfo().top
+    };
+  });
+
+  input.addEventListener('click', event => {
+    if (!pointerStart) return;
+    const snapshot = pointerStart;
+    pointerStart = null;
+    if (
+      Math.abs(event.clientX - snapshot.x) > 4
+      || Math.abs(event.clientY - snapshot.y) > 4
+    ) return;
+
+    const restore = () => codeMirror.scrollTo(null, snapshot.top);
+    restore();
+    requestAnimationFrame(() => {
+      restore();
+      requestAnimationFrame(restore);
+    });
+  });
+}
+
+preserveEditorScrollOnClick(editor);
+preserveEditorScrollOnClick(editorRight);
+
 editor.codeMirror.on('cursorActivity', () => {
   lastActiveEditor = editor;
   if (slashCommandState.editor && slashCommandState.editor !== editor) {
@@ -1180,7 +1245,7 @@ function createCodeEditor(textarea) {
     getBackspaceEdit,
     applyEdit: applyCodeMirrorEdit
   })(() => editorAdapter);
-  const codeMirror = CodeMirror.fromTextArea(textarea, {
+  const codeMirror = CodeMirror.createEditor(textarea, {
     mode: 'markdown',
     lineWrapping: true,
     // The active source line uses the proportional Chinese reading font, where
@@ -1188,6 +1253,7 @@ function createCodeEditor(textarea) {
     indentUnit: 6,
     tabSize: 6,
     viewportMargin: 20,
+    lineNumbers: lineNumbersEnabled,
     extraKeys: {
       'Cmd-A': 'selectAll',
       'Ctrl-A': 'selectAll',
@@ -1213,12 +1279,12 @@ function createCodeEditor(textarea) {
   const codeMirrorWrapper = codeMirror.getWrapperElement();
   codeMirrorWrapper.addEventListener('mousedown', event => {
     if (event.button !== 0) return;
-    if (event.target.closest('.CodeMirror-line')) return;
+    if (event.target.closest('.cm-line')) return;
     if (event.target.closest(
       '.cm-code-widget, .cm-mermaid-widget, .cm-table-widget, .cm-image-widget'
     )) return;
     if (!event.target.closest(
-      '.CodeMirror-scroll, .CodeMirror-sizer, .CodeMirror-lines, .CodeMirror-code'
+      '.cm-scroller, .cm-content'
     )) return;
 
     event.preventDefault();
@@ -1463,6 +1529,13 @@ function handleOpeningCodeFence(cm, editorAdapter) {
 }
 
 let colorTheme = localStorage.getItem('color-theme') || 'dark';
+const accentThemeNames = {
+  indigo: '默认蓝紫',
+  teal: '青松',
+  amber: '琥珀'
+};
+let accentTheme = localStorage.getItem('accent-theme');
+if (!accentThemeNames[accentTheme]) accentTheme = 'indigo';
 
 function applyColorTheme(theme) {
   colorTheme = theme;
@@ -1478,19 +1551,40 @@ function setColorTheme(theme) {
   updatePreviewRight(true);
 }
 
+function applyAccentTheme(theme) {
+  accentTheme = accentThemeNames[theme] ? theme : 'indigo';
+  document.documentElement.dataset.accent = accentTheme;
+}
+
+function setAccentTheme(theme) {
+  applyAccentTheme(theme);
+  localStorage.setItem('accent-theme', accentTheme);
+  syncAccentThemeControls();
+  updatePreview(true);
+  updatePreviewRight(true);
+}
+
 applyColorTheme(colorTheme);
+applyAccentTheme(accentTheme);
 
 ipcRenderer.on('request-color-theme', () => {
   ipcRenderer.send('theme-changed', colorTheme);
 });
 
 window.addEventListener('storage', event => {
-  if (event.key !== 'color-theme' || (event.newValue !== 'light' && event.newValue !== 'dark')) {
-    return;
+  if (event.key === 'accent-theme') {
+    applyAccentTheme(event.newValue);
+    syncAccentThemeControls();
+    updatePreview(true);
+    updatePreviewRight(true);
+  } else if (
+    event.key === 'color-theme'
+    && (event.newValue === 'light' || event.newValue === 'dark')
+  ) {
+    applyColorTheme(event.newValue);
+    updatePreview(true);
+    updatePreviewRight(true);
   }
-  applyColorTheme(event.newValue);
-  updatePreview(true);
-  updatePreviewRight(true);
 });
 
 panelDivider.classList.add('hidden');
@@ -1726,6 +1820,19 @@ const aiStampPositionInputs = Array.from(
 );
 const aiStampPositionControl = document.querySelector('.settings-segmented');
 const outlineToggle = document.getElementById('outlineToggle');
+const lineNumbersToggle = document.getElementById('lineNumbersToggle');
+const accentThemeStatus = document.getElementById('accentThemeStatus');
+const accentThemeOptions = Array.from(document.querySelectorAll('.accent-theme-option'));
+const accentThemeReset = document.getElementById('accentThemeReset');
+const historyStorageSummary = document.getElementById('historyStorageSummary');
+const historyVersionCount = document.getElementById('historyVersionCount');
+const historyPinnedCount = document.getElementById('historyPinnedCount');
+const historyStorageSize = document.getElementById('historyStorageSize');
+const historyBucketMinutes = document.getElementById('historyBucketMinutes');
+const historyMaxVersions = document.getElementById('historyMaxVersions');
+const historyMaxAgeDays = document.getElementById('historyMaxAgeDays');
+const historyCleanup = document.getElementById('historyCleanup');
+const historySettingsSave = document.getElementById('historySettingsSave');
 const settingsError = document.getElementById('settingsError');
 const templateModal = document.getElementById('templateModal');
 const templateList = document.getElementById('templateList');
@@ -1747,6 +1854,19 @@ let aiStampRequestId = 0;
 let outlineEnabled = localStorage.getItem('outline-enabled') !== 'false';
 let outlineCollapsed = localStorage.getItem('outline-collapsed') === 'true';
 const outlineHighlightStates = new WeakMap();
+
+function syncAccentThemeControls() {
+  if (!accentThemeStatus) return;
+  accentThemeStatus.textContent = accentThemeNames[accentTheme];
+  accentThemeOptions.forEach(option => {
+    const selected = option.dataset.accent === accentTheme;
+    option.classList.toggle('selected', selected);
+    option.setAttribute('aria-checked', String(selected));
+  });
+  accentThemeReset.disabled = accentTheme === 'indigo';
+}
+
+syncAccentThemeControls();
 
 function activateSettingsTab(tab, shouldFocus = false) {
   if (!settingsTabs.includes(tab)) return;
@@ -1770,6 +1890,12 @@ function applyOutlineSetting() {
   outlineToggle.setAttribute('aria-checked', String(outlineEnabled));
 }
 
+function applyLineNumbersSetting() {
+  lineNumbersToggle.setAttribute('aria-checked', String(lineNumbersEnabled));
+  editor.codeMirror.setLineNumbers(lineNumbersEnabled);
+  editorRight.codeMirror.setLineNumbers(lineNumbersEnabled);
+}
+
 function applyDocumentOutlineCollapsedState() {
   [documentOutline, documentOutlineRight].forEach(container => {
     container.classList.toggle('collapsed', outlineCollapsed);
@@ -1790,6 +1916,7 @@ function syncDocumentOutlineWindowSpacing(container) {
 }
 
 applyOutlineSetting();
+applyLineNumbersSetting();
 applyDocumentOutlineCollapsedState();
 [documentOutline, documentOutlineRight].forEach(container => {
   const observer = new ResizeObserver(() => {
@@ -1993,6 +2120,22 @@ function setSettingsBusy(busy) {
   aiStampPositionInputs.forEach(input => {
     input.disabled = busy;
   });
+  accentThemeOptions.forEach(option => { option.disabled = busy; });
+  accentThemeReset.disabled = busy || accentTheme === 'indigo';
+  [historyBucketMinutes, historyMaxVersions, historyMaxAgeDays,
+    historyCleanup, historySettingsSave].forEach(control => {
+    control.disabled = busy;
+  });
+}
+
+function renderHistoryStorage(result) {
+  historyVersionCount.textContent = String(result.versions || 0);
+  historyPinnedCount.textContent = String(result.pinned || 0);
+  historyStorageSize.textContent = formatHistorySize(result.bytes || 0);
+  historyStorageSummary.textContent = `${result.notes || 0} 篇笔记`;
+  historyBucketMinutes.value = result.settings?.bucketMinutes || 5;
+  historyMaxVersions.value = result.settings?.maxVersions || 200;
+  historyMaxAgeDays.value = result.settings?.maxAgeDays || 180;
 }
 
 function resetImageDirectorySettings() {
@@ -2027,11 +2170,12 @@ async function showSettingsDialog() {
   const requestId = ++settingsRequestId;
   setSettingsBusy(true);
   try {
-    const [result, templateResult, hiddenResult, aiResult] = await Promise.all([
+    const [result, templateResult, hiddenResult, aiResult, historyResult] = await Promise.all([
       ipcRenderer.invoke('get-image-directory'),
       ipcRenderer.invoke('get-template-directory'),
       ipcRenderer.invoke('get-hidden-directories'),
-      ipcRenderer.invoke('get-ai-settings')
+      ipcRenderer.invoke('get-ai-settings'),
+      ipcRenderer.invoke('get-history-storage')
     ]);
     if (requestId !== settingsRequestId) return;
     if (!result.success) {
@@ -2050,6 +2194,10 @@ async function showSettingsDialog() {
     if (aiResult.success) renderAiSettings(aiResult);
     else settingsError.textContent = getSettingsErrorMessage(
       'AI 设置加载失败', aiResult.error
+    );
+    if (historyResult.success) renderHistoryStorage(historyResult);
+    else settingsError.textContent = getSettingsErrorMessage(
+      '历史存储统计失败', historyResult.error
     );
   } catch (error) {
     if (requestId !== settingsRequestId) return;
@@ -2294,6 +2442,16 @@ confirmOk.addEventListener('click', () => {
 async function loadTree() {
   tree = await ipcRenderer.invoke('get-tree');
   const notesInfo = await ipcRenderer.invoke('get-notes-info');
+  const workspaceIdentity = `${notesInfo.workspaceId}:${notesInfo.path}`;
+  if (workspaceIdentity !== currentWorkspaceId) {
+    currentWorkspaceId = workspaceIdentity;
+    const directoryKey = crypto.createHash('sha256')
+      .update(notesInfo.path)
+      .digest('hex')
+      .slice(0, 16);
+    workspaceSessionKey = `workspace-session:${notesInfo.workspaceId}:${directoryKey}`;
+    workspaceSessionRestored = false;
+  }
   notesDirDisplay.textContent = notesInfo.alias || notesInfo.name;
   notesDirInfo.title = `${notesInfo.path}\n点击管理存储目录`;
   notesDirInfo.dataset.alias = notesInfo.alias;
@@ -2334,6 +2492,126 @@ function renderTree() {
   notesList.innerHTML = '';
   renderTreeItems(tree, notesList, 0);
 }
+
+function renderQuickOpenResults() {
+  quickOpenResults.innerHTML = '';
+  quickOpenState.results = filterQuickOpenItems(
+    quickOpenState.items,
+    quickOpenInput.value
+  );
+  quickOpenState.selectedIndex = Math.min(
+    quickOpenState.selectedIndex,
+    Math.max(0, quickOpenState.results.length - 1)
+  );
+
+  if (!quickOpenState.results.length) {
+    const empty = document.createElement('div');
+    empty.className = 'quick-open-empty';
+    empty.textContent = '没有匹配的文件或文件夹';
+    quickOpenResults.appendChild(empty);
+    quickOpenInput.removeAttribute('aria-activedescendant');
+    return;
+  }
+
+  quickOpenState.results.forEach((item, index) => {
+    const row = document.createElement('div');
+    row.id = `quickOpenResult-${index}`;
+    row.className = 'quick-open-result';
+    row.dataset.type = item.type;
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(index === quickOpenState.selectedIndex));
+
+    const icon = document.createElement('span');
+    icon.className = 'quick-open-result-icon';
+    icon.innerHTML = item.type === 'folder'
+      ? '<svg viewBox="0 0 24 24"><path d="M3 6h7l2 2h9v10H3z"/></svg>'
+      : '<svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4"/></svg>';
+    const copy = document.createElement('span');
+    copy.className = 'quick-open-result-copy';
+    const name = document.createElement('strong');
+    name.textContent = item.name;
+    const itemPath = document.createElement('small');
+    itemPath.textContent = item.relativePath;
+    copy.append(name, itemPath);
+    row.append(icon, copy);
+    row.addEventListener('mousemove', () => selectQuickOpenResult(index));
+    row.addEventListener('click', () => activateQuickOpenResult(index));
+    quickOpenResults.appendChild(row);
+  });
+  syncQuickOpenSelection();
+}
+
+function syncQuickOpenSelection(scroll = false) {
+  const rows = quickOpenResults.querySelectorAll('.quick-open-result');
+  rows.forEach((row, index) => {
+    row.setAttribute('aria-selected', String(index === quickOpenState.selectedIndex));
+  });
+  const selected = rows[quickOpenState.selectedIndex];
+  if (!selected) return;
+  quickOpenInput.setAttribute('aria-activedescendant', selected.id);
+  if (scroll) selected.scrollIntoView({ block: 'nearest' });
+}
+
+function selectQuickOpenResult(index, scroll = false) {
+  if (index < 0 || index >= quickOpenState.results.length) return;
+  quickOpenState.selectedIndex = index;
+  syncQuickOpenSelection(scroll);
+}
+
+async function activateQuickOpenResult(index = quickOpenState.selectedIndex) {
+  const item = quickOpenState.results[index];
+  if (!item) return;
+  if (item.type === 'folder') {
+    quickOpenInput.value = `${item.relativePath}/`;
+    quickOpenState.selectedIndex = 0;
+    renderQuickOpenResults();
+    quickOpenInput.focus();
+    return;
+  }
+  hideQuickOpen();
+  await selectNote(item);
+  editor.focus();
+}
+
+function showQuickOpen() {
+  closeSlashCommandMenu();
+  quickOpenState.items = buildQuickOpenItems(tree);
+  quickOpenState.selectedIndex = 0;
+  quickOpenInput.value = '';
+  quickOpenModal.classList.add('active');
+  renderQuickOpenResults();
+  quickOpenInput.focus();
+}
+
+function hideQuickOpen() {
+  quickOpenModal.classList.remove('active');
+  quickOpenInput.removeAttribute('aria-activedescendant');
+}
+
+quickOpenInput.addEventListener('input', () => {
+  quickOpenState.selectedIndex = 0;
+  renderQuickOpenResults();
+});
+
+quickOpenInput.addEventListener('keydown', event => {
+  if (event.isComposing) return;
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    if (!quickOpenState.results.length) return;
+    const direction = event.key === 'ArrowDown' ? 1 : -1;
+    const next = (
+      quickOpenState.selectedIndex + direction + quickOpenState.results.length
+    ) % quickOpenState.results.length;
+    selectQuickOpenResult(next, true);
+  } else if (event.key === 'Enter') {
+    event.preventDefault();
+    activateQuickOpenResult();
+  }
+});
+
+quickOpenModal.addEventListener('click', event => {
+  if (event.target === quickOpenModal) hideQuickOpen();
+});
 
 function renderTreeItems(items, container, level) {
   items.forEach(item => {
@@ -2731,7 +3009,8 @@ async function renderMarkdownPreview(container, content, editorAdapter, note) {
   const renderVersion = (previewRenderVersions.get(container) || 0) + 1;
   previewRenderVersions.set(container, renderVersion);
   const staging = document.createElement('div');
-  staging.innerHTML = marked.parse(normalizePreviewMarkdown(content));
+  const previewHtml = marked.parse(normalizePreviewMarkdown(content));
+  staging.innerHTML = sanitizePreviewHtml(previewHtml);
   await renderMermaidBlocks(staging, colorTheme);
   if (previewRenderVersions.get(container) !== renderVersion) return;
 
@@ -2828,11 +3107,11 @@ function highlightDocumentOutlineTarget(codeMirror, lineNumber) {
   const previous = outlineHighlightStates.get(codeMirror);
   if (previous) {
     clearTimeout(previous.timer);
-    codeMirror.removeLineClass(previous.line, 'wrap', 'document-outline-target');
+    codeMirror.removeLineDecoration(previous.line, 'wrap', 'document-outline-target');
   }
-  codeMirror.addLineClass(lineNumber, 'wrap', 'document-outline-target');
+  codeMirror.addLineDecoration(lineNumber, 'wrap', 'document-outline-target');
   const timer = setTimeout(() => {
-    codeMirror.removeLineClass(lineNumber, 'wrap', 'document-outline-target');
+    codeMirror.removeLineDecoration(lineNumber, 'wrap', 'document-outline-target');
     outlineHighlightStates.delete(codeMirror);
   }, 1400);
   outlineHighlightStates.set(codeMirror, { line: lineNumber, timer });
@@ -2925,7 +3204,10 @@ function getTableAlignments(line) {
 }
 
 function serializeMarkdownTable(rows, alignments) {
-  const escapeCell = cell => String(cell).replace(/\|/g, '\\|');
+  const escapeCell = cell => String(cell)
+    .replace(/\r\n?/g, '\n')
+    .replace(/\|/g, '\\|')
+    .replace(/\n/g, '<br>');
   const formatRow = row => `| ${row.map(escapeCell).join(' | ')} |`;
   const separator = alignments.map(alignment => {
     if (alignment === 'center') return ':---:';
@@ -2933,6 +3215,26 @@ function serializeMarkdownTable(rows, alignments) {
     return '---';
   });
   return [formatRow(rows[0]), formatRow(separator), ...rows.slice(1).map(formatRow)].join('\n');
+}
+
+function getTableCellDisplayText(content) {
+  return String(content || '').replace(/<br\s*\/?>/gi, '\n');
+}
+
+function insertTableCellLineBreak(cell) {
+  const selection = window.getSelection();
+  if (!selection?.rangeCount) return false;
+  const range = selection.getRangeAt(0);
+  if (!cell.contains(range.commonAncestorContainer)) return false;
+
+  range.deleteContents();
+  const lineBreak = document.createTextNode('\n');
+  range.insertNode(lineBreak);
+  range.setStartAfter(lineBreak);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return true;
 }
 
 function placeCaretInTableCell(cell, clientX, clientY) {
@@ -2984,7 +3286,7 @@ function createEditorTableWidget(
       const cell = rowIndex === 0
         ? document.createElement('th')
         : document.createElement('td');
-      cell.textContent = content;
+      cell.textContent = getTableCellDisplayText(content);
       cell.contentEditable = 'plaintext-only';
       cell.spellcheck = false;
       cell.style.textAlign = alignments[columnIndex] || 'left';
@@ -2999,10 +3301,14 @@ function createEditorTableWidget(
         event.stopPropagation();
       });
       cell.addEventListener('keydown', event => {
-        if (event.key === 'Enter') {
-          event.preventDefault();
+        if (event.key !== 'Enter' || event.isComposing) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.metaKey || event.ctrlKey) {
           cell.blur();
+          return;
         }
+        insertTableCellLineBreak(cell);
       });
       cell.addEventListener('contextmenu', event => {
         event.preventDefault();
@@ -3067,7 +3373,10 @@ function createEditorTableWidget(
       if (widget.contains(document.activeElement)) return;
       const nextRows = Array.from(table.rows).map(tableRow => {
         return Array.from(tableRow.cells).map(cell => {
-          return (cell.textContent || '').replace(/\s*\n\s*/g, ' ').trim();
+          return (cell.innerText || cell.textContent || '')
+            .replace(/\r\n?/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
         });
       });
       if (JSON.stringify(nextRows) !== JSON.stringify(rows)) onCommit(nextRows);
@@ -3199,6 +3508,134 @@ function createEditorMermaidWidget(source, theme, onEdit, onHeightChange) {
   return widget;
 }
 
+function getFrontMatterBlock(lines) {
+  if (lines[0]?.trim() !== '---') return null;
+  const end = lines.slice(1, 202).findIndex(line => line.trim() === '---');
+  if (end < 0) return null;
+  return { start: 0, end: end + 1, lines: lines.slice(1, end + 1) };
+}
+
+function getMathBlocks(lines, codeBlocks) {
+  const blocks = [];
+  let start = null;
+  for (let line = 0; line < lines.length; line += 1) {
+    if (findContainingCodeBlock(codeBlocks, line)) continue;
+    const value = lines[line].trim();
+    if (start === null && /^\$\$(?!\$)/.test(value)) {
+      if (/^\$\$(?!\$).*\$\$$/.test(value) && value.length > 4) {
+        blocks.push({ start: line, end: line, source: value.slice(2, -2).trim() });
+      } else {
+        start = line;
+      }
+    } else if (start !== null && /\$\$$/.test(value)) {
+      const source = lines.slice(start, line + 1).join('\n')
+        .replace(/^\s*\$\$/, '')
+        .replace(/\$\$\s*$/, '')
+        .replace(/\\\n/g, '\n')
+        .trim();
+      blocks.push({ start, end: line, source });
+      start = null;
+    }
+  }
+  return blocks;
+}
+
+function getCalloutBlocks(lines, codeBlocks) {
+  const blocks = [];
+  for (let line = 0; line < lines.length; line += 1) {
+    if (findContainingCodeBlock(codeBlocks, line)) continue;
+    const header = lines[line].match(/^\s*>\s*\[!([A-Za-z]+)\]([+-])?\s*(.*?)(?:\\)?$/);
+    if (!header) continue;
+    let end = line;
+    while (end + 1 < lines.length && /^\s*>/.test(lines[end + 1])) end += 1;
+    const body = lines.slice(line + 1, end + 1).map(value => {
+      return value.replace(/^\s*>\s?/, '').replace(/\\$/, '');
+    }).join('\n').trim();
+    blocks.push({
+      start: line,
+      end,
+      type: header[1].toLowerCase(),
+      folded: header[2] === '-',
+      title: header[3].replace(/\\$/, '').trim(),
+      body
+    });
+    line = end;
+  }
+  return blocks;
+}
+
+function createFrontMatterWidget(block) {
+  const widget = document.createElement('span');
+  widget.className = 'cm-frontmatter-widget';
+  widget.title = '文档属性，双击编辑源码';
+  const label = document.createElement('span');
+  label.className = 'cm-frontmatter-label';
+  label.textContent = '文档属性';
+  const summary = document.createElement('span');
+  summary.className = 'cm-frontmatter-summary';
+  const fields = block.lines.filter(line => /^[-\w]+\s*:/.test(line.trim())).slice(0, 4);
+  summary.textContent = fields.length ? fields.join(' · ') : `${block.lines.length} 行 YAML`;
+  widget.append(label, summary);
+  return widget;
+}
+
+function createMathWidget(source, displayMode) {
+  const widget = document.createElement(displayMode ? 'span' : 'span');
+  widget.className = displayMode ? 'cm-math-widget cm-math-block' : 'cm-math-widget cm-math-inline';
+  widget.title = displayMode ? '数学公式，双击编辑源码' : '数学公式';
+  try {
+    katex.render(source, widget, {
+      displayMode,
+      throwOnError: true,
+      strict: 'ignore',
+      trust: false
+    });
+  } catch (error) {
+    widget.classList.add('is-error');
+    widget.textContent = `公式错误：${error?.message || '无法渲染'}`;
+  }
+  return widget;
+}
+
+function createCalloutWidget(block) {
+  const widget = document.createElement('span');
+  widget.className = `cm-callout-widget is-${block.type}`;
+  widget.title = '提示块，双击编辑源码';
+  const header = document.createElement('span');
+  header.className = 'cm-callout-header';
+  const names = {
+    note: '备注', info: '信息', tip: '提示', success: '成功',
+    warning: '警告', caution: '注意', faq: '问题'
+  };
+  header.textContent = block.title || names[block.type] || block.type.toUpperCase();
+  widget.appendChild(header);
+  if (block.body) {
+    const body = document.createElement('span');
+    body.className = 'cm-callout-body';
+    body.textContent = block.body;
+    body.hidden = block.folded;
+    widget.appendChild(body);
+  }
+  return widget;
+}
+
+function createRichInlineWidget(source) {
+  const widget = document.createElement('span');
+  widget.className = 'cm-rich-inline-widget';
+  const template = document.createElement('template');
+  template.innerHTML = marked.parseInline(source);
+  const allowed = new Set(['STRONG', 'EM', 'DEL', 'CODE', 'MARK']);
+  Array.from(template.content.querySelectorAll('*')).forEach(element => {
+    if (allowed.has(element.tagName)) {
+      Array.from(element.attributes).forEach(attribute => element.removeAttribute(attribute.name));
+      return;
+    }
+    element.replaceWith(document.createTextNode(element.textContent || ''));
+  });
+  widget.appendChild(template.content);
+  return widget;
+}
+
 function getCachedDecorationStructure(editorAdapter) {
   if (!editorAdapter.decorationStructureDirty) return editorAdapter.decorationStructure;
   const codeMirror = editorAdapter.codeMirror;
@@ -3209,7 +3646,18 @@ function getCachedDecorationStructure(editorAdapter) {
   const blocks = getFencedCodeBlocks(lines);
   const headingSections = getHeadingSectionMap(lines, blocks);
 
-  editorAdapter.decorationStructure = { lines, blocks, headingSections };
+  const frontMatter = getFrontMatterBlock(lines);
+  const mathBlocks = getMathBlocks(lines, blocks);
+  const calloutBlocks = getCalloutBlocks(lines, blocks);
+
+  editorAdapter.decorationStructure = {
+    lines,
+    blocks,
+    headingSections,
+    frontMatter,
+    mathBlocks,
+    calloutBlocks
+  };
   editorAdapter.decorationStructureDirty = false;
   return editorAdapter.decorationStructure;
 }
@@ -3244,7 +3692,7 @@ function renderEditorDecorations(editorAdapter, note) {
     editorAdapter.decorationMarks.forEach(mark => mark.clear());
     editorAdapter.decorationMarks = [];
     editorAdapter.decorationLines.forEach(item => {
-      codeMirror.removeLineClass(item.line, 'wrap', item.className);
+      codeMirror.removeLineDecoration(item.line, 'wrap', item.className);
     });
     editorAdapter.decorationLines = [];
     editorAdapter.decorationWidgets.forEach(widget => widget.clear());
@@ -3268,20 +3716,41 @@ function renderEditorDecorations(editorAdapter, note) {
   const codeBlocks = structure.blocks;
   const headingSections = structure.headingSections;
 
+  function replaceBlockWithWidget(block, widget, renderedLines) {
+    if (!block || block.end < firstLine || block.start >= lastLine) return;
+    if (activeLine >= block.start && activeLine <= block.end) return;
+    const from = { line: block.start, ch: 0 };
+    const to = { line: block.end, ch: codeMirror.getLine(block.end).length };
+    let mark;
+    const editSource = event => {
+      event.preventDefault();
+      if (mark) mark.clear();
+      codeMirror.setCursor({ line: block.start, ch: 0 });
+      codeMirror.focus();
+    };
+    widget.addEventListener('dblclick', editSource);
+    mark = addMark(from, to, {
+      replacedWith: widget,
+      atomic: true,
+      handleMouseEvents: true
+    });
+    for (let line = block.start; line <= block.end; line += 1) renderedLines.add(line);
+  }
+
   function addMark(from, to, options) {
-    const mark = codeMirror.markText(from, to, options);
+    const mark = codeMirror.addMarkDecoration(from, to, options);
     editorAdapter.decorationMarks.push(mark);
     return mark;
   }
 
   function addBookmark(position, options) {
-    const mark = codeMirror.setBookmark(position, options);
+    const mark = codeMirror.addWidgetDecoration(position, options);
     editorAdapter.decorationMarks.push(mark);
     return mark;
   }
 
   function addLineStyle(lineNumber, className) {
-    const line = codeMirror.addLineClass(lineNumber, 'wrap', className);
+    const line = codeMirror.addLineDecoration(lineNumber, 'wrap', className);
     editorAdapter.decorationLines.push({ line, className });
   }
 
@@ -3402,6 +3871,7 @@ function renderEditorDecorations(editorAdapter, note) {
   codeMirror.operation(() => {
     const renderedTableLines = new Set();
     const renderedCodeLines = new Set();
+    const renderedSpecialLines = new Set();
     const fencedLines = new Set();
     codeBlocks.forEach(block => {
       const rangeStart = Math.max(block.start, firstLine);
@@ -3506,11 +3976,24 @@ function renderEditorDecorations(editorAdapter, note) {
       }
     });
 
+    replaceBlockWithWidget(
+      structure.frontMatter,
+      structure.frontMatter ? createFrontMatterWidget(structure.frontMatter) : null,
+      renderedSpecialLines
+    );
+    structure.mathBlocks.forEach(block => {
+      replaceBlockWithWidget(block, createMathWidget(block.source, true), renderedSpecialLines);
+    });
+    structure.calloutBlocks.forEach(block => {
+      replaceBlockWithWidget(block, createCalloutWidget(block), renderedSpecialLines);
+    });
+
     for (let lineNumber = firstLine; lineNumber < lastLine - 1; lineNumber += 1) {
       if (
         fencedLines.has(lineNumber)
         || renderedTableLines.has(lineNumber)
         || renderedCodeLines.has(lineNumber)
+        || renderedSpecialLines.has(lineNumber)
       ) continue;
       const header = parseMarkdownTableRow(codeMirror.getLine(lineNumber));
       const alignments = getTableAlignments(codeMirror.getLine(lineNumber + 1));
@@ -3618,6 +4101,7 @@ function renderEditorDecorations(editorAdapter, note) {
     const lineText = lineHandle.text;
     if (renderedCodeLines.has(lineNumber)) return;
     if (renderedTableLines.has(lineNumber)) return;
+    if (renderedSpecialLines.has(lineNumber)) return;
     const containingCodeBlock = findContainingCodeBlock(codeBlocks, lineNumber);
     const fenceLine = Boolean(containingCodeBlock && (
       containingCodeBlock.start === lineNumber
@@ -3688,7 +4172,7 @@ function renderEditorDecorations(editorAdapter, note) {
           }, codeMirror);
         });
         widget.classList.add('is-source-visible');
-        imageDecoration = codeMirror.addLineWidget(lineNumber, widget, {
+        imageDecoration = codeMirror.addBlockWidget(lineNumber, widget, {
           above: false,
           coverGutter: false,
           noHScroll: true
@@ -3848,6 +4332,55 @@ function renderEditorDecorations(editorAdapter, note) {
     }
     markCompletedTaskText(lineNumber, lineText, listPrefix);
 
+    const occupiedRanges = [];
+    const isOccupied = (from, to) => occupiedRanges.some(range => {
+      return from < range.to && to > range.from;
+    });
+    const replaceInlineRange = (from, to, widget) => {
+      if (isOccupied(from, to)) return false;
+      addMark(
+        { line: lineNumber, ch: from },
+        { line: lineNumber, ch: to },
+        { replacedWith: widget, atomic: true, handleMouseEvents: true }
+      );
+      occupiedRanges.push({ from, to });
+      return true;
+    };
+
+    const richInlinePattern = /\*\*\*(?=\S)(.+?)(?<=\S)\*\*\*/g;
+    while ((match = richInlinePattern.exec(lineText)) !== null) {
+      replaceInlineRange(
+        match.index,
+        match.index + match[0].length,
+        createRichInlineWidget(match[0])
+      );
+    }
+
+    const inlineMathPattern = /(?<!\\)\$(?!\s|\$)([^$\n]+?)(?<!\s)\$/g;
+    while ((match = inlineMathPattern.exec(lineText)) !== null) {
+      replaceInlineRange(
+        match.index,
+        match.index + match[0].length,
+        createMathWidget(match[1], false)
+      );
+    }
+
+    const wikiLinkPattern = /(!)?\[\[([^\]|#]+)(#[^\]|]+)?(?:\|([^\]]+))?\]\]/g;
+    while ((match = wikiLinkPattern.exec(lineText)) !== null) {
+      const embedded = Boolean(match[1]);
+      const target = match[2].trim();
+      const anchor = match[3] || '';
+      const label = (match[4] || target).trim();
+      const href = `${target.endsWith('.md') ? target : `${target}.md`}${anchor}`;
+      const widget = createEditorLinkWidget(label, href);
+      widget.classList.add('is-wiki-link');
+      if (embedded) {
+        widget.classList.add('is-wiki-embed');
+        widget.textContent = `嵌入 · ${label}`;
+      }
+      replaceInlineRange(match.index, match.index + match[0].length, widget);
+    }
+
     const patterns = [
       { regex: /\*\*([^*]+)\*\*/g, open: 2, close: 2, className: 'cm-rendered-strong' },
       { regex: /~~([^~]+)~~/g, open: 2, close: 2, className: 'cm-rendered-strike' },
@@ -3857,6 +4390,7 @@ function renderEditorDecorations(editorAdapter, note) {
     ];
     patterns.forEach(pattern => {
       while ((match = pattern.regex.exec(lineText)) !== null) {
+        if (isOccupied(match.index, match.index + match[0].length)) continue;
         hideDelimiters(
           lineNumber,
           match,
@@ -3869,15 +4403,12 @@ function renderEditorDecorations(editorAdapter, note) {
 
     const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
     while ((match = linkPattern.exec(lineText)) !== null) {
-      addMark(
-        { line: lineNumber, ch: match.index },
-        { line: lineNumber, ch: match.index + match[0].length },
-        {
-          replacedWith: createEditorLinkWidget(match[1], match[2]),
-          atomic: true,
-          handleMouseEvents: true
-        }
-      );
+      if (isOccupied(match.index, match.index + match[0].length)) continue;
+      const formattedLabel = /(?:\*\*|\*|~~|`)/.test(match[1]);
+      const link = createEditorLinkWidget('', match[2]);
+      if (formattedLabel) link.appendChild(createRichInlineWidget(match[1]));
+      else link.textContent = match[1];
+      replaceInlineRange(match.index, match.index + match[0].length, link);
     }
     });
   });
@@ -3888,7 +4419,7 @@ function renderEditorDecorations(editorAdapter, note) {
     }
     editorAdapter.cursorAlignmentFrame = requestAnimationFrame(() => {
       editorAdapter.cursorAlignmentFrame = null;
-      const cursor = wrapper.querySelector('.CodeMirror-cursor');
+      const cursor = wrapper.querySelector('.cm-cursor');
       if (!cursor) return;
       const cursorPosition = codeMirror.cursorCoords(null, 'window');
       const cursorRect = {
@@ -4125,27 +4656,8 @@ async function pasteImages(event, editorElement, getCurrentNote) {
   editorElement.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-async function saveCurrentNote() {
-  if (!currentNote) return;
-
-  const newName = noteTitle.value.trim() || 'untitled';
-  const content = editor.value;
-  
-  const renamed = newName !== currentNote.name;
-  if (renamed) {
-    const result = await ipcRenderer.invoke('rename-note', {
-      oldPath: currentNote.path,
-      newName: newName
-    });
-    currentNote = result;
-  }
-
-  await ipcRenderer.invoke('save-note', {
-    notePath: currentNote.path,
-    content: content
-  });
-
-  if (renamed) await loadTree();
+async function saveCurrentNote(options) {
+  return leftPanePersistence.save(options);
 }
 
 async function exportCurrentNoteToPdf() {
@@ -4395,9 +4907,30 @@ async function changeNotesDir() {
   if (newDir) {
     resetCurrentLibrary();
     await loadTree();
+    await restoreWorkspaceSession();
     await renderLocationsManager();
+    return true;
   }
+  return false;
 }
+
+function hideNewWindowWelcome() {
+  newWindowWelcome.hidden = true;
+  editor.focus();
+}
+
+if (new URLSearchParams(window.location.search).get('welcome') === '1') {
+  newWindowWelcome.hidden = false;
+  requestAnimationFrame(() => welcomeChooseDirectory.focus());
+}
+
+welcomeChooseDirectory.addEventListener('click', async () => {
+  if (await changeNotesDir()) hideNewWindowWelcome();
+});
+welcomeUseCurrent.addEventListener('click', hideNewWindowWelcome);
+welcomeCloseWindow.addEventListener('click', () => {
+  ipcRenderer.invoke('close-current-window');
+});
 
 function resetCurrentLibrary() {
   if (editorFindState.editor === editorRight) closeEditorFind();
@@ -4413,7 +4946,6 @@ function resetCurrentLibrary() {
   rightPanel.style.display = 'none';
   updatePreview(true);
   expandedFolders.clear();
-  saveWorkspaceSession();
 }
 
 async function switchNotesLocation(locationPath) {
@@ -4426,6 +4958,7 @@ async function switchNotesLocation(locationPath) {
   }
   resetCurrentLibrary();
   await loadTree();
+  await restoreWorkspaceSession();
   locationsModal.classList.remove('active');
 }
 
@@ -4478,6 +5011,7 @@ async function renderLocationsManager() {
         if (location.path === data.activePath) {
           resetCurrentLibrary();
           await loadTree();
+          await restoreWorkspaceSession();
         }
         await renderLocationsManager();
       });
@@ -4524,6 +5058,297 @@ function formatDate(date) {
   const d = new Date(date);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
+
+function getActiveHistoryTarget() {
+  const useRight = lastActiveEditor === editorRight && currentNoteRight;
+  return {
+    side: useRight ? 'right' : 'left',
+    note: useRight ? currentNoteRight : currentNote,
+    editor: useRight ? editorRight : editor,
+    save: useRight ? saveCurrentNoteRight : saveCurrentNote
+  };
+}
+
+function getHistoryReasonLabel(reason) {
+  return {
+    baseline: '初始版本',
+    'auto-save': '自动保存',
+    'manual-save': '手动保存',
+    'partial-restore': '局部恢复',
+    'before-restore': '恢复前备份',
+    restore: '历史恢复'
+  }[reason] || '已保存';
+}
+
+function formatHistorySize(size) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function hideNoteHistory() {
+  noteHistoryState.requestId += 1;
+  noteHistoryState.target = null;
+  noteHistoryModal.classList.remove('active');
+}
+
+function renderNoteHistoryVersions() {
+  noteHistoryVersions.innerHTML = '';
+  if (!noteHistoryState.versions.length) {
+    const empty = document.createElement('div');
+    empty.className = 'note-history-empty';
+    empty.textContent = '暂无可用的历史版本';
+    noteHistoryVersions.appendChild(empty);
+    return;
+  }
+  noteHistoryState.versions.forEach((version, index) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'note-history-version';
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(index === noteHistoryState.selectedIndex));
+    if (index === noteHistoryState.selectedIndex) row.classList.add('selected');
+    const heading = document.createElement('span');
+    heading.className = 'note-history-version-heading';
+    heading.textContent = version.label || formatDate(version.savedAt);
+    const details = document.createElement('span');
+    details.className = 'note-history-version-details';
+    details.textContent = `${getHistoryReasonLabel(version.reason)} · ${formatHistorySize(version.size)}`;
+    row.append(heading, details);
+    if (version.pinned) {
+      const pin = document.createElement('span');
+      pin.className = 'note-history-pinned';
+      pin.textContent = '固定';
+      row.appendChild(pin);
+    }
+    if (version.isCurrent) {
+      const badge = document.createElement('span');
+      badge.className = 'note-history-current';
+      badge.textContent = '当前';
+      row.appendChild(badge);
+    }
+    row.addEventListener('click', () => selectNoteHistoryVersion(index));
+    noteHistoryVersions.appendChild(row);
+  });
+}
+
+function appendDiffLine(container, text, type, parts = null) {
+  const line = document.createElement('span');
+  line.className = `note-history-diff-line ${type}`;
+  if (parts) {
+    parts.forEach(part => {
+      const span = document.createElement('span');
+      span.className = `note-history-diff-part ${part.type}`;
+      span.textContent = part.text;
+      line.appendChild(span);
+    });
+  } else {
+    line.textContent = text ?? '';
+  }
+  container.appendChild(line);
+}
+
+function renderNoteHistoryDiff(historicalContent, currentContent) {
+  const rows = compareLines(historicalContent, currentContent);
+  noteHistoryPreview.replaceChildren();
+  noteHistoryCurrent.replaceChildren();
+  rows.forEach(row => {
+    if (row.type === 'equal') {
+      appendDiffLine(noteHistoryPreview, row.before, 'equal');
+      appendDiffLine(noteHistoryCurrent, row.after, 'equal');
+    } else if (row.type === 'modify') {
+      appendDiffLine(noteHistoryPreview, row.before, 'delete', row.beforeParts);
+      appendDiffLine(noteHistoryCurrent, row.after, 'insert', row.afterParts);
+    } else if (row.type === 'delete') {
+      appendDiffLine(noteHistoryPreview, row.before, 'delete');
+      appendDiffLine(noteHistoryCurrent, '', 'empty');
+    } else {
+      appendDiffLine(noteHistoryPreview, '', 'empty');
+      appendDiffLine(noteHistoryCurrent, row.after, 'insert');
+    }
+  });
+  const summary = buildDiffSummary(rows);
+  noteHistoryDiffSummary.textContent = summary.inserted || summary.deleted || summary.modified
+    ? `+${summary.inserted} −${summary.deleted} · ${summary.modified} 行修改`
+    : '与当前版本一致';
+}
+
+async function selectNoteHistoryVersion(index) {
+  const version = noteHistoryState.versions[index];
+  const target = noteHistoryState.target;
+  if (!version || !target) return;
+  noteHistoryState.selectedIndex = index;
+  renderNoteHistoryVersions();
+  noteHistoryPreview.textContent = '正在读取版本…';
+  noteHistoryCurrent.textContent = '';
+  noteHistoryMeta.textContent = `${formatDate(version.savedAt)} · ${getHistoryReasonLabel(version.reason)}`;
+  noteHistoryPin.classList.toggle('active', Boolean(version.pinned));
+  noteHistoryPin.setAttribute('aria-pressed', String(Boolean(version.pinned)));
+  noteHistoryPin.textContent = version.pinned ? '已固定' : '固定版本';
+  noteHistoryLabel.value = version.label || '';
+  noteHistoryNote.value = version.note || '';
+  noteHistoryRestore.disabled = true;
+  const requestId = ++noteHistoryState.requestId;
+  const result = await ipcRenderer.invoke('read-note-history-version', {
+    notePath: target.note.path,
+    versionId: version.id
+  });
+  if (requestId !== noteHistoryState.requestId || !noteHistoryState.target) return;
+  if (!result.success) {
+    noteHistoryPreview.textContent = '';
+    noteHistoryError.textContent = result.error || '版本读取失败';
+    return;
+  }
+  noteHistoryError.textContent = '';
+  noteHistoryState.historicalContent = result.content;
+  renderNoteHistoryDiff(result.content, target.editor.value);
+  noteHistoryRestore.disabled = version.isCurrent;
+}
+
+async function saveNoteHistoryMetadata() {
+  const target = noteHistoryState.target;
+  const index = noteHistoryState.selectedIndex;
+  const version = noteHistoryState.versions[index];
+  if (!target || !version) return;
+  const result = await ipcRenderer.invoke('update-note-history-version', {
+    notePath: target.note.path,
+    versionId: version.id,
+    label: noteHistoryLabel.value,
+    note: noteHistoryNote.value,
+    pinned: noteHistoryPin.classList.contains('active')
+  });
+  if (!result.success) {
+    noteHistoryError.textContent = result.error || '版本标记保存失败';
+    return;
+  }
+  noteHistoryState.versions[index] = { ...version, ...result.version };
+  noteHistoryError.textContent = '版本标记已保存';
+  renderNoteHistoryVersions();
+}
+
+function getSelectedHistoricalText() {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !noteHistoryPreview.contains(selection.anchorNode)) {
+    noteHistoryError.textContent = '请先在左侧历史版本中选择文本';
+    return '';
+  }
+  return selection.toString();
+}
+
+async function applyHistoricalSelection(mode) {
+  const text = getSelectedHistoricalText();
+  const target = noteHistoryState.target;
+  if (!text || !target) return;
+  const start = mode === 'insert' ? target.editor.selectionEnd : target.editor.selectionStart;
+  const end = mode === 'insert' ? target.editor.selectionEnd : target.editor.selectionEnd;
+  const result = await ipcRenderer.invoke('apply-note-history-selection', {
+    notePath: target.note.path,
+    expectedHash: noteHistoryState.currentHash,
+    start,
+    end,
+    text
+  });
+  if (!result.success) {
+    noteHistoryError.textContent = result.error || '局部恢复失败';
+    return;
+  }
+  target.editor.setRangeText(text, start, end, 'end');
+  if (target.side === 'right') updatePreviewRight(true);
+  else updatePreview(true);
+  hideNoteHistory();
+  target.editor.focus();
+}
+
+async function showNoteHistory() {
+  let target = getActiveHistoryTarget();
+  if (!target.note) {
+    showConfirm('无法查看历史', '请先选择一篇笔记', () => {});
+    return;
+  }
+  await target.save();
+  target = getActiveHistoryTarget();
+  if (!target.note) return;
+  const result = await ipcRenderer.invoke('get-note-history', target.note.path);
+  const currentTarget = getActiveHistoryTarget();
+  if (!result.success) {
+    showConfirm('历史版本读取失败', result.error || '无法读取历史版本', () => {});
+    return;
+  }
+  if (!currentTarget.note || currentTarget.note.path !== target.note.path) return;
+  noteHistoryState.target = target;
+  noteHistoryState.versions = result.versions;
+  noteHistoryState.selectedIndex = result.versions.length ? 0 : -1;
+  noteHistoryState.currentHash = result.currentHash;
+  noteHistoryNoteName.textContent = target.note.name;
+  noteHistoryError.textContent = '';
+  noteHistoryPreview.textContent = '';
+  noteHistoryRestore.disabled = true;
+  noteHistoryModal.classList.add('active');
+  renderNoteHistoryVersions();
+  if (result.versions.length) await selectNoteHistoryVersion(0);
+  noteHistoryVersions.querySelector('button')?.focus();
+}
+
+async function restoreSelectedHistoryVersion() {
+  const target = noteHistoryState.target;
+  const version = noteHistoryState.versions[noteHistoryState.selectedIndex];
+  if (!target || !version || version.isCurrent) return;
+  showConfirm('恢复历史版本', '当前内容会先自动备份，然后恢复所选版本。', async () => {
+    const result = await ipcRenderer.invoke('restore-note-history-version', {
+      notePath: target.note.path,
+      versionId: version.id,
+      expectedHash: noteHistoryState.currentHash
+    });
+    if (!result.success) {
+      noteHistoryError.textContent = result.error || '版本恢复失败';
+      return;
+    }
+    const activeNote = target.side === 'right' ? currentNoteRight : currentNote;
+    if (!activeNote || activeNote.path !== target.note.path) return;
+    target.editor.value = result.content;
+    if (target.side === 'right') updatePreviewRight(true);
+    else updatePreview(true);
+    hideNoteHistory();
+    target.editor.focus();
+  });
+}
+
+noteHistoryCancel.addEventListener('click', hideNoteHistory);
+noteHistoryRestore.addEventListener('click', restoreSelectedHistoryVersion);
+noteHistoryPin.addEventListener('click', () => {
+  const active = !noteHistoryPin.classList.contains('active');
+  noteHistoryPin.classList.toggle('active', active);
+  noteHistoryPin.setAttribute('aria-pressed', String(active));
+  noteHistoryPin.textContent = active ? '已固定' : '固定版本';
+});
+noteHistoryMetadataSave.addEventListener('click', saveNoteHistoryMetadata);
+noteHistoryCopySelection.addEventListener('click', () => {
+  const text = getSelectedHistoricalText();
+  if (!text) return;
+  clipboard.writeText(text);
+  noteHistoryError.textContent = '已复制选中内容';
+});
+noteHistoryInsertSelection.addEventListener('click', () => applyHistoricalSelection('insert'));
+noteHistoryReplaceSelection.addEventListener('click', () => applyHistoricalSelection('replace'));
+noteHistoryModal.addEventListener('click', event => {
+  if (event.target === noteHistoryModal) hideNoteHistory();
+});
+noteHistoryVersions.addEventListener('keydown', event => {
+  if (!['ArrowUp', 'ArrowDown', 'Enter'].includes(event.key)) return;
+  event.preventDefault();
+  if (event.key === 'Enter') {
+    restoreSelectedHistoryVersion();
+    return;
+  }
+  const offset = event.key === 'ArrowUp' ? -1 : 1;
+  const next = Math.max(0, Math.min(
+    noteHistoryState.versions.length - 1,
+    noteHistoryState.selectedIndex + offset
+  ));
+  selectNoteHistoryVersion(next).then(() => {
+    noteHistoryVersions.querySelector('.selected')?.focus();
+  });
+});
 
 let saveTimeout = null;
 
@@ -4717,6 +5542,52 @@ outlineToggle.addEventListener('click', () => {
   localStorage.setItem('outline-enabled', String(outlineEnabled));
   applyOutlineSetting();
 });
+lineNumbersToggle.addEventListener('click', () => {
+  lineNumbersEnabled = !lineNumbersEnabled;
+  localStorage.setItem('line-numbers-enabled', String(lineNumbersEnabled));
+  applyLineNumbersSetting();
+});
+accentThemeOptions.forEach(option => {
+  option.addEventListener('click', () => setAccentTheme(option.dataset.accent));
+});
+accentThemeReset.addEventListener('click', () => setAccentTheme('indigo'));
+historySettingsSave.addEventListener('click', async () => {
+  if (settingsBusy) return;
+  setSettingsBusy(true);
+  settingsError.textContent = '';
+  try {
+    const result = await ipcRenderer.invoke('set-history-settings', {
+      bucketMinutes: historyBucketMinutes.value,
+      maxVersions: historyMaxVersions.value,
+      maxAgeDays: historyMaxAgeDays.value
+    });
+    if (!result.success) throw new Error(result.error);
+    renderHistoryStorage({ ...result.stats, settings: result.settings });
+    settingsError.textContent = '历史版本策略已保存';
+  } catch (error) {
+    settingsError.textContent = getSettingsErrorMessage('历史版本策略保存失败', error);
+  } finally {
+    setSettingsBusy(false);
+  }
+});
+historyCleanup.addEventListener('click', () => {
+  if (settingsBusy) return;
+  showConfirm(
+    '清理历史版本',
+    '将删除未固定的旧版本，每篇笔记保留最新版本。此操作无法撤销。',
+    async () => {
+      setSettingsBusy(true);
+      const result = await ipcRenderer.invoke('cleanup-note-history', {});
+      setSettingsBusy(false);
+      if (!result.success) {
+        settingsError.textContent = result.error || '历史版本清理失败';
+        return;
+      }
+      renderHistoryStorage(result.stats);
+      settingsError.textContent = `已清理 ${result.removed} 个历史版本`;
+    }
+  );
+});
 templateCancel.addEventListener('click', hideTemplateDialog);
 templateModal.addEventListener('click', event => {
   if (event.target === templateModal) hideTemplateDialog();
@@ -4725,6 +5596,11 @@ templateModal.addEventListener('click', event => {
 function closeTopmostModal() {
   if (mermaidViewer.classList.contains('active')) {
     closeMermaidViewer();
+  } else if (noteHistoryModal.classList.contains('active')) {
+    hideNoteHistory();
+  } else if (quickOpenModal.classList.contains('active')) {
+    hideQuickOpen();
+    editor.focus();
   } else if (confirmModal.classList.contains('active')) {
     hideConfirm();
   } else if (modal.classList.contains('active')) {
@@ -4811,7 +5687,14 @@ notesList.addEventListener('drop', (e) => {
 
 ipcRenderer.on('new-note', () => createNewNote(null));
 ipcRenderer.on('new-folder', () => createNewFolder(null));
-ipcRenderer.on('save-note', saveCurrentNote);
+ipcRenderer.on('quick-open', showQuickOpen);
+ipcRenderer.on('save-note', () => {
+  const save = lastActiveEditor === editorRight && currentNoteRight
+    ? saveCurrentNoteRight
+    : saveCurrentNote;
+  save({ historyReason: 'manual-save' });
+});
+ipcRenderer.on('open-note-history', showNoteHistory);
 ipcRenderer.on('export-pdf', exportCurrentNoteToPdf);
 ipcRenderer.on('insert-table', insertMarkdownTable);
 ipcRenderer.on('insert-code-block', insertMarkdownCodeFence);
@@ -4915,27 +5798,8 @@ function updatePreviewRight(immediate = false) {
   renderMarkdownPreview(previewRight, content, editorRight, currentNoteRight);
 }
 
-async function saveCurrentNoteRight() {
-  if (!currentNoteRight) return;
-
-  const newName = noteTitleRight.value.trim() || 'untitled';
-  const content = editorRight.value;
-  
-  const renamed = newName !== currentNoteRight.name;
-  if (renamed) {
-    const result = await ipcRenderer.invoke('rename-note', {
-      oldPath: currentNoteRight.path,
-      newName: newName
-    });
-    currentNoteRight = result;
-  }
-
-  await ipcRenderer.invoke('save-note', {
-    notePath: currentNoteRight.path,
-    content: content
-  });
-
-  if (renamed) await loadTree();
+async function saveCurrentNoteRight(options) {
+  return rightPanePersistence.save(options);
 }
 
 let saveTimeoutRight = null;

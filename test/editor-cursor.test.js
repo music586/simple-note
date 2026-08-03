@@ -80,3 +80,20 @@ test('active Markdown headings keep their source label alongside rendered stylin
   assert.match(headingBranch, /cm-editing-heading cm-rendered-h/);
   assert.doesNotMatch(headingBranch, /collapsed: true/);
 });
+
+test('editing headings keep rendered sizes without heading underlines', () => {
+  const styles = fs.readFileSync(path.join(projectRoot, 'styles.css'), 'utf8');
+
+  assert.match(
+    styles,
+    /\.cm-editing-source-line\.cm-editing-heading\.cm-rendered-h1\s*\{[^}]*font-size: 1\.75em;[^}]*line-height: 1\.35;/s
+  );
+  assert.match(
+    styles,
+    /\.cm-editing-source-line\.cm-editing-heading\.cm-rendered-h2\s*\{[^}]*font-size: 1\.45em;[^}]*line-height: 1\.4;/s
+  );
+  assert.match(
+    styles,
+    /\.cm-rendered-heading \*,[\s\S]*\.cm-editing-heading \*\s*\{[^}]*text-decoration: none;/s
+  );
+});

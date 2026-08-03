@@ -7,9 +7,10 @@ const root = path.join(__dirname, '..');
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf-8');
 const renderer = fs.readFileSync(path.join(root, 'renderer.js'), 'utf-8');
 
-test('active notes directory changes refresh the tree in every window', () => {
-  assert.match(main, /fs\.watch\(getNotesDir\(\), \{ recursive: true \}/);
-  assert.match(main, /webContents\.send\('notes-tree-changed'\)/);
+test('active notes directory changes refresh only their owning window', () => {
+  assert.match(main, /workspace\.watcher = fs\.watch\(/);
+  assert.match(main, /getNotesDir\(targetWindow\)/);
+  assert.match(main, /targetWindow\.webContents\.send\('notes-tree-changed'\)/);
   assert.match(renderer, /ipcRenderer\.on\('notes-tree-changed', scheduleTreeRefresh\)/);
 });
 
@@ -24,9 +25,9 @@ test('configured hidden folders do not render or trigger tree refreshes', () => 
 });
 
 test('switching notes directories replaces the active watcher', () => {
-  const watcherCalls = main.match(/watchNotesDirectory\(\);/g) || [];
-  assert.ok(watcherCalls.length >= 4);
-  assert.match(main, /notesDirectoryWatcher\.close\(\)/);
+  const watcherCalls = main.match(/watchNotesDirectory\(sourceWindow\);/g) || [];
+  assert.ok(watcherCalls.length >= 3);
+  assert.match(main, /workspace\.watcher\.close\(\)/);
 });
 
 test('window focus refreshes the tree when native watching is unavailable', () => {

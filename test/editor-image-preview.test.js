@@ -12,7 +12,7 @@ test('active image lines keep their Markdown source and preview visible', () => 
   assert.ok(activeListBranch > activeLineBranch);
   assert.match(
     renderer.slice(activeLineBranch, activeListBranch),
-    /addLineWidget\(lineNumber, widget/
+    /addBlockWidget\(lineNumber, widget/
   );
   assert.match(renderer, /widget\.classList\.add\('is-source-visible'\)/);
 });

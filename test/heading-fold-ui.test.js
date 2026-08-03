@@ -9,7 +9,7 @@ test('heading fold control is hover-revealed and preserves per-editor state', ()
 
   assert.match(renderer, /collapsedHeadings:\s*new Set\(\)/);
   assert.match(renderer, /cm-heading-toggle/);
-  assert.match(renderer, /setBookmark/);
+  assert.match(renderer, /addWidgetDecoration/);
   assert.match(styles, /\.cm-heading-toggle\s*\{[^}]*opacity:\s*0/s);
-  assert.match(styles, /CodeMirror-line:hover[^}]*cm-heading-toggle[^}]*opacity:\s*1/s);
+  assert.match(styles, /cm-line:hover[^}]*cm-heading-toggle[^}]*opacity:\s*1/s);
 });

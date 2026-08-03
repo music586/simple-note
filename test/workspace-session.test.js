@@ -8,7 +8,8 @@ const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const renderer = fs.readFileSync(path.join(root, 'renderer.js'), 'utf8');
 
 test('workspace session records both notes, focus, and the release notes page', () => {
-  assert.match(renderer, /const workspaceSessionKey = 'workspace-session'/);
+  assert.match(renderer, /let workspaceSessionKey = 'workspace-session:pending'/);
+  assert.match(renderer, /workspaceSessionKey = `workspace-session:\$\{notesInfo\.workspaceId\}/);
   assert.match(renderer, /leftNotePath: currentNote\?\.path \|\| null/);
   assert.match(renderer, /rightNotePath: currentNoteRight\?\.path \|\| null/);
   assert.match(renderer, /activePane: lastActiveEditor === editorRight \? 'right' : 'left'/);

@@ -79,11 +79,11 @@ test('clicking an outline item briefly highlights the target editor heading', ()
   assert.match(renderer, /function highlightDocumentOutlineTarget\(codeMirror, lineNumber\)/);
   assert.match(
     renderer,
-    /codeMirror\.addLineClass\(lineNumber, 'wrap', 'document-outline-target'\)/
+    /codeMirror\.addLineDecoration\(lineNumber, 'wrap', 'document-outline-target'\)/
   );
   assert.match(
     renderer,
-    /codeMirror\.removeLineClass\(lineNumber, 'wrap', 'document-outline-target'\)/
+    /codeMirror\.removeLineDecoration\(lineNumber, 'wrap', 'document-outline-target'\)/
   );
   assert.match(renderer, /highlightDocumentOutlineTarget\(codeMirror, heading\.line\)/);
   assert.match(styles, /\.document-outline-target\s*\{[^}]*animation:/s);

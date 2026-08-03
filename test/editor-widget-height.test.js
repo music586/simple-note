@@ -189,6 +189,21 @@ test('所有编辑器装饰重算统一保持滚动锚点', () => {
   );
 });
 
+test('鼠标点击源码行后恢复原滚动位置', () => {
+  assert.match(renderer, /function preserveEditorScrollOnClick\(editorAdapter\)/);
+  assert.match(renderer, /top: codeMirror\.getScrollInfo\(\)\.top/);
+  assert.match(renderer, /const restore = \(\) => codeMirror\.scrollTo\(null, snapshot\.top\)/);
+  assert.match(renderer, /preserveEditorScrollOnClick\(editor\)/);
+  assert.match(renderer, /preserveEditorScrollOnClick\(editorRight\)/);
+});
+
+test('目录点击仍会主动定位标题', () => {
+  assert.match(
+    renderer,
+    /item\.addEventListener\('click',[\s\S]{0,320}codeMirror\.scrollTo\(null, codeMirror\.heightAtLine\(heading\.line, 'local'\)\)/
+  );
+});
+
 test('光标状态不影响预渲染时跳过装饰重建和滚动调整', () => {
   assert.match(renderer, /function getEditorDecorationCursorState\(editorAdapter\)/);
   assert.match(renderer, /return hasSourceVisibilityChange \? `line:\$\{cursor\.line\}` : 'stable'/);
@@ -213,7 +228,7 @@ test('点击编辑器空白区域只聚焦而不移动光标或触发重绘', ()
     renderer,
     /codeMirrorWrapper\.addEventListener\('mousedown', event => \{[\s\S]*\}, true\)/
   );
-  assert.match(renderer, /if \(event\.target\.closest\('\.CodeMirror-line'\)\) return/);
+  assert.match(renderer, /if \(event\.target\.closest\('\.cm-line'\)\) return/);
   assert.match(renderer, /event\.preventDefault\(\);\s+inputField\.focus\(\{ preventScroll: true \}\)/);
 });
 

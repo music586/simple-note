@@ -13,10 +13,10 @@ test('AI optimized notes persist their state through main-process IPC', () => {
   assert.match(main, /ipcMain\.handle\('get-ai-optimized-state'/);
   assert.match(main, /ipcMain\.handle\('set-ai-optimized-state'/);
   assert.match(main, /config\.aiOptimizedNotes = \[\.\.\.new Set\(paths\)\]/);
-  assert.match(main, /migrateAiOptimizedNotePaths\(oldPath, newPath\)/);
-  assert.match(main, /migrateAiOptimizedNotePaths\(sourcePath, newPath\)/);
-  assert.match(main, /migrateAiOptimizedNotePaths\(notePath\)/);
-  assert.match(main, /migrateAiOptimizedNotePaths\(folderPath\)/);
+  assert.match(main, /migrateAiOptimizedNotePaths\(filePath, newPath\)/);
+  assert.match(main, /migrateAiOptimizedNotePaths\(resolvedSourcePath, newPath\)/);
+  assert.match(main, /migrateAiOptimizedNotePaths\(filePath\)/);
+  assert.match(main, /migrateAiOptimizedNotePaths\(resolvedFolderPath\)/);
 });
 
 test('AI optimization state restores and marks both editor panels', () => {
@@ -38,13 +38,10 @@ test('AI optimization state restores and marks both editor panels', () => {
     styles,
     /data-ai-stamp-position='bottom-right'[\s\S]*top: auto;[\s\S]*bottom: 28px;/
   );
-  assert.match(
-    renderer,
-    /function mountAiLayoutMark\(editorAdapter, pane\)[\s\S]*querySelector\('\.CodeMirror-lines'\)[\s\S]*lines\.appendChild\(mark\)/
-  );
+  assert.doesNotMatch(renderer, /\.cm-content[\s\S]*appendChild\(mark\)/);
   assert.match(
     styles,
-    /\.editor-pane > \.CodeMirror \.CodeMirror-lines\s*\{[^}]*position: relative;/s
+    /\.editor-pane > \.cm-editor \.cm-content\s*\{[^}]*position: relative;/s
   );
   assert.match(html, /class="ai-seal-ring ai-seal-ring-outer"/);
   assert.match(html, /class="ai-seal-orbit"/);
