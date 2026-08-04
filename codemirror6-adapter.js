@@ -131,6 +131,20 @@ function classAttributes(className) {
   return className ? { class: className } : undefined;
 }
 
+function normalizeExtraKeyName(key) {
+  const legacyKeyNames = {
+    Up: 'ArrowUp',
+    Down: 'ArrowDown',
+    Left: 'ArrowLeft',
+    Right: 'ArrowRight',
+    Esc: 'Escape'
+  };
+  const normalizedKey = legacyKeyNames[key] || key;
+  return normalizedKey
+    .replace('Cmd-', 'Meta-')
+    .replace(/-([A-Z])$/, (_, letter) => `-${letter.toLowerCase()}`);
+}
+
 class CodeMirror6Adapter {
   constructor(textarea, options = {}) {
     this.handlers = new Map();
@@ -141,7 +155,7 @@ class CodeMirror6Adapter {
     this.lineNumbersVisible = Boolean(options.lineNumbers);
 
     const customKeys = Object.entries(options.extraKeys || {}).map(([key, handler]) => ({
-      key: key.replace('Cmd-', 'Meta-').replace(/-([A-Z])$/, (_, letter) => `-${letter.toLowerCase()}`),
+      key: normalizeExtraKeyName(key),
       run: () => handler(this) !== Pass
     }));
     const extensions = [
@@ -527,5 +541,6 @@ function createEditor(textarea, options) {
 module.exports = {
   CodeMirror6Adapter,
   Pass,
-  createEditor
+  createEditor,
+  normalizeExtraKeyName
 };

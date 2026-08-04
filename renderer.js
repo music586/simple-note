@@ -1528,7 +1528,12 @@ function handleOpeningCodeFence(cm, editorAdapter) {
   return true;
 }
 
-let colorTheme = localStorage.getItem('color-theme') || 'dark';
+const systemColorTheme = window.matchMedia('(prefers-color-scheme: light)');
+let colorThemeMode = localStorage.getItem('color-theme') || 'dark';
+if (!['system', 'light', 'dark'].includes(colorThemeMode)) colorThemeMode = 'dark';
+let colorTheme = colorThemeMode === 'system'
+  ? (systemColorTheme.matches ? 'light' : 'dark')
+  : colorThemeMode;
 const accentThemeNames = {
   indigo: '默认蓝紫',
   teal: '青松',
@@ -1537,15 +1542,22 @@ const accentThemeNames = {
 let accentTheme = localStorage.getItem('accent-theme');
 if (!accentThemeNames[accentTheme]) accentTheme = 'indigo';
 
-function applyColorTheme(theme) {
-  colorTheme = theme;
-  document.documentElement.dataset.theme = theme;
-  ipcRenderer.send('theme-changed', theme);
+function resolveColorTheme(theme, systemTheme) {
+  if (theme !== 'system') return theme;
+  if (systemTheme === 'light' || systemTheme === 'dark') return systemTheme;
+  return systemColorTheme.matches ? 'light' : 'dark';
 }
 
-function setColorTheme(theme) {
-  if (theme !== 'light' && theme !== 'dark') return;
-  applyColorTheme(theme);
+function applyColorTheme(theme, systemTheme) {
+  colorThemeMode = theme;
+  colorTheme = resolveColorTheme(theme, systemTheme);
+  document.documentElement.dataset.theme = colorTheme;
+  ipcRenderer.send('theme-changed', colorThemeMode);
+}
+
+function setColorTheme(theme, systemTheme) {
+  if (!['system', 'light', 'dark'].includes(theme)) return;
+  applyColorTheme(theme, systemTheme);
   localStorage.setItem('color-theme', theme);
   updatePreview(true);
   updatePreviewRight(true);
@@ -1564,11 +1576,25 @@ function setAccentTheme(theme) {
   updatePreviewRight(true);
 }
 
-applyColorTheme(colorTheme);
+applyColorTheme(colorThemeMode);
 applyAccentTheme(accentTheme);
 
 ipcRenderer.on('request-color-theme', () => {
-  ipcRenderer.send('theme-changed', colorTheme);
+  ipcRenderer.send('theme-changed', colorThemeMode);
+});
+
+systemColorTheme.addEventListener('change', () => {
+  if (colorThemeMode !== 'system') return;
+  applyColorTheme('system');
+  updatePreview(true);
+  updatePreviewRight(true);
+});
+
+ipcRenderer.on('system-color-theme-changed', (event, theme) => {
+  if (colorThemeMode !== 'system') return;
+  applyColorTheme('system', theme);
+  updatePreview(true);
+  updatePreviewRight(true);
 });
 
 window.addEventListener('storage', event => {
@@ -1579,7 +1605,7 @@ window.addEventListener('storage', event => {
     updatePreviewRight(true);
   } else if (
     event.key === 'color-theme'
-    && (event.newValue === 'light' || event.newValue === 'dark')
+    && ['system', 'light', 'dark'].includes(event.newValue)
   ) {
     applyColorTheme(event.newValue);
     updatePreview(true);
@@ -5723,7 +5749,9 @@ ipcRenderer.on('table-context-action', (event, action) => {
 ipcRenderer.on('change-dir', changeNotesDir);
 ipcRenderer.on('set-sidebar-visibility', (event, visible) => setSidebarVisibility(visible));
 ipcRenderer.on('set-preview-visibility', (event, visible) => setPreviewVisibility(visible));
-ipcRenderer.on('set-color-theme', (event, theme) => setColorTheme(theme));
+ipcRenderer.on('set-color-theme', (event, theme, systemTheme) => {
+  setColorTheme(theme, systemTheme);
+});
 
 ipcRenderer.on('context-menu-rename', (event, data) => {
   renameItem(data || contextMenuData);

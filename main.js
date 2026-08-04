@@ -11,7 +11,8 @@ const {
   Menu,
   clipboard,
   shell,
-  screen
+  screen,
+  nativeTheme
 } = require('electron');
 const { getImageDirectoryState } = require('./image-directory');
 const { NoteHistoryStore, hashContent } = require('./note-history');
@@ -571,16 +572,29 @@ function sendToActiveWindow(channel, ...args) {
 
 function updateAppearanceMenu(theme) {
   const menu = Menu.getApplicationMenu();
+  const systemItem = menu?.getMenuItemById('appearance-system');
   const lightItem = menu?.getMenuItemById('appearance-light');
   const darkItem = menu?.getMenuItemById('appearance-dark');
+  if (systemItem) systemItem.checked = theme === 'system';
   if (lightItem) lightItem.checked = theme === 'light';
   if (darkItem) darkItem.checked = theme === 'dark';
 }
 
 function setActiveWindowTheme(theme) {
   updateAppearanceMenu(theme);
-  sendToActiveWindow('set-color-theme', theme);
+  sendToActiveWindow(
+    'set-color-theme',
+    theme,
+    nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+  );
   setImmediate(() => updateAppearanceMenu(theme));
+}
+
+function broadcastSystemColorTheme() {
+  const theme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+  BrowserWindow.getAllWindows().forEach(window => {
+    if (!window.isDestroyed()) window.webContents.send('system-color-theme-changed', theme);
+  });
 }
 
 function syncActiveWindowAppearanceMenu(window) {
@@ -968,6 +982,12 @@ function rebuildApplicationMenu() {
           label: '外观',
           submenu: [
             {
+              id: 'appearance-system',
+              type: 'checkbox',
+              label: '跟随系统',
+              click: () => setActiveWindowTheme('system')
+            },
+            {
               id: 'appearance-light',
               type: 'checkbox',
               label: '明亮',
@@ -1058,6 +1078,8 @@ app.whenReady().then(() => {
     app.dock.setIcon(iconPath);
   }
 
+  nativeTheme.on('updated', broadcastSystemColorTheme);
+
   const windowSessions = getPersistedWindowSessions();
   if (windowSessions.length) {
     windowSessions.forEach(session => createWindow(session));
@@ -1103,7 +1125,7 @@ ipcMain.handle('close-current-window', async event => {
 });
 
 ipcMain.on('theme-changed', (event, theme) => {
-  if (theme !== 'light' && theme !== 'dark') return;
+  if (!['system', 'light', 'dark'].includes(theme)) return;
   const sourceWindow = BrowserWindow.fromWebContents(event.sender);
   if (sourceWindow) windowColorThemes.set(sourceWindow, theme);
   if (sourceWindow && getActiveWindow() === sourceWindow) updateAppearanceMenu(theme);

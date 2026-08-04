@@ -36,18 +36,32 @@ test('view menu uses the current sidebar visibility action', () => {
   assert.doesNotMatch(main, /label: '打开\/关闭预览'/);
 });
 
-test('view menu exposes explicit light and dark appearance choices', () => {
+test('view menu exposes system, light and dark appearance choices', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
 
-  assert.match(main, /label: '外观',[\s\S]*label: '明亮',[\s\S]*label: '黑暗'/);
+  assert.match(
+    main,
+    /label: '外观',[\s\S]*label: '跟随系统',[\s\S]*label: '明亮',[\s\S]*label: '黑暗'/
+  );
+  assert.match(main, /setActiveWindowTheme\('system'\)/);
   assert.match(main, /setActiveWindowTheme\('light'\)/);
   assert.match(main, /setActiveWindowTheme\('dark'\)/);
   assert.match(main, /setImmediate\(\(\) => updateAppearanceMenu\(theme\)\)/);
-  assert.equal((main.match(/type: 'checkbox',[\s\S]{0,80}label: '(?:明亮|黑暗)'/g) || []).length, 2);
+  assert.equal(
+    (main.match(/type: 'checkbox',[\s\S]{0,80}label: '(?:跟随系统|明亮|黑暗)'/g) || [])
+      .length,
+    3
+  );
   assert.doesNotMatch(main, /label: '切换主题'/);
   assert.match(renderer, /ipcRenderer\.on\('set-color-theme'/);
   assert.match(renderer, /localStorage\.setItem\('color-theme', theme\)/);
+  assert.match(renderer, /window\.matchMedia\('\(prefers-color-scheme: light\)'\)/);
+  assert.match(renderer, /systemColorTheme\.addEventListener\('change'/);
+  assert.match(renderer, /colorThemeMode !== 'system'/);
+  assert.match(main, /nativeTheme\.on\('updated', broadcastSystemColorTheme\)/);
+  assert.match(main, /webContents\.send\('system-color-theme-changed', theme\)/);
+  assert.match(renderer, /ipcRenderer\.on\('system-color-theme-changed'/);
   assert.match(main, /ipcMain\.on\('theme-changed'/);
   assert.match(main, /windowColorThemes\.set\(sourceWindow, theme\)/);
   assert.match(main, /getActiveWindow\(\) === sourceWindow/);
