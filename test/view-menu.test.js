@@ -17,19 +17,19 @@ test('view menu uses the current sidebar visibility action', () => {
   assert.doesNotMatch(main, /applicationMenuRefreshTimer/);
   assert.doesNotMatch(main, /id: 'toggle-sidebar'/);
   assert.match(main, /ipcMain\.on\('sidebar-visibility-changed'/);
-  assert.match(main, /webContents\.send\('request-sidebar-visibility'\)/);
+  assert.match(main, /sendToWindow\(window, 'request-sidebar-visibility'\)/);
   assert.match(
     main,
     /webContents\.on\('did-finish-load',[\s\S]*syncActiveWindowSidebarMenu\(newWindow\)/
   );
-  assert.match(main, /webContents\.send\('set-sidebar-visibility', nextVisible\)/);
+  assert.match(main, /sendToWindow\(activeWindow, 'set-sidebar-visibility', nextVisible\)/);
   assert.match(renderer, /ipcRenderer\.on\('request-sidebar-visibility'/);
   assert.match(renderer, /ipcRenderer\.on\('set-sidebar-visibility'/);
   assert.match(renderer, /function reportSidebarVisibility\(\)/);
   assert.match(main, /id: 'collapse-preview',[\s\S]*label: '折叠预览'/);
   assert.match(main, /id: 'expand-preview',[\s\S]*label: '展开预览'/);
   assert.match(main, /ipcMain\.on\('preview-visibility-changed'/);
-  assert.match(main, /webContents\.send\('set-preview-visibility', nextVisible\)/);
+  assert.match(main, /sendToWindow\(activeWindow, 'set-preview-visibility', nextVisible\)/);
   assert.match(renderer, /ipcRenderer\.on\('request-preview-visibility'/);
   assert.match(renderer, /ipcRenderer\.on\('set-preview-visibility'/);
   assert.doesNotMatch(main, /label: '折叠\/展开侧边栏'/);
@@ -60,13 +60,13 @@ test('view menu exposes system, light and dark appearance choices', () => {
   assert.match(renderer, /systemColorTheme\.addEventListener\('change'/);
   assert.match(renderer, /colorThemeMode !== 'system'/);
   assert.match(main, /nativeTheme\.on\('updated', broadcastSystemColorTheme\)/);
-  assert.match(main, /webContents\.send\('system-color-theme-changed', theme\)/);
+  assert.match(main, /sendToWindow\(window, 'system-color-theme-changed', theme\)/);
   assert.match(renderer, /ipcRenderer\.on\('system-color-theme-changed'/);
   assert.match(main, /ipcMain\.on\('theme-changed'/);
   assert.match(main, /windowColorThemes\.set\(sourceWindow, theme\)/);
   assert.match(main, /getActiveWindow\(\) === sourceWindow/);
   assert.match(main, /newWindow\.on\('focus'/);
-  assert.match(main, /webContents\.send\('request-color-theme'\)/);
+  assert.match(main, /sendToWindow\(window, 'request-color-theme'\)/);
   assert.match(renderer, /ipcRenderer\.on\('request-color-theme'/);
   assert.match(renderer, /event\.key === 'color-theme'/);
 });

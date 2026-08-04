@@ -11,6 +11,10 @@ const adapter = fs.readFileSync(
   path.join(__dirname, '..', 'codemirror6-adapter.js'),
   'utf8'
 );
+const markdownStructure = fs.readFileSync(
+  path.join(__dirname, '..', 'markdown-structure.js'),
+  'utf8'
+);
 const diagnostic = fs.readFileSync(
   path.join(__dirname, '..', 'scripts', 'editor-prerender-diagnostic.js'),
   'utf8'
@@ -62,4 +66,20 @@ test('Markdown highlighting does not override application pre-render styles', ()
   assert.match(adapter, /tag: tags\.heading[\s\S]*textDecoration: 'none'/);
   assert.match(adapter, /tag: \[tags\.link, tags\.url\][\s\S]*textDecoration: 'none'/);
   assert.doesNotMatch(adapter, /defaultHighlightStyle/);
+});
+
+test('active Markdown prefixes reveal their source when the cursor moves next to them', () => {
+  assert.match(markdownStructure, /return cursorCh > listPrefix\.toCh/);
+  assert.match(
+    renderer,
+    /if \(activeCursor\.ch > activeQuote\.source\.length\) \{[\s\S]*?collapsed: true/
+  );
+  assert.match(renderer, /const activeCursor = codeMirror\.getCursor\(\);/);
+});
+
+test('nested Markdown quotes render every source prefix with a bounded depth class', () => {
+  assert.match(renderer, /function getRenderedQuotePrefix\(lineText\)/);
+  assert.match(renderer, /depth: \(match\[0\]\.match\(\/>\/g\) \|\| \[\]\)\.length/);
+  assert.match(renderer, /cm-rendered-quote-depth-\$\{Math\.min\(quote\.depth, 6\)\}/);
+  assert.match(renderer, /ch: quote\.source\.length/);
 });

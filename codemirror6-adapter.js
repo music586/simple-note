@@ -4,7 +4,8 @@ const {
   EditorState,
   RangeSetBuilder,
   StateEffect,
-  StateField
+  StateField,
+  Transaction
 } = require('@codemirror/state');
 const {
   Decoration,
@@ -17,12 +18,16 @@ const {
 const {
   defaultKeymap,
   history,
+  historyField,
   historyKeymap,
   indentWithTab,
   insertNewlineAndIndent,
+  isolateHistory,
   redo,
+  redoDepth,
   selectAll,
-  undo
+  undo,
+  undoDepth
 } = require('@codemirror/commands');
 const { markdown } = require('@codemirror/lang-markdown');
 const { HighlightStyle, syntaxHighlighting } = require('@codemirror/language');
@@ -153,6 +158,11 @@ class CodeMirror6Adapter {
     this.lastViewport = null;
     this.lineNumbersCompartment = new Compartment();
     this.lineNumbersVisible = Boolean(options.lineNumbers);
+    this.documentStates = new Map();
+    this.currentDocumentKey = null;
+    this.undoLabels = [];
+    this.redoLabels = [];
+    this.pendingHistoryLabel = null;
 
     const customKeys = Object.entries(options.extraKeys || {}).map(([key, handler]) => ({
       key: normalizeExtraKeyName(key),
@@ -172,6 +182,7 @@ class CodeMirror6Adapter {
         { key: 'Ctrl-a', run: selectAll },
         { key: 'Meta-z', run: undo },
         { key: 'Shift-Meta-z', run: redo },
+        { key: 'Ctrl-y', run: redo },
         indentWithTab,
         ...defaultKeymap,
         ...historyKeymap
@@ -192,6 +203,7 @@ class CodeMirror6Adapter {
       })
     ];
 
+    this.extensions = extensions;
     const parent = textarea.parentElement;
     textarea.hidden = true;
     this.view = new EditorView({
@@ -203,15 +215,130 @@ class CodeMirror6Adapter {
   }
 
   handleUpdate(update) {
+    if (update.docChanged) this.updateHistoryLabels(update);
     if (update.docChanged) {
       this.textarea.value = update.state.doc.toString();
       this.emit('change');
       this.emit('inputRead');
+      this.emit('historyChange', this.getHistoryState());
     }
     if (update.selectionSet) this.emit('cursorActivity');
     if (update.docChanged || update.viewportChanged || update.geometryChanged) {
       this.emitViewport();
     }
+  }
+
+  updateHistoryLabels(update) {
+    const isUndo = update.transactions.some(transaction => transaction.isUserEvent('undo'));
+    const isRedo = update.transactions.some(transaction => transaction.isUserEvent('redo'));
+    if (isUndo) {
+      this.redoLabels.push(this.undoLabels.pop() || '编辑');
+      return;
+    }
+    if (isRedo) {
+      this.undoLabels.push(this.redoLabels.pop() || '编辑');
+      return;
+    }
+
+    const previousDepth = undoDepth(update.startState);
+    const nextDepth = undoDepth(update.state);
+    if (nextDepth > previousDepth) {
+      this.undoLabels.push(this.pendingHistoryLabel || this.getDefaultHistoryLabel(update));
+    } else if (this.pendingHistoryLabel && this.undoLabels.length) {
+      this.undoLabels[this.undoLabels.length - 1] = this.pendingHistoryLabel;
+    }
+    this.redoLabels = [];
+  }
+
+  getDefaultHistoryLabel(update) {
+    const events = update.transactions.map(transaction => {
+      return transaction.annotation(Transaction.userEvent) || '';
+    });
+    if (events.some(event => event.includes('paste'))) return '粘贴';
+    if (events.some(event => event.includes('delete'))) return '删除';
+    if (events.some(event => event.includes('input'))) return '输入';
+    return '编辑';
+  }
+
+  withHistoryLabel(label, callback) {
+    const previousLabel = this.pendingHistoryLabel;
+    this.pendingHistoryLabel = label;
+    try {
+      return callback();
+    } finally {
+      this.pendingHistoryLabel = previousLabel;
+    }
+  }
+
+  getHistoryState() {
+    const canUndo = undoDepth(this.view.state) > 0;
+    const canRedo = redoDepth(this.view.state) > 0;
+    return {
+      canUndo,
+      canRedo,
+      undoLabel: canUndo ? this.undoLabels.at(-1) || '编辑' : '',
+      redoLabel: canRedo ? this.redoLabels.at(-1) || '编辑' : ''
+    };
+  }
+
+  runHistoryCommand(direction) {
+    const command = direction === 'redo' ? redo : undo;
+    const changed = command(this.view);
+    if (changed) this.focus();
+    return changed;
+  }
+
+  rememberCurrentDocument() {
+    if (!this.currentDocumentKey) return;
+    const key = this.currentDocumentKey;
+    this.documentStates.delete(key);
+    this.documentStates.set(key, {
+      state: this.view.state.toJSON({ history: historyField }),
+      undoLabels: [...this.undoLabels],
+      redoLabels: [...this.redoLabels]
+    });
+    while (this.documentStates.size > 20) {
+      this.documentStates.delete(this.documentStates.keys().next().value);
+    }
+  }
+
+  loadDocument(documentKey, value) {
+    this.rememberCurrentDocument();
+    const key = documentKey || null;
+    const text = String(value || '');
+    const cached = key ? this.documentStates.get(key) : null;
+    let state;
+    if (cached?.state?.doc === text) {
+      state = EditorState.fromJSON(
+        cached.state,
+        { extensions: this.extensions },
+        { history: historyField }
+      );
+      this.undoLabels = [...cached.undoLabels];
+      this.redoLabels = [...cached.redoLabels];
+      this.documentStates.delete(key);
+    } else {
+      state = EditorState.create({ doc: text, extensions: this.extensions });
+      this.undoLabels = [];
+      this.redoLabels = [];
+      if (key) this.documentStates.delete(key);
+    }
+    this.currentDocumentKey = key;
+    this.view.setState(state);
+    this.textarea.value = text;
+    this.lastViewport = this.getViewport();
+    this.emit('change');
+    this.emit('cursorActivity');
+    this.emit('historyChange', this.getHistoryState());
+  }
+
+  renameDocument(oldKey, newKey) {
+    if (!oldKey || !newKey || oldKey === newKey) return;
+    if (this.currentDocumentKey === oldKey) this.currentDocumentKey = newKey;
+    if (!this.documentStates.has(oldKey)) return;
+    const cached = this.documentStates.get(oldKey);
+    this.documentStates.delete(oldKey);
+    this.documentStates.set(newKey, cached);
   }
 
   emitViewport() {
@@ -243,11 +370,14 @@ class CodeMirror6Adapter {
     return this.view.state.doc.toString();
   }
 
-  setValue(value) {
+  setValue(value, historyLabel = '替换内容') {
     const text = String(value || '');
-    this.view.dispatch({
-      changes: { from: 0, to: this.view.state.doc.length, insert: text },
-      selection: EditorSelection.cursor(0)
+    this.withHistoryLabel(historyLabel, () => {
+      this.view.dispatch({
+        changes: { from: 0, to: this.view.state.doc.length, insert: text },
+        selection: EditorSelection.cursor(0),
+        annotations: isolateHistory.of('before')
+      });
     });
   }
 
@@ -314,10 +444,20 @@ class CodeMirror6Adapter {
     );
   }
 
-  replaceRange(text, from, to = from) {
+  replaceRange(text, from, to = from, origin) {
     const start = normalizeLineCh(this.view.state, from);
     const end = normalizeLineCh(this.view.state, to);
-    this.view.dispatch({ changes: { from: start, to: end, insert: String(text) } });
+    const labels = {
+      'task-toggle': '切换任务状态',
+      'format-markdown': '格式化',
+      'preview-task-toggle': '切换任务状态'
+    };
+    this.withHistoryLabel(labels[origin] || this.pendingHistoryLabel || '编辑', () => {
+      this.view.dispatch({
+        changes: { from: start, to: end, insert: String(text) },
+        annotations: isolateHistory.of('before')
+      });
+    });
   }
 
   applyEdit(edit) {
@@ -328,9 +468,12 @@ class CodeMirror6Adapter {
     const currentDocument = this.view.state.doc.toString();
     const nextDocument = currentDocument.slice(0, from) + text + currentDocument.slice(to);
     const cursor = lineChToTextOffset(nextDocument, edit.cursor);
-    this.view.dispatch({
-      changes: { from, to, insert: text },
-      selection: EditorSelection.cursor(cursor)
+    this.withHistoryLabel(edit.historyLabel || '编辑 Markdown 结构', () => {
+      this.view.dispatch({
+        changes: { from, to, insert: text },
+        selection: EditorSelection.cursor(cursor),
+        annotations: isolateHistory.of('before')
+      });
     });
     return true;
   }

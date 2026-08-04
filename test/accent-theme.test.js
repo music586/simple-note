@@ -42,6 +42,8 @@ test('all accent palettes define dark and light semantic highlight colors', () =
     ));
   });
   assert.match(styles, /--accent-soft:/);
+  assert.match(styles, /--accent-hover-bg:/);
+  assert.match(styles, /--accent-selected-bg:/);
   assert.match(styles, /--accent-strong:/);
   assert.match(styles, /--icon-selected:/);
   assert.match(styles, /--md-accent:/);
@@ -50,14 +52,22 @@ test('all accent palettes define dark and light semantic highlight colors', () =
   assert.match(styles, /\.cm-cursor[\s\S]*var\(--icon-selected\)/);
   assert.match(
     styles,
-    /Final accent cascade[\s\S]*\.tree-file\.active[\s\S]*var\(--accent-color\) 11%/
+    /Final accent cascade[\s\S]*\.tree-file\.active[\s\S]*var\(--accent-selected-bg\)/
   );
   assert.match(
     styles,
-    /\.quick-open-result\[aria-selected='true'\][\s\S]*var\(--accent-soft\)/
+    /Final accent cascade[\s\S]*\.quick-open-result\[aria-selected='true'\][^}]*var\(--accent-selected-bg\)/
   );
   assert.match(
     styles,
     /\.cm-find-match-current[\s\S]*var\(--accent-color\)/
   );
+});
+
+test('balanced accent weights use a consistent five-step scale', () => {
+  assert.match(styles, /--accent-soft: color-mix\([^;]*9%/);
+  assert.match(styles, /--accent-hover-bg: color-mix\([^;]*13%/);
+  assert.match(styles, /--accent-selected-bg: color-mix\([^;]*15%/);
+  assert.match(styles, /--accent-medium: color-mix\([^;]*34%/);
+  assert.match(styles, /--accent-strong: color-mix\([^;]*74%/);
 });

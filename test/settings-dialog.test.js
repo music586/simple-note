@@ -152,7 +152,10 @@ test('AI layout result replaces and saves the active editor content', () => {
     renderer,
     /const optimizedContent = normalizeAiMarkdownResponse\(result\.content\)/
   );
-  assert.match(renderer, /else \{\s*targetEditor\.value = optimizedContent;/);
+  assert.match(
+    renderer,
+    /else \{\s*targetEditor\.replaceContent\(optimizedContent, 'AI 排版'\);/
+  );
   assert.match(renderer, /updatePreviewRight\(true\);[\s\S]*saveCurrentNoteRight\(\)/);
   assert.match(renderer, /updatePreview\(true\);[\s\S]*saveCurrentNote\(\)/);
   assert.match(renderer, /currentTargetNote\.path !== targetNote\.path/);

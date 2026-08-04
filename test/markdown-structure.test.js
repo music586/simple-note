@@ -24,13 +24,19 @@ test('slash menu exposes pure update and guarded-selection helpers', () => {
   assert.equal(typeof getSlashCommandEdit, 'function');
 });
 
-test('active bullet markers show source while the cursor is before their trailing space', () => {
+test('active list markers show source while the cursor is inside or next to the Markdown prefix', () => {
   const bullet = getRenderedListPrefix('- item');
+  const ordered = getRenderedListPrefix('1. item');
+  const task = getRenderedListPrefix('- [ ] item');
 
   assert.equal(shouldRenderActiveListPrefix(bullet, 0), false);
   assert.equal(shouldRenderActiveListPrefix(bullet, 1), false);
-  assert.equal(shouldRenderActiveListPrefix(bullet, 2), true);
-  assert.equal(shouldRenderActiveListPrefix(getRenderedListPrefix('1. item'), 1), true);
+  assert.equal(shouldRenderActiveListPrefix(bullet, 2), false);
+  assert.equal(shouldRenderActiveListPrefix(bullet, 3), true);
+  assert.equal(shouldRenderActiveListPrefix(ordered, ordered.toCh), false);
+  assert.equal(shouldRenderActiveListPrefix(ordered, ordered.toCh + 1), true);
+  assert.equal(shouldRenderActiveListPrefix(task, task.toCh), false);
+  assert.equal(shouldRenderActiveListPrefix(task, task.toCh + 1), true);
   assert.equal(getActiveBulletSourceCursor(bullet, 0), 1);
   assert.equal(getActiveBulletSourceCursor(bullet, 1), 1);
   assert.equal(getActiveBulletSourceCursor(bullet, 2), 2);

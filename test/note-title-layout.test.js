@@ -25,10 +25,19 @@ test('editable note names are displayed in the content heading row', () => {
   );
 });
 
-test('enter confirms edited note names', () => {
+test('enter confirms edited note names and moves the cursor to the first editor line', () => {
   assert.match(renderer, /noteTitle\.addEventListener\('keydown'/);
-  assert.match(renderer, /if \(event\.key === 'Enter'\) noteTitle\.blur\(\)/);
+  assert.match(
+    renderer,
+    /await saveCurrentNote\(\);\s*editor\.setCursorIndex\(0\);\s*editor\.focus\(\)/
+  );
   assert.match(renderer, /if \(event\.key === 'Enter'\) noteTitleRight\.blur\(\)/);
+});
+
+test('new notes expand their target folder and every parent folder', () => {
+  assert.match(renderer, /function expandFolderPath\(folderPath, items = tree, ancestors = \[\]\)/);
+  assert.match(renderer, /folderAncestors\.forEach\(itemPath => expandedFolders\.add\(itemPath\)\)/);
+  assert.match(renderer, /updatePreview\(true\);\s*expandFolderPath\(folderPath\);\s*await loadTree\(\)/);
 });
 
 test('top toolbars match the content background', () => {

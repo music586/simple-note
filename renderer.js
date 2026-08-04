@@ -1,6 +1,7 @@
 const crypto = require('crypto');
+const fs = require('fs');
 const path = require('path');
-const { pathToFileURL } = require('url');
+const { fileURLToPath, pathToFileURL } = require('url');
 const { ipcRenderer, clipboard } = require('electron');
 const { marked } = require('marked');
 const hljs = require('highlight.js');
@@ -195,7 +196,10 @@ function createEditorPanePersistence({ getNote, setNote, titleInput, editorAdapt
     getContent: () => editorAdapter.value,
     renameNote: data => ipcRenderer.invoke('rename-note', data),
     saveNote: data => ipcRenderer.invoke('save-note', data),
-    onRenamed: loadTree,
+    onRenamed: async ({ oldPath, newPath }) => {
+      editorAdapter.renameDocument(oldPath, newPath);
+      await loadTree();
+    },
     onError: error => showConfirm('保存失败', error.message, () => {})
   });
 }
@@ -1174,6 +1178,30 @@ function preserveEditorScrollOnClick(editorAdapter) {
 preserveEditorScrollOnClick(editor);
 preserveEditorScrollOnClick(editorRight);
 
+function syncEditorHistoryState(editorAdapter = lastActiveEditor) {
+  if (!editorAdapter || editorAdapter !== lastActiveEditor) return;
+  ipcRenderer.send('editor-history-state-changed', editorAdapter.getHistoryState());
+}
+
+function runActiveEditorHistory(direction) {
+  const activeElement = document.activeElement;
+  if (
+    activeElement
+    && /^(?:INPUT|TEXTAREA)$/.test(activeElement.tagName)
+    && activeElement !== editor.codeMirror.textarea
+    && activeElement !== editorRight.codeMirror.textarea
+  ) {
+    document.execCommand(direction);
+    return;
+  }
+  const targetEditor = lastActiveEditor === editorRight && currentNoteRight ? editorRight : editor;
+  targetEditor.runHistoryCommand(direction);
+  syncEditorHistoryState(targetEditor);
+}
+
+editor.codeMirror.on('historyChange', () => syncEditorHistoryState(editor));
+editorRight.codeMirror.on('historyChange', () => syncEditorHistoryState(editorRight));
+
 editor.codeMirror.on('cursorActivity', () => {
   lastActiveEditor = editor;
   if (slashCommandState.editor && slashCommandState.editor !== editor) {
@@ -1185,6 +1213,7 @@ editor.codeMirror.on('cursorActivity', () => {
 });
 editor.codeMirror.on('focus', () => {
   lastActiveEditor = editor;
+  syncEditorHistoryState(editor);
   if (slashCommandState.editor && slashCommandState.editor !== editor) slashCommandMenu.close();
   updateSlashCommandForEditor(editor);
 });
@@ -1202,6 +1231,7 @@ editorRight.codeMirror.on('cursorActivity', () => {
 });
 editorRight.codeMirror.on('focus', () => {
   lastActiveEditor = editorRight;
+  syncEditorHistoryState(editorRight);
   if (slashCommandState.editor && slashCommandState.editor !== editorRight) {
     slashCommandMenu.close();
   }
@@ -1321,15 +1351,39 @@ function createCodeEditor(textarea) {
       codeMirror.setValue(content || '');
       suppressChange = false;
     },
+    loadDocument(documentKey, content) {
+      suppressChange = true;
+      codeMirror.loadDocument(documentKey, content);
+      suppressChange = false;
+    },
+    replaceContent(content, historyLabel) {
+      suppressChange = true;
+      codeMirror.setValue(content || '', historyLabel);
+      suppressChange = false;
+    },
+    renameDocument(oldPath, newPath) {
+      codeMirror.renameDocument(oldPath, newPath);
+    },
+    getHistoryState() {
+      return codeMirror.getHistoryState();
+    },
+    runHistoryCommand(direction) {
+      return codeMirror.runHistoryCommand(direction);
+    },
+    historyTransaction(label, callback) {
+      return codeMirror.withHistoryLabel(label, callback);
+    },
     get selectionStart() {
       return codeMirror.indexFromPos(codeMirror.getCursor('from'));
     },
     get selectionEnd() {
       return codeMirror.indexFromPos(codeMirror.getCursor('to'));
     },
-    setRangeText(content, start, end) {
+    setRangeText(content, start, end, selectionMode, historyLabel = '编辑') {
       const from = codeMirror.posFromIndex(start);
-      codeMirror.replaceRange(content, from, codeMirror.posFromIndex(end));
+      codeMirror.withHistoryLabel(historyLabel, () => {
+        codeMirror.replaceRange(content, from, codeMirror.posFromIndex(end));
+      });
       codeMirror.setCursor(codeMirror.posFromIndex(start + content.length));
     },
     setCursorIndex(index) {
@@ -2334,9 +2388,15 @@ async function optimizeActiveNoteLayout(options = {}) {
     }
     const optimizedContent = normalizeAiMarkdownResponse(result.content);
     if (selectionOnly) {
-      targetEditor.setRangeText(optimizedContent, selectionStart, selectionEnd);
+      targetEditor.setRangeText(
+        optimizedContent,
+        selectionStart,
+        selectionEnd,
+        'end',
+        'AI 排版'
+      );
     } else {
-      targetEditor.value = optimizedContent;
+      targetEditor.replaceContent(optimizedContent, 'AI 排版');
     }
     if (targetEditor === editorRight) {
       updatePreviewRight(true);
@@ -2418,9 +2478,15 @@ async function translateActiveNote(targetLanguage) {
     }
     const translatedContent = normalizeAiMarkdownResponse(result.content);
     if (selectionOnly) {
-      targetEditor.setRangeText(translatedContent, selectionStart, selectionEnd);
+      targetEditor.setRangeText(
+        translatedContent,
+        selectionStart,
+        selectionEnd,
+        'end',
+        'AI 翻译'
+      );
     } else {
-      targetEditor.value = translatedContent;
+      targetEditor.replaceContent(translatedContent, 'AI 翻译');
     }
     if (targetEditor === editorRight) {
       updatePreviewRight(true);
@@ -2651,13 +2717,93 @@ function renderTreeItems(items, container, level) {
   });
 }
 
+function expandFolderPath(folderPath, items = tree, ancestors = []) {
+  if (!folderPath) return false;
+
+  for (const item of items) {
+    if (item.type !== 'folder') continue;
+    const folderAncestors = [...ancestors, item.path];
+    if (item.path === folderPath) {
+      folderAncestors.forEach(itemPath => expandedFolders.add(itemPath));
+      return true;
+    }
+    if (expandFolderPath(folderPath, item.children || [], folderAncestors)) return true;
+  }
+
+  return false;
+}
+
+const animatingTreeFolders = new Set();
+
+function findTreeFolderElement(folderPath) {
+  return [...notesList.querySelectorAll('.tree-folder')]
+    .find(item => item.dataset.path === folderPath);
+}
+
+function playTreeAnimation(element, keyframes, options) {
+  if (!element || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    return Promise.resolve();
+  }
+  return element.animate(keyframes, options).finished.catch(() => {});
+}
+
+async function toggleTreeFolder(folderPath, folderEl) {
+  if (animatingTreeFolders.has(folderPath)) return;
+  animatingTreeFolders.add(folderPath);
+  const isExpanded = expandedFolders.has(folderPath);
+  const expandTiming = { duration: 240, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' };
+  const collapseTiming = { duration: 190, easing: 'cubic-bezier(0.4, 0, 0.2, 1)' };
+  const arrowExpandTiming = { duration: 230, easing: 'cubic-bezier(0.34, 1.36, 0.64, 1)' };
+  const arrowCollapseTiming = { duration: 180, easing: 'cubic-bezier(0.4, 0, 0.2, 1)' };
+
+  if (isExpanded) {
+    const childrenEl = folderEl.nextElementSibling?.classList.contains('tree-folder-children')
+      ? folderEl.nextElementSibling
+      : null;
+    const childrenHeight = childrenEl?.scrollHeight || 0;
+    await Promise.all([
+      playTreeAnimation(folderEl.querySelector('.folder-icon'), [
+        { transform: 'rotate(90deg)' },
+        { transform: 'rotate(0deg)' }
+      ], arrowCollapseTiming),
+      playTreeAnimation(childrenEl, [
+        { height: `${childrenHeight}px`, opacity: 1, transform: 'translateY(0)' },
+        { height: `${childrenHeight * 0.58}px`, opacity: 0.68, transform: 'translateY(-1px)' },
+        { height: '0', opacity: 0, transform: 'translateY(-5px)' }
+      ], collapseTiming)
+    ]);
+    expandedFolders.delete(folderPath);
+    renderTree();
+  } else {
+    expandedFolders.add(folderPath);
+    renderTree();
+    const expandedFolderEl = findTreeFolderElement(folderPath);
+    const childrenEl = expandedFolderEl?.nextElementSibling;
+    const childrenHeight = childrenEl?.scrollHeight || 0;
+    await Promise.all([
+      playTreeAnimation(expandedFolderEl?.querySelector('.folder-icon'), [
+        { transform: 'rotate(0deg)' },
+        { transform: 'rotate(90deg)' }
+      ], arrowExpandTiming),
+      playTreeAnimation(childrenEl, [
+        { height: '0', opacity: 0, transform: 'translateY(-5px)' },
+        { height: `${childrenHeight * 0.72}px`, opacity: 0.76, transform: 'translateY(-1px)' },
+        { height: `${childrenHeight}px`, opacity: 1, transform: 'translateY(0)' }
+      ], expandTiming)
+    ]);
+  }
+
+  animatingTreeFolders.delete(folderPath);
+  saveWorkspaceSession();
+}
+
 function createFolderElement(folder, level) {
   const wrapper = document.createElement('div');
   wrapper.className = 'tree-folder-wrapper';
   
   const folderEl = document.createElement('div');
   folderEl.className = 'tree-folder';
-  folderEl.style.paddingLeft = `${level * 16 + 8}px`;
+  folderEl.style.paddingLeft = `calc(8px + ${level}em)`;
   folderEl.dataset.path = folder.path;
   folderEl.dataset.type = 'folder';
   folderEl.draggable = true;
@@ -2669,15 +2815,7 @@ function createFolderElement(folder, level) {
     <span class="folder-name">${escapeHtml(folder.name)}</span>
   `;
   
-  folderEl.addEventListener('click', () => {
-    if (expandedFolders.has(folder.path)) {
-      expandedFolders.delete(folder.path);
-    } else {
-      expandedFolders.add(folder.path);
-    }
-    renderTree();
-    saveWorkspaceSession();
-  });
+  folderEl.addEventListener('click', () => toggleTreeFolder(folder.path, folderEl));
   
   folderEl.addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -2738,7 +2876,7 @@ function createFileElement(file, level) {
                    (currentNoteRight && currentNoteRight.path === file.path);
   const fileEl = document.createElement('div');
   fileEl.className = 'tree-file' + (isActive ? ' active' : '');
-  fileEl.style.paddingLeft = `${level * 16 + 32}px`;
+  fileEl.style.paddingLeft = `calc(32px + ${level}em)`;
   fileEl.dataset.path = file.path;
   fileEl.dataset.type = 'file';
   fileEl.draggable = true;
@@ -2798,7 +2936,7 @@ async function selectNote(note) {
     ipcRenderer.invoke('get-ai-optimized-state', note.path)
   ]);
   if (!currentNote || currentNote.path !== note.path) return;
-  editor.value = content;
+  editor.loadDocument(note.path, content);
   leftPanel.classList.toggle(
     'ai-layout-optimized',
     optimizedState.success && optimizedState.optimized
@@ -3708,6 +3846,15 @@ function isMermaidCodeBlock(block, documentLines) {
   return isMermaidDiagramStart(documentLines[block.start + 1] || '');
 }
 
+function getRenderedQuotePrefix(lineText) {
+  const match = String(lineText || '').match(/^\s*(?:>\s*)+/);
+  if (!match) return null;
+  return {
+    source: match[0],
+    depth: (match[0].match(/>/g) || []).length
+  };
+}
+
 function renderEditorDecorations(editorAdapter, note) {
   if (editorAdapter.renderingDecorations) return;
   editorAdapter.renderingDecorations = true;
@@ -3861,14 +4008,12 @@ function renderEditorDecorations(editorAdapter, note) {
     return link;
   }
 
-  Array.from(editorAdapter.collapsedHeadings).forEach(lineHandle => {
-    const headingLine = codeMirror.getLineNumber(lineHandle);
-    if (headingLine === null) {
-      editorAdapter.collapsedHeadings.delete(lineHandle);
+  Array.from(editorAdapter.collapsedHeadings).forEach(headingLine => {
+    const section = headingSections.get(headingLine);
+    if (!section || section.startLine > section.endLine) {
+      editorAdapter.collapsedHeadings.delete(headingLine);
       return;
     }
-    const section = headingSections.get(headingLine);
-    if (!section || section.startLine > section.endLine) return;
     addMark(
       { line: section.startLine, ch: 0 },
       { line: section.endLine, ch: codeMirror.getLine(section.endLine).length },
@@ -4138,7 +4283,7 @@ function renderEditorDecorations(editorAdapter, note) {
     if (headingPrefix) {
       const section = headingSections.get(lineNumber);
       if (section && section.startLine <= section.endLine) {
-        const collapsed = editorAdapter.collapsedHeadings.has(lineHandle);
+        const collapsed = editorAdapter.collapsedHeadings.has(lineNumber);
         const toggle = document.createElement('button');
         toggle.type = 'button';
         toggle.className = `cm-heading-toggle${collapsed ? ' is-collapsed' : ''}`;
@@ -4149,8 +4294,8 @@ function renderEditorDecorations(editorAdapter, note) {
         toggle.addEventListener('mousedown', event => {
           event.preventDefault();
           event.stopPropagation();
-          if (collapsed) editorAdapter.collapsedHeadings.delete(lineHandle);
-          else editorAdapter.collapsedHeadings.add(lineHandle);
+          if (collapsed) editorAdapter.collapsedHeadings.delete(lineNumber);
+          else editorAdapter.collapsedHeadings.add(lineNumber);
           codeMirror.setCursor({ line: lineNumber, ch: headingPrefix[0].length });
           codeMirror.focus();
           scheduleEditorDecorations(editorAdapter, () => note);
@@ -4163,8 +4308,9 @@ function renderEditorDecorations(editorAdapter, note) {
       }
     }
     if (lineNumber === activeLine) {
+      const activeCursor = codeMirror.getCursor();
       const activeHeading = lineText.match(/^(#{1,6})\s+/);
-      const activeQuote = lineText.match(/^\s*>\s+/);
+      const activeQuote = getRenderedQuotePrefix(lineText);
       let editingClassName = 'cm-editing-source-line';
       if (activeHeading) {
         addLineStyle(lineNumber, 'cm-rendered-heading-line');
@@ -4173,12 +4319,18 @@ function renderEditorDecorations(editorAdapter, note) {
       }
       if (activeQuote) {
         addLineStyle(lineNumber, 'cm-rendered-quote-line');
-        editingClassName += ' cm-editing-quote';
-        addMark(
-          { line: lineNumber, ch: 0 },
-          { line: lineNumber, ch: activeQuote[0].length },
-          { collapsed: true }
+        addLineStyle(
+          lineNumber,
+          `cm-rendered-quote-depth-${Math.min(activeQuote.depth, 6)}`
         );
+        editingClassName += ' cm-editing-quote';
+        if (activeCursor.ch > activeQuote.source.length) {
+          addMark(
+            { line: lineNumber, ch: 0 },
+            { line: lineNumber, ch: activeQuote.source.length },
+            { collapsed: true }
+          );
+        }
       }
       if (lineText && !inCodeFence && !fenceLine) {
         addMark(
@@ -4207,7 +4359,6 @@ function renderEditorDecorations(editorAdapter, note) {
       }
       imagePattern.lastIndex = 0;
       const activeListPrefix = getRenderedListPrefix(lineText);
-      const activeCursor = codeMirror.getCursor();
       const activeListCursorCh = getActiveBulletSourceCursor(
         activeListPrefix,
         activeCursor.ch
@@ -4320,16 +4471,17 @@ function renderEditorDecorations(editorAdapter, note) {
       );
     }
 
-    const quote = lineText.match(/^\s*>\s?/);
+    const quote = getRenderedQuotePrefix(lineText);
     if (quote) {
       addLineStyle(lineNumber, 'cm-rendered-quote-line');
+      addLineStyle(lineNumber, `cm-rendered-quote-depth-${Math.min(quote.depth, 6)}`);
       addMark(
         { line: lineNumber, ch: 0 },
-        { line: lineNumber, ch: quote[0].length },
+        { line: lineNumber, ch: quote.source.length },
         { collapsed: true }
       );
       addMark(
-        { line: lineNumber, ch: quote[0].length },
+        { line: lineNumber, ch: quote.source.length },
         { line: lineNumber, ch: lineText.length },
         { className: 'cm-rendered-quote' }
       );
@@ -4654,7 +4806,7 @@ async function pasteImages(event, editorElement, getCurrentNote) {
     const text = normalizeClipboardText(result.text || clipboardText);
     if (isMarkdownDocumentText(text)) {
       pastedContent = text;
-      editorElement.setRangeText(pastedContent, start, end, 'end');
+      editorElement.setRangeText(pastedContent, start, end, 'end', '粘贴');
       editorElement.dispatchEvent(new Event('input', { bubbles: true }));
       return;
     }
@@ -4678,7 +4830,7 @@ async function pasteImages(event, editorElement, getCurrentNote) {
       pastedContent = optimizedText;
     }
   }
-  editorElement.setRangeText(pastedContent, start, end, 'end');
+  editorElement.setRangeText(pastedContent, start, end, 'end', '粘贴');
   editorElement.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
@@ -4709,6 +4861,96 @@ async function exportCurrentNoteToPdf() {
   }
 }
 
+function escapeExportHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function getExportImageMimeType(filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+  return {
+    '.avif': 'image/avif',
+    '.gif': 'image/gif',
+    '.jpeg': 'image/jpeg',
+    '.jpg': 'image/jpeg',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.webp': 'image/webp'
+  }[extension] || 'application/octet-stream';
+}
+
+async function inlineExportImages(container) {
+  const images = Array.from(container.querySelectorAll('img'));
+  await Promise.all(images.map(async image => {
+    const source = image.src;
+    if (!source || source.startsWith('data:')) return;
+    try {
+      if (source.startsWith('file:')) {
+        const filePath = fileURLToPath(source);
+        const data = fs.readFileSync(filePath).toString('base64');
+        image.src = `data:${getExportImageMimeType(filePath)};base64,${data}`;
+        return;
+      }
+      if (/^https?:/i.test(source)) {
+        const response = await fetch(source, { signal: AbortSignal.timeout(8000) });
+        if (!response.ok) throw new Error(`图片请求失败：${response.status}`);
+        const blob = await response.blob();
+        const buffer = Buffer.from(await blob.arrayBuffer());
+        image.src = `data:${blob.type || 'application/octet-stream'};base64,${buffer.toString('base64')}`;
+      }
+    } catch {
+      image.removeAttribute('src');
+    }
+  }));
+}
+
+function buildReadingHtml(title, contentHtml) {
+  const theme = colorTheme === 'light' ? 'light' : 'dark';
+  const accent = document.documentElement.dataset.accent || 'indigo';
+  const readingStyles = fs.readFileSync(path.join(__dirname, 'export-reading.css'), 'utf-8')
+    .replace(/<\/style/gi, '<\\/style');
+
+  return '<!doctype html>\n'
+    + `<html lang="zh-CN" data-theme="${theme}" data-accent="${escapeExportHtml(accent)}">\n`
+    + '<head>\n<meta charset="utf-8">\n'
+    + '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+    + `<title>${escapeExportHtml(title)}</title>\n`
+    + `<style>${readingStyles}</style>\n</head>\n`
+    + `<body><main class="preview-content export-reading-page">${contentHtml}</main></body>\n`
+    + '</html>\n';
+}
+
+async function exportCurrentNoteToHtml() {
+  const useRightEditor = lastActiveEditor === editorRight && currentNoteRight;
+  const targetEditor = useRightEditor ? editorRight : editor;
+  const targetNote = useRightEditor ? currentNoteRight : currentNote;
+  const saveTargetNote = useRightEditor ? saveCurrentNoteRight : saveCurrentNote;
+  if (!targetNote) {
+    showConfirm('无法导出', '请先选择要导出的笔记', () => {});
+    return;
+  }
+
+  try {
+    await saveTargetNote();
+    const exportPreview = document.createElement('div');
+    await renderMarkdownPreview(exportPreview, targetEditor.value, targetEditor, targetNote);
+    await inlineExportImages(exportPreview);
+    const html = buildReadingHtml(targetNote.name, exportPreview.innerHTML);
+    const result = await ipcRenderer.invoke('export-current-html', {
+      suggestedName: targetNote.name,
+      html
+    });
+    if (!result.success && !result.canceled) {
+      showConfirm('导出失败', result.error || '无法生成 HTML 文件', () => {});
+    }
+  } catch (err) {
+    showConfirm('导出失败', err.message || '无法生成 HTML 文件', () => {});
+  }
+}
+
 function insertMarkdownTable() {
   const useRightEditor = lastActiveEditor === editorRight && currentNoteRight;
   const targetEditor = useRightEditor ? editorRight : editor;
@@ -4731,7 +4973,7 @@ function insertMarkdownTable() {
     editor: targetEditor,
     index: start + prefix.length + 2
   };
-  targetEditor.setRangeText(insertion, start, end);
+  targetEditor.setRangeText(insertion, start, end, 'end', '插入表格');
   targetEditor.setCursorIndex(start + prefix.length + 2);
   targetEditor.focus();
 }
@@ -4747,7 +4989,7 @@ function insertMarkdownCodeFence() {
 
   const start = targetEditor.selectionStart;
   const end = targetEditor.selectionEnd;
-  targetEditor.setRangeText('```', start, end);
+  targetEditor.setRangeText('```', start, end, 'end', '插入代码块');
   targetEditor.setCursorIndex(start + 3);
   targetEditor.focus();
 }
@@ -4774,7 +5016,13 @@ async function insertTemplateContent(fileName) {
     return;
   }
   const start = targetEditor.selectionStart;
-  targetEditor.setRangeText(result.content, start, targetEditor.selectionEnd);
+  targetEditor.setRangeText(
+    result.content,
+    start,
+    targetEditor.selectionEnd,
+    'end',
+    '插入模板'
+  );
   targetEditor.setCursorIndex(start + result.content.length);
   targetEditor.focus();
   hideTemplateDialog();
@@ -4856,9 +5104,10 @@ async function createNewNote(folderPath = null) {
 
   currentNote = result.note;
   noteTitle.value = result.note.name;
-  editor.value = '';
+  editor.loadDocument(result.note.path, '');
   leftPanel.classList.remove('ai-layout-optimized');
   updatePreview(true);
+  expandFolderPath(folderPath);
   await loadTree();
   saveWorkspaceSession();
 
@@ -4877,28 +5126,103 @@ async function createNewFolder(parentPath = null) {
   });
 }
 
-async function renameItem(data) {
-  const title = data.type === 'folder' ? '重命名文件夹' : '重命名笔记';
-  showModal(title, '请输入新名称', data.name, async (newName) => {
-    if (newName && newName !== data.name) {
+function replaceTreePathPrefix(itemPath, oldPath, newPath) {
+  if (itemPath === oldPath) return newPath;
+  const prefix = `${oldPath}${path.sep}`;
+  if (!itemPath.startsWith(prefix)) return itemPath;
+  return path.join(newPath, itemPath.slice(prefix.length));
+}
+
+function syncRenamedFolderPaths(oldPath, renamedFolder) {
+  const newPath = renamedFolder.path;
+  if (currentNote) {
+    const previousPath = currentNote.path;
+    currentNote.path = replaceTreePathPrefix(previousPath, oldPath, newPath);
+    editor.renameDocument(previousPath, currentNote.path);
+  }
+  if (currentNoteRight) {
+    const previousPath = currentNoteRight.path;
+    currentNoteRight.path = replaceTreePathPrefix(previousPath, oldPath, newPath);
+    editorRight.renameDocument(previousPath, currentNoteRight.path);
+  }
+  expandedFolders = new Set([...expandedFolders].map(folderPath => {
+    return replaceTreePathPrefix(folderPath, oldPath, newPath);
+  }));
+}
+
+function renameItem(data) {
+  const row = [...notesList.querySelectorAll('.tree-folder, .tree-file')]
+    .find(item => item.dataset.path === data.path);
+  const nameElement = row?.querySelector(
+    data.type === 'folder' ? '.folder-name' : '.file-name'
+  );
+  if (!row || !nameElement || row.querySelector('.tree-rename-input')) return;
+
+  const input = document.createElement('input');
+  input.className = 'tree-rename-input';
+  input.type = 'text';
+  input.value = data.name;
+  input.setAttribute('aria-label', data.type === 'folder' ? '重命名文件夹' : '重命名笔记');
+  nameElement.replaceWith(input);
+  row.draggable = false;
+
+  let finished = false;
+  const finish = async save => {
+    if (finished) return;
+    finished = true;
+    const newName = input.value.trim();
+    if (!save || !newName || newName === data.name) {
+      renderTree();
+      return;
+    }
+
+    try {
       if (data.type === 'folder') {
-        await ipcRenderer.invoke('rename-folder', {
+        const result = await ipcRenderer.invoke('rename-folder', {
           oldPath: data.path,
-          newName: newName
+          newName
         });
+        syncRenamedFolderPaths(data.path, result);
       } else {
         const result = await ipcRenderer.invoke('rename-note', {
           oldPath: data.path,
-          newName: newName
+          newName
         });
         if (currentNote && currentNote.path === data.path) {
+          editor.renameDocument(data.path, result.path);
           currentNote = result;
           noteTitle.value = result.name;
         }
+        if (currentNoteRight && currentNoteRight.path === data.path) {
+          editorRight.renameDocument(data.path, result.path);
+          currentNoteRight = result;
+          noteTitleRight.value = result.name;
+        }
       }
       await loadTree();
+      saveWorkspaceSession();
+    } catch (error) {
+      renderTree();
+      showConfirm('重命名失败', error.message, () => {});
+    }
+  };
+
+  input.addEventListener('click', event => event.stopPropagation());
+  input.addEventListener('blur', () => finish(true));
+  input.addEventListener('keydown', event => {
+    event.stopPropagation();
+    if (event.isComposing) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      finish(true);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      finish(false);
     }
   });
+
+  input.focus();
+  input.select();
 }
 
 async function deleteItem(data) {
@@ -4917,7 +5241,7 @@ async function deleteItem(data) {
       if (currentNote && currentNote.path === data.path) {
         currentNote = null;
         noteTitle.value = '';
-        editor.value = '';
+        editor.loadDocument(null, '');
         leftPanel.classList.remove('ai-layout-optimized');
         updatePreview(true);
       }
@@ -4965,8 +5289,8 @@ function resetCurrentLibrary() {
   currentNoteRight = null;
   noteTitle.value = '';
   noteTitleRight.value = '';
-  editor.value = '';
-  editorRight.value = '';
+  editor.loadDocument(null, '');
+  editorRight.loadDocument(null, '');
   leftPanel.classList.remove('ai-layout-optimized');
   rightPanel.classList.remove('ai-layout-optimized');
   rightPanel.style.display = 'none';
@@ -5278,7 +5602,7 @@ async function applyHistoricalSelection(mode) {
     noteHistoryError.textContent = result.error || '局部恢复失败';
     return;
   }
-  target.editor.setRangeText(text, start, end, 'end');
+  target.editor.setRangeText(text, start, end, 'end', '应用历史内容');
   if (target.side === 'right') updatePreviewRight(true);
   else updatePreview(true);
   hideNoteHistory();
@@ -5331,7 +5655,7 @@ async function restoreSelectedHistoryVersion() {
     }
     const activeNote = target.side === 'right' ? currentNoteRight : currentNote;
     if (!activeNote || activeNote.path !== target.note.path) return;
-    target.editor.value = result.content;
+    target.editor.replaceContent(result.content, '恢复历史版本');
     if (target.side === 'right') updatePreviewRight(true);
     else updatePreview(true);
     hideNoteHistory();
@@ -5672,13 +5996,25 @@ document.addEventListener('keydown', event => {
   }
 }, true);
 
+let confirmingNoteTitle = false;
+
 noteTitle.addEventListener('change', async () => {
+  if (confirmingNoteTitle) return;
   if (currentNote) {
     await saveCurrentNote();
   }
 });
-noteTitle.addEventListener('keydown', event => {
-  if (event.key === 'Enter') noteTitle.blur();
+noteTitle.addEventListener('keydown', async event => {
+  if (event.key !== 'Enter' || event.isComposing) return;
+  event.preventDefault();
+  confirmingNoteTitle = true;
+  try {
+    await saveCurrentNote();
+    editor.setCursorIndex(0);
+    editor.focus();
+  } finally {
+    confirmingNoteTitle = false;
+  }
 });
 
 notesList.addEventListener('contextmenu', (e) => {
@@ -5714,6 +6050,9 @@ notesList.addEventListener('drop', (e) => {
 ipcRenderer.on('new-note', () => createNewNote(null));
 ipcRenderer.on('new-folder', () => createNewFolder(null));
 ipcRenderer.on('quick-open', showQuickOpen);
+ipcRenderer.on('editor-undo', () => runActiveEditorHistory('undo'));
+ipcRenderer.on('editor-redo', () => runActiveEditorHistory('redo'));
+ipcRenderer.on('request-editor-history-state', () => syncEditorHistoryState());
 ipcRenderer.on('save-note', () => {
   const save = lastActiveEditor === editorRight && currentNoteRight
     ? saveCurrentNoteRight
@@ -5722,6 +6061,7 @@ ipcRenderer.on('save-note', () => {
 });
 ipcRenderer.on('open-note-history', showNoteHistory);
 ipcRenderer.on('export-pdf', exportCurrentNoteToPdf);
+ipcRenderer.on('export-html', exportCurrentNoteToHtml);
 ipcRenderer.on('insert-table', insertMarkdownTable);
 ipcRenderer.on('insert-code-block', insertMarkdownCodeFence);
 ipcRenderer.on('insert-template', showTemplateDialog);
@@ -5774,13 +6114,13 @@ async function openInRightPanel(note) {
   closeSlashCommandMenu();
   currentNoteRight = note;
   noteTitleRight.value = note.name;
-  editorRight.value = '';
+  editorRight.loadDocument(note.path, '');
   const [content, optimizedState] = await Promise.all([
     ipcRenderer.invoke('read-note', note.path),
     ipcRenderer.invoke('get-ai-optimized-state', note.path)
   ]);
   if (!currentNoteRight || currentNoteRight.path !== note.path) return;
-  editorRight.value = content;
+  editorRight.loadDocument(note.path, content);
   rightPanel.classList.toggle(
     'ai-layout-optimized',
     optimizedState.success && optimizedState.optimized
@@ -5801,7 +6141,7 @@ function closeRightPanel() {
   }
   currentNoteRight = null;
   noteTitleRight.value = '';
-  editorRight.value = '';
+  editorRight.loadDocument(null, '');
   rightPanel.classList.remove('ai-layout-optimized');
   updatePreviewRight();
   rightPanel.style.display = 'none';

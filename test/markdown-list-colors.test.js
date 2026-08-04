@@ -14,9 +14,8 @@ test('list markers and unchecked task controls use the body color', () => {
   assert.match(styles, /\.cm-rendered-checkbox\s*\{[^}]*border-color: var\(--md-body\)/s);
 });
 
-test('checked task controls use the dedicated completion color', () => {
-  assert.match(styles, /--md-task-checked: #67c7ae;/);
-  assert.match(styles, /--md-task-checked: #218a72;/);
+test('checked task controls follow the selected accent theme', () => {
+  assert.match(styles, /:root\[data-accent\] \{[^}]*--md-task-checked: var\(--accent-color\)/s);
   assert.match(styles, /\.cm-rendered-checkbox\.is-checked\s*\{[^}]*var\(--md-task-checked\)/s);
   assert.match(styles, /accent-color: var\(--md-task-checked\)/);
   assert.match(styles, /\.cm-task-completed-text,[\s\S]*text-decoration: line-through/);
@@ -24,6 +23,22 @@ test('checked task controls use the dedicated completion color', () => {
     styles,
     /\.preview-content li\.task-list-item:has\(> input\[type='checkbox'\]:checked\)/
   );
+});
+
+test('task checkmark stays centered inside its square at every scale', () => {
+  assert.match(
+    styles,
+    /\.cm-rendered-checkbox\.is-checked::after \{[^}]*top: 50%;[^}]*left: 50%;/s
+  );
+  assert.match(styles, /transform: translate\(-50%, -56%\) rotate\(42deg\)/);
+  assert.match(styles, /transform-origin: center/);
+  assert.doesNotMatch(styles, /\.cm-rendered-checkbox\.is-checked::after \{[^}]*left: 3px/s);
+});
+
+test('success callouts keep an independent semantic green', () => {
+  assert.match(styles, /--md-success: #67c7ae;/);
+  assert.match(styles, /--md-success: #218a72;/);
+  assert.match(styles, /\.cm-callout-widget\.is-success,[\s\S]*var\(--md-success\)/);
 });
 
 test('links keep their interaction color and visible underline treatment', () => {

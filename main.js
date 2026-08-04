@@ -38,6 +38,7 @@ const topbarHoverStates = new WeakMap();
 const windowColorThemes = new WeakMap();
 const windowSidebarStates = new WeakMap();
 const windowPreviewStates = new WeakMap();
+const windowEditorHistoryStates = new WeakMap();
 const windowWorkspaces = new Map();
 let nextWorkspaceId = 1;
 let windowSessionSaveTimer = null;
@@ -72,6 +73,25 @@ function getActiveWindow(preferredWindow = null) {
   return null;
 }
 
+function isWindowUsable(targetWindow) {
+  return Boolean(
+    targetWindow
+    && !targetWindow.isDestroyed()
+    && targetWindow.webContents
+    && !targetWindow.webContents.isDestroyed()
+  );
+}
+
+function sendToWindow(targetWindow, channel, ...args) {
+  if (!isWindowUsable(targetWindow) || isQuitting) return false;
+  try {
+    targetWindow.webContents.send(channel, ...args);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 function setZenMode(enabled, updateWindow = true, preferredWindow = null) {
   const targetWindow = getActiveWindow(preferredWindow);
   if (!targetWindow) return;
@@ -80,7 +100,7 @@ function setZenMode(enabled, updateWindow = true, preferredWindow = null) {
   if (updateWindow && targetWindow.isFullScreen() !== enabled) {
     targetWindow.setFullScreen(enabled);
   }
-  targetWindow.webContents.send('zen-mode-changed', enabled);
+  sendToWindow(targetWindow, 'zen-mode-changed', enabled);
   const menuItem = Menu.getApplicationMenu()?.getMenuItemById('zen-mode');
   if (menuItem) menuItem.checked = enabled;
 }
@@ -110,7 +130,7 @@ function setReadingMode(enabled, preferredWindow = null) {
     });
   }
   readingMode = enabled;
-  targetWindow.webContents.send('reading-mode-changed', enabled);
+  sendToWindow(targetWindow, 'reading-mode-changed', enabled);
   if (enabled && !targetWindow.isFullScreen()) {
     targetWindow.setFullScreen(true);
   } else if (!enabled && targetWindow.isFullScreen()) {
@@ -164,13 +184,18 @@ function getPersistedWindowSessions(config = getConfig()) {
 
 function persistWindowSessions() {
   const config = getConfig();
-  config.openWindows = BrowserWindow.getAllWindows()
-    .filter(window => !window.isDestroyed() && windowWorkspaces.has(window))
-    .map(window => ({
-      notesDir: getNotesDir(window),
-      bounds: window.getNormalBounds(),
-      maximized: window.isMaximized()
-    }));
+  config.openWindows = BrowserWindow.getAllWindows().flatMap(window => {
+    if (window.isDestroyed() || !windowWorkspaces.has(window)) return [];
+    try {
+      return [{
+        notesDir: getNotesDir(window),
+        bounds: window.getNormalBounds(),
+        maximized: window.isMaximized()
+      }];
+    } catch (err) {
+      return [];
+    }
+  });
   saveConfig(config);
 }
 
@@ -389,20 +414,33 @@ function notifyNotesTreeChanged(source = null) {
     return;
   }
   const workspace = getWindowWorkspace(targetWindow);
+  if (!workspace || isQuitting) return;
   clearTimeout(workspace.refreshTimer);
   workspace.refreshTimer = setTimeout(() => {
-    if (!targetWindow.isDestroyed()) targetWindow.webContents.send('notes-tree-changed');
+    workspace.refreshTimer = null;
+    sendToWindow(targetWindow, 'notes-tree-changed');
   }, 150);
+}
+
+function closeWorkspaceWatcher(workspace) {
+  if (!workspace) return;
+  clearTimeout(workspace.refreshTimer);
+  workspace.refreshTimer = null;
+  const watcher = workspace.watcher;
+  workspace.watcher = null;
+  if (!watcher) return;
+  try {
+    watcher.close();
+  } catch (err) {
+    // The operating system may finalize the watcher while the app is quitting.
+  }
 }
 
 function watchNotesDirectory(source) {
   const targetWindow = getWorkspaceWindow(source);
   if (!targetWindow) return;
   const workspace = getWindowWorkspace(targetWindow);
-  if (workspace.watcher) {
-    workspace.watcher.close();
-    workspace.watcher = null;
-  }
+  closeWorkspaceWatcher(workspace);
 
   ensureNotesDir(targetWindow);
   try {
@@ -414,8 +452,7 @@ function watchNotesDirectory(source) {
       notifyNotesTreeChanged(targetWindow);
     });
     workspace.watcher.on('error', () => {
-      workspace.watcher?.close();
-      workspace.watcher = null;
+      closeWorkspaceWatcher(workspace);
     });
   } catch (err) {
     workspace.watcher = null;
@@ -565,9 +602,7 @@ function showAboutWindow() {
 
 function sendToActiveWindow(channel, ...args) {
   const activeWindow = BrowserWindow.getFocusedWindow() || mainWindow;
-  if (activeWindow && !activeWindow.isDestroyed()) {
-    activeWindow.webContents.send(channel, ...args);
-  }
+  sendToWindow(activeWindow, channel, ...args);
 }
 
 function updateAppearanceMenu(theme) {
@@ -593,7 +628,7 @@ function setActiveWindowTheme(theme) {
 function broadcastSystemColorTheme() {
   const theme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
   BrowserWindow.getAllWindows().forEach(window => {
-    if (!window.isDestroyed()) window.webContents.send('system-color-theme-changed', theme);
+    sendToWindow(window, 'system-color-theme-changed', theme);
   });
 }
 
@@ -601,7 +636,7 @@ function syncActiveWindowAppearanceMenu(window) {
   if (!window || window.isDestroyed()) return;
   const theme = windowColorThemes.get(window);
   if (theme) updateAppearanceMenu(theme);
-  window.webContents.send('request-color-theme');
+  sendToWindow(window, 'request-color-theme');
 }
 
 function updateVisibilityMenuItems(name, visible) {
@@ -622,14 +657,14 @@ function toggleActiveWindowSidebar() {
   const nextVisible = !(windowSidebarStates.get(activeWindow) ?? true);
   windowSidebarStates.set(activeWindow, nextVisible);
   updateSidebarMenu(nextVisible);
-  activeWindow.webContents.send('set-sidebar-visibility', nextVisible);
+  sendToWindow(activeWindow, 'set-sidebar-visibility', nextVisible);
 }
 
 function syncActiveWindowSidebarMenu(window) {
   if (!window || window.isDestroyed()) return;
   const visible = windowSidebarStates.get(window);
   if (typeof visible === 'boolean') updateSidebarMenu(visible);
-  window.webContents.send('request-sidebar-visibility');
+  sendToWindow(window, 'request-sidebar-visibility');
 }
 
 function updatePreviewMenu(visible) {
@@ -642,28 +677,58 @@ function toggleActiveWindowPreview() {
   const nextVisible = !(windowPreviewStates.get(activeWindow) ?? false);
   windowPreviewStates.set(activeWindow, nextVisible);
   updatePreviewMenu(nextVisible);
-  activeWindow.webContents.send('set-preview-visibility', nextVisible);
+  sendToWindow(activeWindow, 'set-preview-visibility', nextVisible);
 }
 
 function syncActiveWindowPreviewMenu(window) {
   if (!window || window.isDestroyed()) return;
   const visible = windowPreviewStates.get(window);
   if (typeof visible === 'boolean') updatePreviewMenu(visible);
-  window.webContents.send('request-preview-visibility');
+  sendToWindow(window, 'request-preview-visibility');
+}
+
+function updateEditorHistoryMenu(state = {}) {
+  const menu = Menu.getApplicationMenu();
+  const undoItem = menu?.getMenuItemById('editor-undo');
+  const redoItem = menu?.getMenuItemById('editor-redo');
+  if (undoItem) {
+    undoItem.enabled = Boolean(state.canUndo);
+    undoItem.label = state.canUndo && state.undoLabel
+      ? `撤销“${state.undoLabel}”`
+      : '撤销';
+  }
+  if (redoItem) {
+    redoItem.enabled = Boolean(state.canRedo);
+    redoItem.label = state.canRedo && state.redoLabel
+      ? `重做“${state.redoLabel}”`
+      : '重做';
+  }
+}
+
+function syncActiveWindowEditorHistoryMenu(window) {
+  if (!window || window.isDestroyed()) return;
+  updateEditorHistoryMenu(windowEditorHistoryStates.get(window));
+  sendToWindow(window, 'request-editor-history-state');
 }
 
 function startTopbarHoverTracking() {
   if (topbarHoverTimer) return;
   topbarHoverTimer = setInterval(() => {
+    if (isQuitting) return;
     const cursor = screen.getCursorScreenPoint();
     BrowserWindow.getAllWindows().forEach(window => {
-      const bounds = window.getBounds();
-      const hovered = window.isVisible() && !window.isMinimized()
-        && cursor.x >= bounds.x && cursor.x < bounds.x + bounds.width
-        && cursor.y >= bounds.y && cursor.y < bounds.y + 42;
-      if (topbarHoverStates.get(window) === hovered) return;
-      topbarHoverStates.set(window, hovered);
-      if (!window.isDestroyed()) window.webContents.send('topbar-hover-changed', hovered);
+      if (!isWindowUsable(window)) return;
+      try {
+        const bounds = window.getBounds();
+        const hovered = window.isVisible() && !window.isMinimized()
+          && cursor.x >= bounds.x && cursor.x < bounds.x + bounds.width
+          && cursor.y >= bounds.y && cursor.y < bounds.y + 42;
+        if (topbarHoverStates.get(window) === hovered) return;
+        topbarHoverStates.set(window, hovered);
+        sendToWindow(window, 'topbar-hover-changed', hovered);
+      } catch (err) {
+        topbarHoverStates.delete(window);
+      }
     });
   }, 80);
 }
@@ -710,11 +775,13 @@ function createWindow(session = {}) {
     }
   });
   newWindow.webContents.on('did-finish-load', () => {
+    if (!isWindowUsable(newWindow) || isQuitting) return;
     watchNotesDirectory(newWindow);
     syncActiveWindowAppearanceMenu(newWindow);
     syncActiveWindowSidebarMenu(newWindow);
     syncActiveWindowPreviewMenu(newWindow);
-    newWindow.webContents.send('full-screen-changed', newWindow.isFullScreen());
+    syncActiveWindowEditorHistoryMenu(newWindow);
+    sendToWindow(newWindow, 'full-screen-changed', newWindow.isFullScreen());
     if (session.maximized) newWindow.maximize();
     scheduleWindowSessionSave();
   });
@@ -723,31 +790,35 @@ function createWindow(session = {}) {
     newWindow.setTitle(appName);
   });
   newWindow.on('focus', () => {
+    if (!isWindowUsable(newWindow) || isQuitting) return;
     rebuildApplicationMenu();
     syncActiveWindowAppearanceMenu(newWindow);
     syncActiveWindowSidebarMenu(newWindow);
     syncActiveWindowPreviewMenu(newWindow);
+    syncActiveWindowEditorHistoryMenu(newWindow);
   });
   newWindow.on('resize', scheduleWindowSessionSave);
   newWindow.on('move', scheduleWindowSessionSave);
   newWindow.on('enter-full-screen', () => {
-    newWindow.webContents.send('full-screen-changed', true);
+    sendToWindow(newWindow, 'full-screen-changed', true);
   });
   newWindow.on('leave-full-screen', () => {
-    newWindow.webContents.send('full-screen-changed', false);
+    if (isQuitting) return;
+    sendToWindow(newWindow, 'full-screen-changed', false);
     if (zenMode) setZenMode(false, false, newWindow);
     if (readingWindowStates.has(newWindow)) setReadingMode(false, newWindow);
   });
   newWindow.on('closed', () => {
     const workspace = windowWorkspaces.get(newWindow);
-    clearTimeout(workspace?.refreshTimer);
-    workspace?.watcher?.close();
+    closeWorkspaceWatcher(workspace);
     windowWorkspaces.delete(newWindow);
     if (mainWindow === newWindow) {
       mainWindow = BrowserWindow.getAllWindows().find(window => !window.isDestroyed()) || null;
     }
-    rebuildApplicationMenu();
-    if (!isQuitting) scheduleWindowSessionSave();
+    if (!isQuitting) {
+      rebuildApplicationMenu();
+      scheduleWindowSessionSave();
+    }
   });
 
   rebuildApplicationMenu();
@@ -831,10 +902,15 @@ function rebuildApplicationMenu() {
           accelerator: 'CmdOrCtrl+S',
           click: () => sendToActiveWindow('save-note')
         },
+        { type: 'separator' },
         {
           label: '导出 PDF…',
           accelerator: 'CmdOrCtrl+Shift+E',
           click: () => sendToActiveWindow('export-pdf')
+        },
+        {
+          label: '导出 HTML…',
+          click: () => sendToActiveWindow('export-html')
         },
         { type: 'separator' },
         {
@@ -847,8 +923,20 @@ function rebuildApplicationMenu() {
     {
       label: '编辑',
       submenu: [
-        { role: 'undo', label: '撤销' },
-        { role: 'redo', label: '重做' },
+        {
+          id: 'editor-undo',
+          label: '撤销',
+          accelerator: 'CmdOrCtrl+Z',
+          enabled: false,
+          click: () => sendToActiveWindow('editor-undo')
+        },
+        {
+          id: 'editor-redo',
+          label: '重做',
+          accelerator: 'CmdOrCtrl+Shift+Z',
+          enabled: false,
+          click: () => sendToActiveWindow('editor-redo')
+        },
         { type: 'separator' },
         { role: 'cut', label: '剪切' },
         { role: 'copy', label: '复制' },
@@ -1017,7 +1105,7 @@ function rebuildApplicationMenu() {
               id: 'zen-mode',
               type: 'checkbox',
               label: '写作',
-              accelerator: 'CmdOrCtrl+Shift+Z',
+              accelerator: 'CmdOrCtrl+Alt+Z',
               click: (menuItem, browserWindow) => {
                 setZenMode(menuItem.checked, true, browserWindow);
               }
@@ -1061,6 +1149,8 @@ function rebuildApplicationMenu() {
 
   const menu = Menu.buildFromTemplate(menuTemplate);
   Menu.setApplicationMenu(menu);
+  const activeWindow = getActiveWindow();
+  updateEditorHistoryMenu(activeWindow && windowEditorHistoryStates.get(activeWindow));
 }
 
 app.whenReady().then(() => {
@@ -1107,10 +1197,8 @@ app.on('before-quit', () => {
   windowSessionSaveTimer = null;
   persistWindowSessions();
   clearInterval(topbarHoverTimer);
-  windowWorkspaces.forEach(workspace => {
-    clearTimeout(workspace.refreshTimer);
-    workspace.watcher?.close();
-  });
+  topbarHoverTimer = null;
+  windowWorkspaces.forEach(closeWorkspaceWatcher);
 });
 
 ipcMain.handle('get-notes-dir', async event => {
@@ -1136,6 +1224,23 @@ ipcMain.on('sidebar-visibility-changed', (event, visible) => {
   const sourceWindow = BrowserWindow.fromWebContents(event.sender);
   if (sourceWindow) windowSidebarStates.set(sourceWindow, visible);
   if (sourceWindow && getActiveWindow() === sourceWindow) updateSidebarMenu(visible);
+});
+
+ipcMain.on('editor-history-state-changed', (event, state) => {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!sourceWindow || sourceWindow.isDestroyed() || !state || typeof state !== 'object') return;
+  const normalizedState = {
+    canUndo: Boolean(state.canUndo),
+    canRedo: Boolean(state.canRedo),
+    undoLabel: typeof state.undoLabel === 'string'
+      ? state.undoLabel.replace(/\s+/g, ' ').slice(0, 30)
+      : '',
+    redoLabel: typeof state.redoLabel === 'string'
+      ? state.redoLabel.replace(/\s+/g, ' ').slice(0, 30)
+      : ''
+  };
+  windowEditorHistoryStates.set(sourceWindow, normalizedState);
+  if (getActiveWindow() === sourceWindow) updateEditorHistoryMenu(normalizedState);
 });
 
 ipcMain.on('preview-visibility-changed', (event, visible) => {
@@ -1546,6 +1651,34 @@ ipcMain.handle('export-current-pdf', async (event, suggestedName) => {
       preferCSSPageSize: true
     });
     fs.writeFileSync(result.filePath, pdfData);
+    return { success: true, filePath: result.filePath };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('export-current-html', async (event, payload) => {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!sourceWindow || sourceWindow.isDestroyed()) {
+    return { success: false, error: '找不到要导出的窗口' };
+  }
+  if (!payload || typeof payload.html !== 'string' || payload.html.length === 0) {
+    return { success: false, error: '导出的 HTML 内容无效' };
+  }
+
+  const safeName = typeof payload.suggestedName === 'string'
+    ? payload.suggestedName.replace(/[\\/:*?"<>|]/g, '-').trim()
+    : '';
+  const result = await dialog.showSaveDialog(sourceWindow, {
+    title: '导出 HTML',
+    defaultPath: path.join(app.getPath('documents'), `${safeName || '未命名笔记'}.html`),
+    filters: [{ name: 'HTML 文件', extensions: ['html'] }],
+    properties: ['createDirectory', 'showOverwriteConfirmation']
+  });
+  if (result.canceled || !result.filePath) return { success: false, canceled: true };
+
+  try {
+    fs.writeFileSync(result.filePath, payload.html, 'utf-8');
     return { success: true, filePath: result.filePath };
   } catch (err) {
     return { success: false, error: err.message };

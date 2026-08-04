@@ -52,7 +52,7 @@ class EditorPanePersistence {
     const savePayload = { notePath, content: snapshot.content };
     if (snapshot.historyReason) savePayload.historyReason = snapshot.historyReason;
     await this.saveNote(savePayload);
-    if (renamed) await this.onRenamed();
+    if (renamed) await this.onRenamed({ oldPath: originalPath, newPath: notePath });
     return { revision: snapshot.revision, notePath, name: noteName };
   }
 

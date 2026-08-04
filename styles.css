@@ -253,7 +253,17 @@ body {
 
 .tree-folder-children {
   border-left: 1px solid var(--border-color);
-  margin-left: 16px;
+  margin-left: 0;
+  overflow: hidden;
+  transform-origin: top;
+  will-change: height, opacity, transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .folder-icon,
+  .tree-folder-children {
+    transition: none;
+  }
 }
 
 .tree-file {
@@ -289,6 +299,26 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.tree-rename-input {
+  min-width: 0;
+  width: 100%;
+  height: 22px;
+  padding: 1px 2px 2px;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  background: color-mix(in srgb, var(--accent-color) 5%, transparent);
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent-color) 72%, transparent);
+  border-radius: 2px 2px 0 0;
+  outline: none;
+}
+
+.tree-rename-input::selection {
+  color: var(--selection-text);
+  background: var(--selection-bg);
 }
 
 .tree-folder.dragging,
@@ -1547,10 +1577,20 @@ body {
 }
 
 .preview-content blockquote {
-  border-left: 4px solid var(--accent-color);
-  padding-left: 16px;
-  margin: 0 0 16px 0;
-  color: var(--text-secondary);
+  margin: 6px 0 14px;
+  padding-left: 12px;
+  color: var(--text-primary);
+  border-left: 3px solid var(--accent-strong);
+  font-style: normal;
+}
+
+.preview-content blockquote blockquote {
+  margin-top: 6px;
+  border-left-color: var(--accent-medium);
+}
+
+.preview-content blockquote > :last-child {
+  margin-bottom: 0;
 }
 
 .preview-content ul {
@@ -4097,8 +4137,8 @@ textarea,
 }
 
 .cm-rendered-quote {
-  color: var(--text-secondary);
-  font-style: italic;
+  color: var(--text-primary);
+  font-style: normal;
 }
 
 .cm-rendered-link {
@@ -4144,10 +4184,45 @@ textarea,
 }
 
 .cm-rendered-quote-line {
-  margin-top: 3px;
-  margin-bottom: 3px;
-  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent-color) 48%, transparent);
-  background: color-mix(in srgb, var(--bg-tertiary) 42%, transparent);
+  margin-top: 0;
+  margin-bottom: 0;
+  background-color: transparent;
+  background-image: linear-gradient(var(--accent-strong), var(--accent-strong));
+  background-position: 0 0;
+  background-repeat: no-repeat;
+  background-size: 2px 100%;
+}
+
+.cm-rendered-quote-depth-2 {
+  background-image: linear-gradient(var(--accent-strong), var(--accent-strong)),
+    linear-gradient(var(--accent-medium), var(--accent-medium));
+  background-position: 0 0, 6px 0;
+}
+
+.cm-rendered-quote-depth-3 {
+  background-image: linear-gradient(var(--accent-strong), var(--accent-strong)),
+    linear-gradient(var(--accent-medium), var(--accent-medium)),
+    linear-gradient(var(--accent-soft), var(--accent-soft));
+  background-position: 0 0, 6px 0, 12px 0;
+}
+
+.cm-rendered-quote-depth-4,
+.cm-rendered-quote-depth-5,
+.cm-rendered-quote-depth-6 {
+  background-image: linear-gradient(var(--accent-strong), var(--accent-strong)),
+    linear-gradient(var(--accent-medium), var(--accent-medium)),
+    linear-gradient(var(--accent-selected-bg), var(--accent-selected-bg)),
+    linear-gradient(var(--accent-soft), var(--accent-soft));
+  background-position: 0 0, 6px 0, 12px 0, 18px 0;
+}
+
+.cm-rendered-quote-depth-2,
+.cm-rendered-quote-depth-3,
+.cm-rendered-quote-depth-4,
+.cm-rendered-quote-depth-5,
+.cm-rendered-quote-depth-6 {
+  background-repeat: no-repeat;
+  background-size: 2px 100%;
 }
 
 .cm-rendered-code-line {
@@ -4183,13 +4258,14 @@ textarea,
 .cm-rendered-checkbox.is-checked::after {
   content: '';
   position: absolute;
-  left: 3px;
-  top: 1px;
+  top: 50%;
+  left: 50%;
   width: 4px;
   height: 7px;
   border-right: 1.5px solid white;
   border-bottom: 1.5px solid white;
-  transform: rotate(42deg);
+  transform: translate(-50%, -56%) rotate(42deg);
+  transform-origin: center;
 }
 
 .cm-rendered-link.is-external::after {
@@ -4257,8 +4333,8 @@ textarea,
 
 .cm-callout-widget.is-success,
 .cm-callout-widget.is-tip {
-  border-left-color: var(--md-task-checked);
-  background: color-mix(in srgb, var(--md-task-checked) 8%, var(--bg-primary));
+  border-left-color: var(--md-success);
+  background: color-mix(in srgb, var(--md-success) 8%, var(--bg-primary));
 }
 
 .cm-callout-header {
@@ -4377,6 +4453,7 @@ textarea,
   --md-muted: #7e879a;
   --md-accent: #9299f7;
   --md-task-checked: #67c7ae;
+  --md-success: #67c7ae;
   --md-code-bg: #1a1e29;
   --md-quote-bg: rgba(126, 135, 154, 0.07);
   --md-selection: rgba(124, 132, 240, 0.24);
@@ -4389,6 +4466,7 @@ textarea,
   --md-muted: #7b8292;
   --md-accent: #5d64ce;
   --md-task-checked: #218a72;
+  --md-success: #218a72;
   --md-code-bg: #e9eaf1;
   --md-quote-bg: rgba(70, 77, 98, 0.045);
   --md-selection: rgba(98, 104, 217, 0.18);
@@ -4473,7 +4551,7 @@ textarea,
 
 .cm-rendered-strike,
 .cm-rendered-quote {
-  color: var(--md-muted);
+  color: var(--md-body);
 }
 
 .cm-rendered-list-marker {
@@ -4501,8 +4579,7 @@ textarea,
 }
 
 .cm-rendered-quote-line {
-  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--md-accent) 52%, transparent);
-  background: var(--md-quote-bg);
+  box-shadow: none;
 }
 
 .cm-rendered-rule {
@@ -4704,8 +4781,8 @@ textarea,
 }
 
 .cm-editing-source-line.cm-editing-quote {
-  color: var(--md-muted);
-  font-style: italic;
+  color: var(--md-body);
+  font-style: normal;
 }
 
 .cm-editing-source-line .cm-comment.cm-code,
@@ -4960,7 +5037,7 @@ textarea,
 
 /* Book-like reading measure and print typography */
 :root {
-  --editor-page-width: 860px;
+  --editor-page-width: 760px;
   --editor-gutter: 40px;
   --editor-line-number: rgba(151, 160, 181, 0.42);
   --editor-line-number-active: rgba(210, 216, 229, 0.78);
@@ -5462,6 +5539,13 @@ textarea,
 }
 
 :root[data-accent] {
+  --accent-soft: color-mix(in srgb, var(--accent-color) 9%, transparent);
+  --accent-hover-bg: color-mix(in srgb, var(--accent-color) 13%, transparent);
+  --accent-selected-bg: color-mix(in srgb, var(--accent-color) 15%, transparent);
+  --accent-medium: color-mix(in srgb, var(--accent-color) 34%, transparent);
+  --accent-strong: color-mix(in srgb, var(--accent-color) 74%, transparent);
+  --md-task-checked: var(--accent-color);
+  --slash-command-selected-bg: var(--accent-selected-bg);
   --slash-command-selected-text: #f3f4f7;
 }
 
@@ -6892,11 +6976,24 @@ textarea:focus-visible {
 }
 
 /* Final accent cascade */
+.tree-folder,
+.tree-file {
+  width: calc(100% - 6px);
+  margin: 2px 3px;
+}
+
 .tree-file.active,
 .tree-file.active:hover,
 :root[data-theme='light'] .tree-file.active,
 :root[data-theme='light'] .tree-file.active:hover {
-  background: color-mix(in srgb, var(--accent-color) 11%, transparent);
+  background: var(--accent-selected-bg);
+}
+
+.tree-folder:hover,
+.tree-file:not(.active):hover,
+:root[data-theme='light'] .tree-folder:hover,
+:root[data-theme='light'] .tree-file:not(.active):hover {
+  background: var(--accent-hover-bg);
 }
 
 .settings-modal-content::before {
@@ -6904,7 +7001,27 @@ textarea:focus-visible {
 }
 
 .tree-file.active::before {
-  background: var(--accent-color);
+  background: var(--accent-strong);
+}
+
+.tree-rename-input {
+  background: var(--accent-soft);
+  border-bottom-color: var(--accent-strong);
+}
+
+.quick-open-result[aria-selected='true'] {
+  background: var(--accent-selected-bg);
+  box-shadow: inset 2px 0 0 var(--accent-strong);
+}
+
+.cm-selectionBackground {
+  background: var(--accent-selected-bg) !important;
+}
+
+.cm-find-match-current,
+:root[data-theme='light'] .cm-find-match-current {
+  background: var(--accent-strong);
+  box-shadow: 0 0 0 1px var(--accent-strong);
 }
 
 .ai-progress-bar {

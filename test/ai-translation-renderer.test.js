@@ -12,8 +12,8 @@ test('AI translation uses the selection when present and otherwise the full note
     renderer,
     /ipcRenderer\.invoke\('deepseek-translate', \{[\s\S]*targetLanguage,[\s\S]*content: originalContent/
   );
-  assert.match(renderer, /targetEditor\.setRangeText\(translatedContent, selectionStart, selectionEnd\)/);
-  assert.match(renderer, /targetEditor\.value = translatedContent/);
+  assert.match(renderer, /targetEditor\.setRangeText\([\s\S]*translatedContent,[\s\S]*'AI 翻译'/);
+  assert.match(renderer, /targetEditor\.replaceContent\(translatedContent, 'AI 翻译'\)/);
   assert.match(renderer, /ipcRenderer\.on\('ai-translate', \(event, targetLanguage\)/);
 });
 

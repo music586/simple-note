@@ -81,8 +81,7 @@ function getRenderedListPrefix(lineText) {
 
 function shouldRenderActiveListPrefix(listPrefix, cursorCh) {
   if (!listPrefix) return false;
-  if (listPrefix.type !== 'bullet') return true;
-  return cursorCh >= listPrefix.toCh;
+  return cursorCh > listPrefix.toCh;
 }
 
 function getActiveBulletSourceCursor(listPrefix, cursorCh) {

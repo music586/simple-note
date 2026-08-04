@@ -17,7 +17,7 @@ test('file menu and renderer expose note history preview and restore', () => {
   assert.match(main, /ipcMain\.handle\('restore-note-history-version'/);
   assert.match(renderer, /ipcRenderer\.on\('open-note-history', showNoteHistory\)/);
   assert.match(renderer, /expectedHash: noteHistoryState\.currentHash/);
-  assert.match(renderer, /target\.editor\.value = result\.content/);
+  assert.match(renderer, /target\.editor\.replaceContent\(result\.content, '恢复历史版本'\)/);
   assert.match(html, /id="noteHistoryVersions"[^>]*role="listbox"/);
   assert.match(html, /id="noteHistoryPreview"/);
   assert.match(html, /id="noteHistoryRestore"[^>]*disabled/);

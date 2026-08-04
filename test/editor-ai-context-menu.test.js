@@ -42,7 +42,7 @@ test('context AI layout replaces only the unchanged selected range', () => {
   );
   assert.match(
     renderer,
-    /targetEditor\.setRangeText\(optimizedContent, selectionStart, selectionEnd\)/
+    /targetEditor\.setRangeText\([\s\S]*optimizedContent,[\s\S]*'AI 排版'/
   );
   assert.match(renderer, /等待 AI 响应期间选中内容已改变/);
 });
