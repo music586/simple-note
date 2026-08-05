@@ -216,6 +216,11 @@ const rightPanePersistence = createEditorPanePersistence({
   titleInput: noteTitleRight,
   editorAdapter: editorRight
 });
+
+function loadPaneDocument(persistence, editorAdapter, documentPath, content) {
+  persistence.activateDocument(documentPath);
+  editorAdapter.loadDocument(documentPath, content);
+}
 const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
 const editorFindBar = document.getElementById('editorFindBar');
 const editorFindInput = document.getElementById('editorFindInput');
@@ -2936,7 +2941,7 @@ async function selectNote(note) {
     ipcRenderer.invoke('get-ai-optimized-state', note.path)
   ]);
   if (!currentNote || currentNote.path !== note.path) return;
-  editor.loadDocument(note.path, content);
+  loadPaneDocument(leftPanePersistence, editor, note.path, content);
   leftPanel.classList.toggle(
     'ai-layout-optimized',
     optimizedState.success && optimizedState.optimized
@@ -5104,7 +5109,7 @@ async function createNewNote(folderPath = null) {
 
   currentNote = result.note;
   noteTitle.value = result.note.name;
-  editor.loadDocument(result.note.path, '');
+  loadPaneDocument(leftPanePersistence, editor, result.note.path, '');
   leftPanel.classList.remove('ai-layout-optimized');
   updatePreview(true);
   expandFolderPath(folderPath);
@@ -5241,7 +5246,7 @@ async function deleteItem(data) {
       if (currentNote && currentNote.path === data.path) {
         currentNote = null;
         noteTitle.value = '';
-        editor.loadDocument(null, '');
+        loadPaneDocument(leftPanePersistence, editor, null, '');
         leftPanel.classList.remove('ai-layout-optimized');
         updatePreview(true);
       }
@@ -5289,8 +5294,8 @@ function resetCurrentLibrary() {
   currentNoteRight = null;
   noteTitle.value = '';
   noteTitleRight.value = '';
-  editor.loadDocument(null, '');
-  editorRight.loadDocument(null, '');
+  loadPaneDocument(leftPanePersistence, editor, null, '');
+  loadPaneDocument(rightPanePersistence, editorRight, null, '');
   leftPanel.classList.remove('ai-layout-optimized');
   rightPanel.classList.remove('ai-layout-optimized');
   rightPanel.style.display = 'none';
@@ -6114,13 +6119,13 @@ async function openInRightPanel(note) {
   closeSlashCommandMenu();
   currentNoteRight = note;
   noteTitleRight.value = note.name;
-  editorRight.loadDocument(note.path, '');
+  loadPaneDocument(rightPanePersistence, editorRight, note.path, '');
   const [content, optimizedState] = await Promise.all([
     ipcRenderer.invoke('read-note', note.path),
     ipcRenderer.invoke('get-ai-optimized-state', note.path)
   ]);
   if (!currentNoteRight || currentNoteRight.path !== note.path) return;
-  editorRight.loadDocument(note.path, content);
+  loadPaneDocument(rightPanePersistence, editorRight, note.path, content);
   rightPanel.classList.toggle(
     'ai-layout-optimized',
     optimizedState.success && optimizedState.optimized
@@ -6141,7 +6146,7 @@ function closeRightPanel() {
   }
   currentNoteRight = null;
   noteTitleRight.value = '';
-  editorRight.loadDocument(null, '');
+  loadPaneDocument(rightPanePersistence, editorRight, null, '');
   rightPanel.classList.remove('ai-layout-optimized');
   updatePreviewRight();
   rightPanel.style.display = 'none';

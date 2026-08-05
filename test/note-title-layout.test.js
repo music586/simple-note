@@ -40,6 +40,21 @@ test('new notes expand their target folder and every parent folder', () => {
   assert.match(renderer, /updatePreview\(true\);\s*expandFolderPath\(folderPath\);\s*await loadTree\(\)/);
 });
 
+test('loading a note activates an isolated persistence document session', () => {
+  assert.match(
+    renderer,
+    /function loadPaneDocument\(persistence, editorAdapter, documentPath, content\)[\s\S]*persistence\.activateDocument\(documentPath\);[\s\S]*editorAdapter\.loadDocument\(documentPath, content\);/
+  );
+  assert.match(
+    renderer,
+    /loadPaneDocument\(leftPanePersistence, editor, result\.note\.path, ''\)/
+  );
+  assert.match(
+    renderer,
+    /loadPaneDocument\(rightPanePersistence, editorRight, note\.path, content\)/
+  );
+});
+
 test('top toolbars match the content background', () => {
   assert.match(styles, /\.toolbar \{\s*background: var\(--bg-primary\);\s*\}/);
 });

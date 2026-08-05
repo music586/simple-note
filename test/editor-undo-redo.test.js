@@ -17,8 +17,14 @@ test('each editor keeps bounded per-note CodeMirror history without recording no
   assert.match(adapter, /state\.toJSON\(\{ history: historyField \}\)/);
   assert.match(adapter, /EditorState\.fromJSON\([\s\S]*\{ history: historyField \}/);
   assert.match(adapter, /while \(this\.documentStates\.size > 20\)/);
-  assert.match(renderer, /editor\.loadDocument\(note\.path, content\)/);
-  assert.match(renderer, /editorRight\.loadDocument\(note\.path, content\)/);
+  assert.match(
+    renderer,
+    /loadPaneDocument\(leftPanePersistence, editor, note\.path, content\)/
+  );
+  assert.match(
+    renderer,
+    /loadPaneDocument\(rightPanePersistence, editorRight, note\.path, content\)/
+  );
   assert.doesNotMatch(renderer, /editor\.value = content/);
 });
 

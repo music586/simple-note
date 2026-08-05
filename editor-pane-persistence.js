@@ -10,7 +10,17 @@ class EditorPanePersistence {
     this.onError = options.onError || (() => {});
     this.pending = Promise.resolve();
     this.pathAliases = new Map();
+    this.activeDocumentPath = null;
+    this.documentRevision = 0;
     this.revision = 0;
+  }
+
+  activateDocument(notePath) {
+    const nextPath = typeof notePath === 'string' && notePath ? notePath : null;
+    if (nextPath === this.activeDocumentPath) return;
+    this.activeDocumentPath = nextPath;
+    this.documentRevision += 1;
+    this.pathAliases = new Map();
   }
 
   save(options = {}) {
@@ -21,7 +31,9 @@ class EditorPanePersistence {
       note: { ...currentNote },
       name: this.getName().trim() || 'untitled',
       content: this.getContent(),
-      historyReason: options.historyReason
+      historyReason: options.historyReason,
+      documentRevision: this.documentRevision,
+      pathAliases: this.pathAliases
     };
     const operation = this.pending.catch(() => {}).then(() => this.persist(snapshot));
     this.pending = operation;
@@ -31,7 +43,7 @@ class EditorPanePersistence {
 
   async persist(snapshot) {
     const originalPath = snapshot.note.path;
-    let notePath = this.resolvePath(originalPath);
+    let notePath = this.resolvePath(originalPath, snapshot.pathAliases);
     let noteName = snapshot.note.name;
     let renamed = false;
 
@@ -41,12 +53,19 @@ class EditorPanePersistence {
         newName: snapshot.name
       });
       if (!result?.path) throw new Error('重命名笔记失败');
-      this.pathAliases.set(originalPath, result.path);
-      this.pathAliases.set(notePath, result.path);
+      snapshot.pathAliases.set(originalPath, result.path);
+      snapshot.pathAliases.set(notePath, result.path);
       notePath = result.path;
       noteName = result.name || snapshot.name;
       renamed = true;
-      this.updateCurrentNote([originalPath, this.resolvePath(originalPath)], result);
+      if (snapshot.documentRevision === this.documentRevision) {
+        this.activeDocumentPath = result.path;
+      }
+      this.updateCurrentNote(
+        [originalPath, this.resolvePath(originalPath, snapshot.pathAliases)],
+        result,
+        snapshot
+      );
     }
 
     const savePayload = { notePath, content: snapshot.content };
@@ -56,21 +75,24 @@ class EditorPanePersistence {
     return { revision: snapshot.revision, notePath, name: noteName };
   }
 
-  resolvePath(notePath) {
+  resolvePath(notePath, aliases = this.pathAliases) {
     let resolvedPath = notePath;
     const visited = new Set();
-    while (this.pathAliases.has(resolvedPath) && !visited.has(resolvedPath)) {
+    while (aliases.has(resolvedPath) && !visited.has(resolvedPath)) {
       visited.add(resolvedPath);
-      resolvedPath = this.pathAliases.get(resolvedPath);
+      resolvedPath = aliases.get(resolvedPath);
     }
     return resolvedPath;
   }
 
-  updateCurrentNote(expectedPaths, nextNote) {
+  updateCurrentNote(expectedPaths, nextNote, snapshot) {
+    if (snapshot.documentRevision !== this.documentRevision) return;
     const currentNote = this.getNote();
     if (!currentNote) return;
-    const currentPath = this.resolvePath(currentNote.path);
-    if (!expectedPaths.some(expectedPath => this.resolvePath(expectedPath) === currentPath)) return;
+    const currentPath = this.resolvePath(currentNote.path, snapshot.pathAliases);
+    if (!expectedPaths.some(expectedPath => (
+      this.resolvePath(expectedPath, snapshot.pathAliases) === currentPath
+    ))) return;
     this.setNote({ ...currentNote, ...nextNote });
   }
 
