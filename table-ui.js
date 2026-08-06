@@ -12,4 +12,14 @@ function getTableAddControlState(rect, clientX, clientY, threshold = 28) {
   return { type: 'row' };
 }
 
-module.exports = { getTableAddControlState };
+function createSingleTableCommit(commit) {
+  let committed = false;
+  return (...args) => {
+    if (committed) return false;
+    committed = true;
+    commit(...args);
+    return true;
+  };
+}
+
+module.exports = { createSingleTableCommit, getTableAddControlState };

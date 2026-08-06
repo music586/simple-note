@@ -27,7 +27,7 @@ const {
   getSlashCommandMenuLayout,
   setSlashCommandAccessibility
 } = require('./slash-command-ui');
-const { getTableAddControlState } = require('./table-ui');
+const { createSingleTableCommit, getTableAddControlState } = require('./table-ui');
 const { getTaskCheckboxEdit } = require('./preview-task');
 const { getMarkdownFormatEdit } = require('./markdown-format');
 const { buildQuickOpenItems, filterQuickOpenItems } = require('./quick-open');
@@ -3491,10 +3491,23 @@ function createEditorTableWidget(
   const addColumnButton = document.createElement('button');
   addColumnButton.className = 'cm-table-add cm-table-add-column';
   addColumnButton.type = 'button';
-  addColumnButton.title = '添加列';
-  addColumnButton.setAttribute('aria-label', '添加列');
-  addColumnButton.textContent = '+';
+  addColumnButton.title = '在右侧添加一列';
+  addColumnButton.setAttribute('aria-label', '在表格右侧添加一列');
+  const addColumnIcon = document.createElement('span');
+  addColumnIcon.className = 'cm-table-add-icon';
+  addColumnIcon.textContent = '+';
+  const addColumnLabel = document.createElement('span');
+  addColumnLabel.className = 'cm-table-add-label';
+  addColumnLabel.textContent = '列';
+  addColumnButton.append(addColumnIcon, addColumnLabel);
   addColumnButton.addEventListener('mousedown', event => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onAddColumn();
+  });
+  addColumnButton.addEventListener('click', event => {
+    if (event.detail !== 0) return;
     event.preventDefault();
     event.stopPropagation();
     onAddColumn();
@@ -3503,10 +3516,26 @@ function createEditorTableWidget(
   const addRowButton = document.createElement('button');
   addRowButton.className = 'cm-table-add cm-table-add-row';
   addRowButton.type = 'button';
-  addRowButton.title = '添加行';
-  addRowButton.setAttribute('aria-label', '添加行');
-  addRowButton.textContent = '+';
+  addRowButton.title = '在底部添加一行';
+  addRowButton.setAttribute('aria-label', '在表格底部添加一行');
+  const addRowIcon = document.createElement('span');
+  addRowIcon.className = 'cm-table-add-icon';
+  addRowIcon.textContent = '+';
+  const addRowLabel = document.createElement('span');
+  addRowLabel.className = 'cm-table-add-label';
+  addRowLabel.textContent = '行';
+  const addRowContent = document.createElement('span');
+  addRowContent.className = 'cm-table-add-row-content';
+  addRowContent.append(addRowIcon, addRowLabel);
+  addRowButton.appendChild(addRowContent);
   addRowButton.addEventListener('mousedown', event => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onAddRow();
+  });
+  addRowButton.addEventListener('click', event => {
+    if (event.detail !== 0) return;
     event.preventDefault();
     event.stopPropagation();
     onAddRow();
@@ -3515,12 +3544,12 @@ function createEditorTableWidget(
   viewport.appendChild(table);
   widget.append(viewport, addColumnButton, addRowButton);
   widget.addEventListener('mousemove', event => {
-    if (event.target === addColumnButton) {
+    if (addColumnButton.contains(event.target)) {
       widget.classList.add('show-add-column');
       widget.classList.remove('show-add-row');
       return;
     }
-    if (event.target === addRowButton) {
+    if (addRowButton.contains(event.target)) {
       widget.classList.add('show-add-row');
       widget.classList.remove('show-add-column');
       return;
@@ -3539,7 +3568,7 @@ function createEditorTableWidget(
   });
   widget.addEventListener('focusout', () => {
     setTimeout(() => {
-      if (widget.contains(document.activeElement)) return;
+      if (!widget.isConnected || widget.contains(document.activeElement)) return;
       const nextRows = Array.from(table.rows).map(tableRow => {
         return Array.from(tableRow.cells).map(cell => {
           return (cell.innerText || cell.textContent || '')
@@ -4195,7 +4224,7 @@ function renderEditorDecorations(editorAdapter, note) {
       const from = { line: lineNumber, ch: 0 };
       const to = { line: endLine, ch: codeMirror.getLine(endLine).length };
       let tableMark;
-      const replaceTable = (nextRows, nextAlignments) => {
+      const replaceTable = createSingleTableCommit((nextRows, nextAlignments) => {
         if (tableMark) tableMark.clear();
         codeMirror.replaceRange(
           serializeMarkdownTable(nextRows, nextAlignments),
@@ -4203,7 +4232,7 @@ function renderEditorDecorations(editorAdapter, note) {
           to
         );
         scheduleEditorDecorations(editorAdapter, () => note);
-      };
+      });
       const widget = createEditorTableWidget(
         rows,
         alignments,
