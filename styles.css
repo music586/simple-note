@@ -4276,6 +4276,14 @@ textarea,
   opacity: 0.65;
 }
 
+.cm-rendered-link.is-application::after {
+  content: '◇';
+  margin-left: 4px;
+  font-size: 0.72em;
+  text-decoration: none;
+  opacity: 0.62;
+}
+
 .cm-rendered-link.is-relative::after {
   content: '›';
   margin-left: 4px;
@@ -6379,6 +6387,115 @@ textarea:focus-visible {
   font-weight: 650;
 }
 
+.ai-provider-field {
+  margin: 13px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.ai-provider-field > legend {
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.ai-provider-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.ai-provider-option {
+  --provider-color: var(--accent-color);
+  position: relative;
+  min-width: 0;
+  height: 58px;
+  padding: 8px 26px 8px 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-secondary) 72%, transparent);
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease,
+    transform 0.16s ease;
+}
+
+.ai-provider-option:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--provider-color) 40%, var(--border-color));
+}
+
+.ai-provider-option:has(input:focus-visible) {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--provider-color) 20%, transparent);
+}
+
+.ai-provider-option:has(input:checked) {
+  border-color: color-mix(in srgb, var(--provider-color) 66%, var(--border-color));
+  background: color-mix(in srgb, var(--provider-color) 9%, var(--bg-secondary));
+}
+
+.ai-provider-option.deepseek { --provider-color: #5d91e8; }
+.ai-provider-option.mimo { --provider-color: #ff6a35; }
+.ai-provider-option.hunyuan { --provider-color: #8b72df; }
+
+.ai-provider-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ai-provider-mark {
+  width: 29px;
+  height: 29px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--provider-color) 15%, transparent);
+  color: var(--provider-color);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.ai-provider-option strong,
+.ai-provider-option small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-provider-option strong {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.ai-provider-option small {
+  margin-top: 3px;
+  color: var(--text-tertiary);
+  font-size: 9px;
+}
+
+.ai-provider-check {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 50%;
+}
+
+.ai-provider-option:has(input:checked) .ai-provider-check {
+  border: 2px solid var(--bg-secondary);
+  background: var(--provider-color);
+  box-shadow: 0 0 0 1px var(--provider-color);
+}
+
 .settings-api-key-row {
   display: flex;
   align-items: stretch;
@@ -6528,6 +6645,60 @@ textarea:focus-visible {
   color: var(--text-secondary);
   font-size: 11px;
   line-height: 1.45;
+}
+
+.ai-key-test-result {
+  min-height: 16px;
+  margin-top: 6px;
+  padding-left: 14px;
+  position: relative;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.ai-key-test-result:empty {
+  display: none;
+}
+
+.ai-key-test-result::before {
+  content: '';
+  position: absolute;
+  top: 5px;
+  left: 1px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.ai-key-test-result[data-state='testing'] {
+  color: var(--text-secondary);
+}
+
+.ai-key-test-result[data-state='testing']::before {
+  border: 1px solid currentColor;
+  border-top-color: transparent;
+  background: transparent;
+  animation: ai-key-test-spin 0.7s linear infinite;
+}
+
+.ai-key-test-result[data-state='success'] {
+  color: #49b788;
+}
+
+.ai-key-test-result[data-state='error'] {
+  color: var(--danger-color);
+}
+
+@keyframes ai-key-test-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-key-test-result[data-state='testing']::before {
+    animation: none;
+  }
 }
 
 .settings-toggle-card .settings-card-copy {
@@ -6689,6 +6860,10 @@ textarea:focus-visible {
   .settings-api-key-row {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .ai-provider-grid {
+    grid-template-columns: 1fr;
   }
 
   .hidden-directory-row {

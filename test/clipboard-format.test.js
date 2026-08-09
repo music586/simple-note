@@ -6,12 +6,40 @@ const path = require('node:path');
 const {
   normalizeClipboardText,
   joinClipboardTextAndImages,
+  joinClipboardStructuredContent,
+  normalizeClipboardMarkdown,
   removeGeneratedBoundaryNewlines,
   shouldConvertClipboardHtml,
   isMarkdownDocumentText,
   applyClipboardMarkdownMarks,
   optimizeClipboardPlainText
 } = require('../clipboard-format');
+
+test('rich clipboard Markdown removes placeholder lines and excessive blank lines', () => {
+  assert.equal(
+    normalizeClipboardMarkdown('第一段\n\n\u00a0 \n\n\u200b\n\n第二段'),
+    '第一段\n\n第二段'
+  );
+});
+
+test('rich clipboard Markdown preserves whitespace and blank lines inside fenced code', () => {
+  assert.equal(
+    normalizeClipboardMarkdown('正文\n\n\n```text\n第一行\n\n\n第二行\n```\n\n\n结尾'),
+    '正文\n\n```text\n第一行\n\n\n第二行\n```\n\n结尾'
+  );
+});
+
+test('structured clipboard content adds only missing document separators', () => {
+  assert.equal(joinClipboardStructuredContent('前文', 2, 2, '粘贴内容'), '\n\n粘贴内容');
+  assert.equal(
+    joinClipboardStructuredContent('前文\n后文', 3, 3, '粘贴内容'),
+    '\n粘贴内容\n\n'
+  );
+  assert.equal(
+    joinClipboardStructuredContent('前文\n\n后文', 4, 4, '粘贴内容'),
+    '粘贴内容\n\n'
+  );
+});
 
 test('clipboard text preserves spaces and blank lines while normalizing line endings', () => {
   assert.equal(
@@ -63,11 +91,27 @@ test('renderer converts clipboard bold tags and line breaks to Markdown', () => 
 
   assert.match(renderer, /if \(tag === 'br'\) return '\\n'/);
   assert.match(renderer, /tag === 'strong' \|\| tag === 'b'/);
-  assert.match(renderer, /clipboardHtmlToFormattedText\(htmlSource, text\)/);
+  assert.match(renderer, /clipboardHtmlToMarkdown\(htmlSource, \[\]\)/);
   assert.match(renderer, /if \(isMarkdownDocumentText\(text\)\) \{\s+pastedContent = text/);
-  assert.match(renderer, /optimizeClipboardPlainText\(formattedText\)/);
-  assert.match(renderer, /htmlBlock \|\| editorCode \|\| textTable/);
+  assert.match(renderer, /optimizeClipboardPlainText\(text\)/);
+  assert.match(renderer, /editorCode \|\| htmlMarkdown \|\| textTable/);
   assert.ok(packageJson.build.files.includes('clipboard-format.js'));
+});
+
+test('rich clipboard HTML uses Turndown with GFM and a legacy fallback', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
+  const packageJson = require('../package.json');
+
+  assert.match(renderer, /const TurndownService = require\('turndown'\)/);
+  assert.match(renderer, /const \{ gfm \} = require\('turndown-plugin-gfm'\)/);
+  assert.match(renderer, /service\.use\(gfm\)/);
+  assert.match(renderer, /headingStyle: 'atx'/);
+  assert.match(renderer, /codeBlockStyle: 'fenced'/);
+  assert.match(renderer, /service\.addRule\('local-images'/);
+  assert.match(renderer, /function promoteClipboardInlineStyles\(documentNode\)/);
+  assert.match(renderer, /return clipboardHtmlToMarkdownLegacy\(html, relativePaths\)/);
+  assert.equal(packageJson.dependencies.turndown, '^7.2.4');
+  assert.equal(packageJson.dependencies['turndown-plugin-gfm'], '^1.0.2');
 });
 
 test('inline Markdown marks preserve the original clipboard whitespace layout', () => {

@@ -92,16 +92,25 @@ test('settings dialog separates preferences into four accessible tabs', () => {
   assert.match(styles, /\.settings-tab-panel\[hidden\]\s*\{[^}]*display: none;/s);
 });
 
-test('settings dialog supports local DeepSeek API Key configuration', () => {
+test('settings dialog supports local multi-provider API Key configuration', () => {
   assert.match(html, /<strong>AI 设置<\/strong>/);
-  assert.match(html, /目前仅支持 DeepSeek，其他模型后续开放。/);
-  assert.match(html, /id="deepseekApiKey"[^>]*type="password"/);
+  assert.match(html, /name="aiProvider" value="deepseek"/);
+  assert.match(html, /name="aiProvider" value="mimo"/);
+  assert.match(html, /name="aiProvider" value="hunyuan"/);
+  assert.match(html, /id="aiProviderApiKey"[^>]*type="password"/);
   assert.match(html, /id="deepseekLayoutPrompt"[^>]*class="settings-prompt-input"/);
-  assert.match(html, /API Key 仅保存在当前设备的本地配置中。/);
+  assert.match(html, /各平台 API Key 独立保存在当前设备，不会写入笔记。/);
   assert.match(html, /调用时将在提示词后附加当前笔记的全部内容。/);
   assert.match(renderer, /ipcRenderer\.invoke\('get-ai-settings'\)/);
   assert.match(renderer, /ipcRenderer\.invoke\('set-ai-settings'/);
   assert.match(styles, /\.settings-api-key-input\s*\{/);
+  assert.match(styles, /\.ai-provider-grid\s*\{/);
+  assert.match(renderer, /const keyName = `\$\{provider\}ApiKey`|aiProviderKeys/);
+  assert.match(html, /id="aiKeyTestResult"[^>]*role="status"/);
+  assert.match(renderer, /ipcRenderer\.invoke\('test-ai-api-key'/);
+  assert.match(renderer, /正在使用 1 个输出 Token 验证密钥/);
+  assert.match(renderer, /API Key 有效/);
+  assert.match(styles, /\.ai-key-test-result\[data-state='success'\]/);
   assert.match(styles, /\.settings-prompt-input\s*\{/);
   assert.match(html, /name="aiStampPosition" value="hidden"/);
   assert.match(html, /name="aiStampPosition" value="top-right"/);
@@ -173,6 +182,11 @@ test('AI request displays estimated progress only in the active editor panel', (
   );
   assert.match(renderer, /Math\.min\(92, estimated\)/);
   assert.match(renderer, /setAiProgress\(100\)/);
+  assert.match(
+    renderer,
+    /`\$\{aiProgressAction\} · \$\{activeAiProviderName\}`[\s\S]*` · 预计 \$\{normalizedValue\}%`/
+  );
+  assert.match(renderer, /activeAiProviderName = aiProviderNames\[provider\]/);
   assert.match(
     renderer,
     /aiLayoutBusy = true;[\s\S]*startAiProgress\(targetEditor\);[\s\S]*finishAiProgress\(completed\)/

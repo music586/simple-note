@@ -238,9 +238,34 @@ function migrateAiOptimizedNotePaths(sourcePath, destinationPath = null) {
   saveConfig(config);
 }
 
-function requestDeepSeekLayout(apiKey, prompt, content, systemPrompt = null) {
-  const requestBody = JSON.stringify({
+const aiProviders = {
+  deepseek: {
+    name: 'DeepSeek',
+    hostname: 'api.deepseek.com',
+    path: '/chat/completions',
     model: 'deepseek-v4-flash',
+    extras: { thinking: { type: 'disabled' } }
+  },
+  mimo: {
+    name: 'MiMo',
+    hostname: 'api.xiaomimimo.com',
+    path: '/v1/chat/completions',
+    model: 'mimo-v2.5-pro',
+    extras: { thinking: { type: 'disabled' } }
+  },
+  hunyuan: {
+    name: '腾讯混元',
+    hostname: 'api.hunyuan.cloud.tencent.com',
+    path: '/v1/chat/completions',
+    model: 'hunyuan-turbos-latest',
+    extras: {}
+  }
+};
+
+function requestAiLayout(providerId, apiKey, prompt, content, systemPrompt = null) {
+  const provider = aiProviders[providerId] || aiProviders.deepseek;
+  const requestBody = JSON.stringify({
+    model: provider.model,
     messages: [
       {
         role: 'system',
@@ -252,14 +277,14 @@ function requestDeepSeekLayout(apiKey, prompt, content, systemPrompt = null) {
         content: `${prompt}\n\n${content}`
       }
     ],
-    thinking: { type: 'disabled' },
-    stream: false
+    stream: false,
+    ...provider.extras
   });
 
   return new Promise((resolve, reject) => {
     const request = https.request({
-      hostname: 'api.deepseek.com',
-      path: '/chat/completions',
+      hostname: provider.hostname,
+      path: provider.path,
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -273,7 +298,7 @@ function requestDeepSeekLayout(apiKey, prompt, content, systemPrompt = null) {
       response.on('data', chunk => {
         responseBody += chunk;
         if (responseBody.length > 10 * 1024 * 1024) {
-          request.destroy(new Error('DeepSeek 返回内容过大'));
+          request.destroy(new Error(`${provider.name} 返回内容过大`));
         }
       });
       response.on('end', () => {
@@ -281,23 +306,79 @@ function requestDeepSeekLayout(apiKey, prompt, content, systemPrompt = null) {
         try {
           data = JSON.parse(responseBody);
         } catch (err) {
-          reject(new Error('DeepSeek 返回了无法解析的响应'));
+          reject(new Error(`${provider.name} 返回了无法解析的响应`));
           return;
         }
         if (response.statusCode < 200 || response.statusCode >= 300) {
           const detail = data?.error?.message;
-          reject(new Error(detail || `DeepSeek 请求失败（HTTP ${response.statusCode}）`));
+          reject(new Error(detail || `${provider.name} 请求失败（HTTP ${response.statusCode}）`));
           return;
         }
         const optimizedContent = data?.choices?.[0]?.message?.content;
         if (typeof optimizedContent !== 'string' || !optimizedContent.trim()) {
-          reject(new Error('DeepSeek 未返回排版后的内容'));
+          reject(new Error(`${provider.name} 未返回处理后的内容`));
           return;
         }
         resolve(optimizedContent.trim());
       });
     });
-    request.on('timeout', () => request.destroy(new Error('DeepSeek 请求超时，请稍后重试')));
+    request.on('timeout', () => {
+      request.destroy(new Error(`${provider.name} 请求超时，请稍后重试`));
+    });
+    request.on('error', reject);
+    request.end(requestBody);
+  });
+}
+
+function testAiApiKey(providerId, apiKey) {
+  const provider = aiProviders[providerId];
+  const tokenLimit = providerId === 'mimo'
+    ? { max_completion_tokens: 1 }
+    : { max_tokens: 1 };
+  const requestBody = JSON.stringify({
+    model: provider.model,
+    messages: [{ role: 'user', content: '1' }],
+    stream: false,
+    ...tokenLimit,
+    ...provider.extras
+  });
+
+  return new Promise((resolve, reject) => {
+    const request = https.request({
+      hostname: provider.hostname,
+      path: provider.path,
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(requestBody)
+      },
+      timeout: 30000
+    }, response => {
+      let responseBody = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => { responseBody += chunk; });
+      response.on('end', () => {
+        let data = null;
+        try {
+          data = JSON.parse(responseBody);
+        } catch (err) {
+          if (response.statusCode >= 200 && response.statusCode < 300) {
+            resolve();
+            return;
+          }
+        }
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(data?.error?.message
+            || `${provider.name} 验证失败（HTTP ${response.statusCode}）`));
+          return;
+        }
+        resolve();
+      });
+    });
+    request.on('timeout', () => {
+      request.destroy(new Error(`${provider.name} 验证超时，请稍后重试`));
+    });
     request.on('error', reject);
     request.end(requestBody);
   });
@@ -475,6 +556,26 @@ ipcMain.handle('open-external-url', async (event, href) => {
     const url = new URL(String(href));
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       return { success: false, error: '不支持的链接协议' };
+    }
+    await shell.openExternal(url.href);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('open-application-url', async (event, href) => {
+  try {
+    const target = String(href || '').trim();
+    if (!target || target.length > 2048 || /[\r\n\0]/.test(target)) {
+      throw new Error('应用链接格式无效');
+    }
+    const url = new URL(target);
+    if (
+      !/^[a-z][a-z0-9+.-]*:$/.test(url.protocol)
+      || ['http:', 'https:', 'file:', 'javascript:', 'data:'].includes(url.protocol)
+    ) {
+      throw new Error('不支持的应用链接协议');
     }
     await shell.openExternal(url.href);
     return { success: true };
@@ -1482,7 +1583,12 @@ ipcMain.handle('reset-image-directory', async event => {
 ipcMain.handle('get-ai-settings', async () => {
   try {
     const config = getConfig();
-    const apiKey = config.deepseekApiKey;
+    const provider = aiProviders[config.aiProvider] ? config.aiProvider : 'deepseek';
+    const apiKeys = {
+      deepseek: typeof config.deepseekApiKey === 'string' ? config.deepseekApiKey : '',
+      mimo: typeof config.mimoApiKey === 'string' ? config.mimoApiKey : '',
+      hunyuan: typeof config.hunyuanApiKey === 'string' ? config.hunyuanApiKey : ''
+    };
     const layoutPrompt = typeof config.deepseekLayoutPrompt === 'string'
       && config.deepseekLayoutPrompt.trim()
       ? config.deepseekLayoutPrompt
@@ -1493,8 +1599,9 @@ ipcMain.handle('get-ai-settings', async () => {
       : 'top-right';
     return {
       success: true,
-      provider: 'deepseek',
-      apiKey: typeof apiKey === 'string' ? apiKey : '',
+      provider,
+      apiKey: apiKeys.deepseek,
+      apiKeys,
       layoutPrompt,
       stampPosition
     };
@@ -1506,7 +1613,8 @@ ipcMain.handle('get-ai-settings', async () => {
 ipcMain.handle('set-ai-settings', async (event, settings) => {
   try {
     if (!settings || typeof settings !== 'object') throw new Error('AI 设置格式无效');
-    const { apiKey, layoutPrompt } = settings;
+    const { provider, apiKey, layoutPrompt } = settings;
+    if (!aiProviders[provider]) throw new Error('AI 服务平台无效');
     if (typeof apiKey !== 'string') throw new Error('API Key 格式无效');
     const normalizedApiKey = apiKey.trim();
     if (normalizedApiKey.length > 512 || /[\r\n\0]/.test(normalizedApiKey)) {
@@ -1520,15 +1628,35 @@ ipcMain.handle('set-ai-settings', async (event, settings) => {
       throw new Error('优化排版提示词格式无效');
     }
     const config = getConfig();
-    if (normalizedApiKey) config.deepseekApiKey = normalizedApiKey;
-    else delete config.deepseekApiKey;
+    const keyName = `${provider}ApiKey`;
+    if (normalizedApiKey) config[keyName] = normalizedApiKey;
+    else delete config[keyName];
+    config.aiProvider = provider;
     config.deepseekLayoutPrompt = normalizedLayoutPrompt;
     saveConfig(config);
     return {
       success: true,
+      provider,
       configured: Boolean(normalizedApiKey),
       layoutPrompt: normalizedLayoutPrompt
     };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('test-ai-api-key', async (event, settings) => {
+  try {
+    if (!settings || typeof settings !== 'object') throw new Error('测试参数无效');
+    const { provider, apiKey } = settings;
+    if (!aiProviders[provider]) throw new Error('AI 服务平台无效');
+    if (typeof apiKey !== 'string' || !apiKey.trim()) throw new Error('API Key 不能为空');
+    const normalizedApiKey = apiKey.trim();
+    if (normalizedApiKey.length > 512 || /[\r\n\0]/.test(normalizedApiKey)) {
+      throw new Error('API Key 格式无效');
+    }
+    await testAiApiKey(provider, normalizedApiKey);
+    return { success: true, provider, providerName: aiProviders[provider].name };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -1554,15 +1682,21 @@ ipcMain.handle('deepseek-optimize-layout', async (event, content) => {
       throw new Error('当前笔记没有可优化的内容');
     }
     const config = getConfig();
-    const apiKey = config.deepseekApiKey;
+    const provider = aiProviders[config.aiProvider] ? config.aiProvider : 'deepseek';
+    const apiKey = config[`${provider}ApiKey`];
     if (typeof apiKey !== 'string' || !apiKey.trim()) {
-      throw new Error('请先在设置中配置 DeepSeek API Key');
+      throw new Error(`请先在设置中配置 ${aiProviders[provider].name} API Key`);
     }
     const layoutPrompt = typeof config.deepseekLayoutPrompt === 'string'
       && config.deepseekLayoutPrompt.trim()
       ? config.deepseekLayoutPrompt
       : defaultDeepseekLayoutPrompt;
-    const optimizedContent = await requestDeepSeekLayout(apiKey, layoutPrompt, content);
+    const optimizedContent = await requestAiLayout(
+      provider,
+      apiKey,
+      layoutPrompt,
+      content
+    );
     return { success: true, content: optimizedContent };
   } catch (err) {
     return { success: false, error: err.message };
@@ -1578,13 +1712,15 @@ ipcMain.handle('deepseek-translate', async (event, data) => {
       throw new Error('当前笔记没有可翻译的内容');
     }
     const config = getConfig();
-    const apiKey = config.deepseekApiKey;
+    const provider = aiProviders[config.aiProvider] ? config.aiProvider : 'deepseek';
+    const apiKey = config[`${provider}ApiKey`];
     if (typeof apiKey !== 'string' || !apiKey.trim()) {
-      throw new Error('请先在设置中配置 DeepSeek API Key');
+      throw new Error(`请先在设置中配置 ${aiProviders[provider].name} API Key`);
     }
     const targetName = targetLanguage === 'zh' ? '中文' : '英文';
     const prompt = `${deepseekTranslationPrompt}\n\n目标语言：${targetName}`;
-    const translatedContent = await requestDeepSeekLayout(
+    const translatedContent = await requestAiLayout(
+      provider,
       apiKey,
       prompt,
       content,
@@ -2364,11 +2500,11 @@ ipcMain.on('show-editor-selection-context-menu', event => {
       submenu: [
         {
           label: '中文',
-          click: () => event.sender.send('ai-translate', 'zh')
+          click: () => event.sender.send('ai-translate-selection', 'zh')
         },
         {
           label: '英文',
-          click: () => event.sender.send('ai-translate', 'en')
+          click: () => event.sender.send('ai-translate-selection', 'en')
         }
       ]
     }

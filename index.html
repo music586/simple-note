@@ -14,7 +14,9 @@
     <div id="aiProgress" class="ai-progress" role="progressbar"
       aria-label="AI 优化排版预计进度" aria-valuemin="0" aria-valuemax="100"
       aria-valuenow="0" hidden>
-      <span id="aiProgressLabel" class="ai-progress-label">AI 优化排版 · 预计 0%</span>
+      <span id="aiProgressLabel" class="ai-progress-label">
+        AI 优化排版 · DeepSeek · 预计 0%
+      </span>
       <span class="ai-progress-track" aria-hidden="true">
         <span id="aiProgressBar" class="ai-progress-bar"></span>
       </span>
@@ -449,21 +451,49 @@
                 <strong>AI 设置</strong>
                 <span id="aiSettingsStatus" class="settings-status">未配置</span>
               </div>
-              <p>目前仅支持 DeepSeek，其他模型后续开放。</p>
+              <p>为每个平台独立保存密钥，并选择一个用于 AI 排版与翻译。</p>
             </div>
           </div>
-          <label class="settings-field-label" for="deepseekApiKey">DeepSeek API Key</label>
-          <div class="settings-api-key-row">
-            <input id="deepseekApiKey" class="settings-api-key-input" type="password"
-              placeholder="请输入 DeepSeek API Key" autocomplete="off" spellcheck="false">
+          <fieldset class="ai-provider-field">
+            <legend>服务平台</legend>
+            <div class="ai-provider-grid" role="radiogroup" aria-label="AI 服务平台">
+              <label class="ai-provider-option deepseek">
+                <input type="radio" name="aiProvider" value="deepseek" checked>
+                <span class="ai-provider-mark">D</span>
+                <span><strong>DeepSeek</strong><small data-provider-status="deepseek">未配置</small></span>
+                <span class="ai-provider-check" aria-hidden="true"></span>
+              </label>
+              <label class="ai-provider-option mimo">
+                <input type="radio" name="aiProvider" value="mimo">
+                <span class="ai-provider-mark">M</span>
+                <span><strong>MiMo</strong><small data-provider-status="mimo">未配置</small></span>
+                <span class="ai-provider-check" aria-hidden="true"></span>
+              </label>
+              <label class="ai-provider-option hunyuan">
+                <input type="radio" name="aiProvider" value="hunyuan">
+                <span class="ai-provider-mark">混</span>
+                <span><strong>腾讯混元</strong><small data-provider-status="hunyuan">未配置</small></span>
+                <span class="ai-provider-check" aria-hidden="true"></span>
+              </label>
+            </div>
+          </fieldset>
+          <div class="ai-provider-credentials">
+            <label class="settings-field-label" for="aiProviderApiKey">
+              <span id="aiProviderKeyLabel">DeepSeek API Key</span>
+            </label>
+            <div class="settings-api-key-row">
+              <input id="aiProviderApiKey" class="settings-api-key-input" type="password"
+                placeholder="请输入 DeepSeek API Key" autocomplete="off" spellcheck="false">
+            </div>
           </div>
-          <p class="settings-field-hint">API Key 仅保存在当前设备的本地配置中。</p>
+          <p id="aiKeyTestResult" class="ai-key-test-result" role="status" aria-live="polite"></p>
+          <p class="settings-field-hint">各平台 API Key 独立保存在当前设备，不会写入笔记。</p>
           <label class="settings-field-label" for="deepseekLayoutPrompt">优化排版提示词</label>
           <textarea id="deepseekLayoutPrompt" class="settings-prompt-input" rows="3"
             placeholder="请输入与笔记正文组合提交的提示词" spellcheck="false"></textarea>
           <p class="settings-field-hint">调用时将在提示词后附加当前笔记的全部内容。</p>
           <div class="settings-card-actions">
-            <button id="deepseekApiKeySave" class="btn" type="button">保存设置</button>
+            <button id="aiSettingsSave" class="btn" type="button">保存并启用</button>
           </div>
           <div class="settings-stamp-section">
             <fieldset class="settings-stamp-field">

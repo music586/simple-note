@@ -6,6 +6,8 @@ const { ipcRenderer, clipboard } = require('electron');
 const { marked } = require('marked');
 const hljs = require('highlight.js');
 const katex = require('katex');
+const TurndownService = require('turndown');
+const { gfm } = require('turndown-plugin-gfm');
 const CodeMirror = require('./codemirror6-adapter');
 const { EditorPanePersistence } = require('./editor-pane-persistence');
 const { configureMarkdownDialect } = require('./markdown-dialect');
@@ -48,6 +50,8 @@ const {
 const {
   normalizeClipboardText,
   joinClipboardTextAndImages,
+  normalizeClipboardMarkdown,
+  joinClipboardStructuredContent,
   removeGeneratedBoundaryNewlines,
   shouldConvertClipboardHtml,
   isMarkdownDocumentText,
@@ -877,7 +881,11 @@ async function openRenderedMarkdownLink(href, note) {
     await ipcRenderer.invoke('open-external-url', externalUrl);
     return;
   }
-  if (!note || /^(?:[a-z]+:|#)/i.test(target)) return;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(target)) {
+    await ipcRenderer.invoke('open-application-url', target);
+    return;
+  }
+  if (!note || target.startsWith('#')) return;
 
   const result = await ipcRenderer.invoke('open-relative-link', {
     sourceNotePath: note.path,
@@ -1246,11 +1254,22 @@ editorRight.codeMirror.on('viewportChange', () => {
   scheduleViewportEditorDecorations(editorRight, () => currentNoteRight);
 });
 
+let pendingAiContextSelection = null;
+
 function bindEditorSelectionContextMenu(editorAdapter) {
   editorAdapter.codeMirror.getWrapperElement().addEventListener('contextmenu', event => {
     if (!editorAdapter.codeMirror.somethingSelected()) return;
     event.preventDefault();
     lastActiveEditor = editorAdapter;
+    pendingAiContextSelection = {
+      editor: editorAdapter,
+      start: editorAdapter.selectionStart,
+      end: editorAdapter.selectionEnd,
+      content: editorAdapter.value.slice(
+        editorAdapter.selectionStart,
+        editorAdapter.selectionEnd
+      )
+    };
     ipcRenderer.send('show-editor-selection-context-menu');
   });
 }
@@ -1896,10 +1915,15 @@ const hiddenDirectoryList = document.getElementById('hiddenDirectoryList');
 const hiddenDirectoryEmpty = document.getElementById('hiddenDirectoryEmpty');
 const hiddenDirectoryCount = document.getElementById('hiddenDirectoryCount');
 const hiddenDirectoryAdd = document.getElementById('hiddenDirectoryAdd');
-const deepseekApiKey = document.getElementById('deepseekApiKey');
+const aiProviderApiKey = document.getElementById('aiProviderApiKey');
+const aiProviderKeyLabel = document.getElementById('aiProviderKeyLabel');
+const aiProviderInputs = Array.from(document.querySelectorAll('input[name="aiProvider"]'));
 const deepseekLayoutPrompt = document.getElementById('deepseekLayoutPrompt');
-const deepseekApiKeySave = document.getElementById('deepseekApiKeySave');
+const aiSettingsSave = document.getElementById('aiSettingsSave');
 const aiSettingsStatus = document.getElementById('aiSettingsStatus');
+const aiKeyTestResult = document.getElementById('aiKeyTestResult');
+let aiProviderKeys = {};
+let selectedAiProvider = 'deepseek';
 const aiStampPositionInputs = Array.from(
   document.querySelectorAll('input[name="aiStampPosition"]')
 );
@@ -1935,6 +1959,8 @@ let aiLayoutBusy = false;
 let aiProgressTimer = null;
 let aiProgressHideTimer = null;
 let aiProgressAction = 'AI 优化排版';
+const aiProviderNames = { deepseek: 'DeepSeek', mimo: 'MiMo', hunyuan: '腾讯混元' };
+let activeAiProviderName = 'DeepSeek';
 let aiStampRequestId = 0;
 let outlineEnabled = localStorage.getItem('outline-enabled') !== 'false';
 let outlineCollapsed = localStorage.getItem('outline-collapsed') === 'true';
@@ -2013,7 +2039,9 @@ window.addEventListener('resize', () => {
   [documentOutline, documentOutlineRight].forEach(syncDocumentOutlineWindowSpacing);
 });
 ipcRenderer.invoke('get-ai-settings').then(result => {
-  if (result.success) applyAiStampPosition(result.stampPosition);
+  if (!result.success) return;
+  applyAiStampPosition(result.stampPosition);
+  activeAiProviderName = aiProviderNames[result.provider] || 'DeepSeek';
 });
 
 function showModal(title, placeholder, defaultValue, callback) {
@@ -2147,10 +2175,38 @@ function renderHiddenDirectorySettings(directories) {
 }
 
 function renderAiSettings(data) {
-  deepseekApiKey.value = data.apiKey || '';
+  aiProviderKeys = { ...data.apiKeys };
+  if (!aiProviderKeys.deepseek && data.apiKey) aiProviderKeys.deepseek = data.apiKey;
+  const provider = ['deepseek', 'mimo', 'hunyuan'].includes(data.provider)
+    ? data.provider
+    : 'deepseek';
+  if (data.provider) activeAiProviderName = aiProviderNames[provider];
+  aiProviderInputs.forEach(input => { input.checked = input.value === provider; });
+  selectedAiProvider = provider;
+  renderActiveAiProvider(provider);
   deepseekLayoutPrompt.value = data.layoutPrompt || '';
-  aiSettingsStatus.textContent = data.apiKey ? '已配置' : '未配置';
+  updateAiProviderStatuses(provider);
   applyAiStampPosition(data.stampPosition);
+}
+
+function renderActiveAiProvider(provider) {
+  aiProviderKeyLabel.textContent = `${aiProviderNames[provider]} API Key`;
+  aiProviderApiKey.placeholder = `请输入 ${aiProviderNames[provider]} API Key`;
+  aiProviderApiKey.value = aiProviderKeys[provider] || '';
+  renderAiKeyTestResult('', '');
+}
+
+function renderAiKeyTestResult(message, state) {
+  aiKeyTestResult.textContent = message;
+  aiKeyTestResult.dataset.state = state;
+}
+
+function updateAiProviderStatuses(activeProvider) {
+  document.querySelectorAll('[data-provider-status]').forEach(status => {
+    const configured = Boolean(aiProviderKeys[status.dataset.providerStatus]);
+    status.textContent = configured ? '已配置' : '未配置';
+  });
+  aiSettingsStatus.textContent = aiProviderKeys[activeProvider] ? '已启用' : '待配置';
 }
 
 function applyAiStampPosition(position) {
@@ -2199,9 +2255,10 @@ function setSettingsBusy(busy) {
       button.disabled = !input || input.value.trim() === input.dataset.originalValue;
     });
   }
-  deepseekApiKey.disabled = busy;
+  aiProviderApiKey.disabled = busy;
+  aiProviderInputs.forEach(input => { input.disabled = busy; });
   deepseekLayoutPrompt.disabled = busy;
-  deepseekApiKeySave.disabled = busy;
+  aiSettingsSave.disabled = busy;
   aiStampPositionInputs.forEach(input => {
     input.disabled = busy;
   });
@@ -2310,7 +2367,8 @@ function normalizeAiMarkdownResponse(content) {
 function setAiProgress(value) {
   const normalizedValue = Math.max(0, Math.min(100, Math.round(value)));
   aiProgress.setAttribute('aria-valuenow', String(normalizedValue));
-  aiProgressLabel.textContent = `${aiProgressAction} · 预计 ${normalizedValue}%`;
+  aiProgressLabel.textContent = `${aiProgressAction} · ${activeAiProviderName}`
+    + ` · 预计 ${normalizedValue}%`;
   aiProgressBar.style.width = `${normalizedValue}%`;
 }
 
@@ -2433,23 +2491,27 @@ async function optimizeActiveNoteLayout(options = {}) {
   }
 }
 
-async function translateActiveNote(targetLanguage) {
+async function translateActiveNote(targetLanguage, selectionContext = null) {
   if (aiLayoutBusy) {
     showConfirm('AI 正在处理', '请等待当前 AI 操作完成。', () => {});
     return;
   }
   if (!['zh', 'en'].includes(targetLanguage)) return;
-  const targetEditor = lastActiveEditor === editorRight ? editorRight : editor;
+  const targetEditor = selectionContext?.editor
+    || (lastActiveEditor === editorRight ? editorRight : editor);
   const targetNote = targetEditor === editorRight ? currentNoteRight : currentNote;
   if (!targetNote) {
     showConfirm('无法翻译', '请先选择一篇笔记。', () => {});
     return;
   }
-  const selectionStart = targetEditor.selectionStart;
-  const selectionEnd = targetEditor.selectionEnd;
-  const selectionOnly = selectionEnd > selectionStart;
+  const selectionStart = selectionContext?.start ?? targetEditor.selectionStart;
+  const selectionEnd = selectionContext?.end ?? targetEditor.selectionEnd;
+  const selectionOnly = selectionContext
+    ? selectionEnd > selectionStart && selectionContext.content.length > 0
+    : selectionEnd > selectionStart;
   const originalContent = selectionOnly
-    ? targetEditor.value.slice(selectionStart, selectionEnd)
+    ? selectionContext?.content
+      || targetEditor.value.slice(selectionStart, selectionEnd)
     : targetEditor.value;
   if (!originalContent.trim()) {
     showConfirm('无法翻译', '当前笔记没有可翻译的内容。', () => {});
@@ -3641,6 +3703,21 @@ function getCachedCodeHighlight(code, requestedLanguage, cache) {
   return result;
 }
 
+function focusCodeWidgetWithoutScroll(widget, target, focus) {
+  const scroller = widget.closest('.cm-scroller');
+  const scrollTop = scroller?.scrollTop || 0;
+  const scrollLeft = scroller?.scrollLeft || 0;
+  const restoreScroll = () => {
+    if (!scroller?.isConnected) return;
+    scroller.scrollTop = scrollTop;
+    scroller.scrollLeft = scrollLeft;
+  };
+  target.focus({ preventScroll: true });
+  focus();
+  restoreScroll();
+  requestAnimationFrame(restoreScroll);
+}
+
 function createEditorCodeWidget(code, requestedLanguage, onCommit, highlightCache) {
   const widget = document.createElement('span');
   widget.className = 'cm-code-widget';
@@ -3658,8 +3735,9 @@ function createEditorCodeWidget(code, requestedLanguage, onCommit, highlightCach
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    codeElement.focus();
-    placeCaretInTableCell(codeElement, event.clientX, event.clientY);
+    focusCodeWidgetWithoutScroll(widget, codeElement, () => {
+      placeCaretInTableCell(codeElement, event.clientX, event.clientY);
+    });
   });
   codeElement.addEventListener('click', event => event.stopPropagation());
   pre.appendChild(codeElement);
@@ -4022,7 +4100,9 @@ function renderEditorDecorations(editorAdapter, note) {
   function createEditorLinkWidget(label, href) {
     const link = document.createElement('span');
     const external = /^(?:https?:)?\/\//i.test(href);
-    link.className = `cm-rendered-link ${external ? 'is-external' : 'is-relative'}`;
+    const application = !external && /^[a-z][a-z0-9+.-]*:/i.test(href);
+    const linkType = external ? 'is-external' : application ? 'is-application' : 'is-relative';
+    link.className = `cm-rendered-link ${linkType}`;
     link.textContent = label;
     link.title = href;
     link.tabIndex = 0;
@@ -4172,7 +4252,7 @@ function renderEditorDecorations(editorAdapter, note) {
       widget.addEventListener('mousedown', event => {
         if (event.target.closest('code')) return;
         event.preventDefault();
-        widget.focus();
+        focusCodeWidgetWithoutScroll(widget, widget, () => {});
       });
       const visibleStart = Math.max(block.start, firstLine);
       const visibleEnd = Math.min(block.end, lastLine - 1);
@@ -4693,7 +4773,69 @@ function getClipboardEditorCode(event, html, text) {
   return '';
 }
 
+function promoteClipboardInlineStyles(documentNode) {
+  documentNode.querySelectorAll('[style]').forEach(node => {
+    const style = node.getAttribute('style') || '';
+    const wrappers = [];
+    if (/font-weight\s*:\s*(?:bold|[6-9]00)/i.test(style)) wrappers.push('strong');
+    if (/font-style\s*:\s*italic/i.test(style)) wrappers.push('em');
+    if (/text-decoration(?:-line)?\s*:[^;]*line-through/i.test(style)) wrappers.push('del');
+    if (/background(?:-color)?\s*:\s*(?!transparent|none)[^;]+/i.test(style)) {
+      wrappers.push('mark');
+    }
+    wrappers.forEach(tag => {
+      const wrapper = documentNode.createElement(tag);
+      while (node.firstChild) wrapper.appendChild(node.firstChild);
+      node.appendChild(wrapper);
+    });
+  });
+}
+
+function createClipboardTurndown(relativePaths) {
+  let imageIndex = 0;
+  const service = new TurndownService({
+    headingStyle: 'atx',
+    bulletListMarker: '-',
+    codeBlockStyle: 'fenced',
+    fence: '```',
+    emDelimiter: '*',
+    strongDelimiter: '**',
+    linkStyle: 'inlined'
+  });
+  service.use(gfm);
+  service.addRule('local-images', {
+    filter: 'img',
+    replacement(content, node) {
+      const relativePath = relativePaths[imageIndex++];
+      if (!relativePath) return '';
+      const alt = String(node.getAttribute('alt') || '图片')
+        .replace(/[\[\]]/g, '\\$&');
+      return `\n\n![${alt}](${relativePath})\n\n`;
+    }
+  });
+  service.addRule('highlight', {
+    filter: 'mark',
+    replacement(content) {
+      return content.trim() ? `==${content}==` : content;
+    }
+  });
+  service.remove(['script', 'style', 'meta', 'link', 'noscript', 'template']);
+  return service;
+}
+
 function clipboardHtmlToMarkdown(html, relativePaths) {
+  if (!html) return '';
+  try {
+    const documentNode = new DOMParser().parseFromString(html, 'text/html');
+    promoteClipboardInlineStyles(documentNode);
+    const service = createClipboardTurndown(relativePaths);
+    return normalizeClipboardMarkdown(service.turndown(documentNode.body));
+  } catch (error) {
+    return clipboardHtmlToMarkdownLegacy(html, relativePaths);
+  }
+}
+
+function clipboardHtmlToMarkdownLegacy(html, relativePaths) {
   if (!html) return '';
   const documentNode = new DOMParser().parseFromString(html, 'text/html');
   documentNode.querySelectorAll('script, style, meta, link').forEach(node => node.remove());
@@ -4761,7 +4903,7 @@ function clipboardHtmlToMarkdown(html, relativePaths) {
     return content;
   }
 
-  return removeGeneratedBoundaryNewlines(convert(documentNode.body));
+  return normalizeClipboardMarkdown(convert(documentNode.body));
 }
 
 function clipboardHtmlToFormattedText(html, text) {
@@ -4845,21 +4987,19 @@ async function pasteImages(event, editorElement, getCurrentNote) {
       return;
     }
     const editorCode = getClipboardEditorCode(event, htmlSource, text);
-    const htmlBlock = /<(?:table|pre)[\s>]/i.test(htmlSource)
+    const htmlMarkdown = shouldConvertClipboardHtml(htmlSource)
       ? clipboardHtmlToMarkdown(htmlSource, [])
       : '';
-    const formattedText = shouldConvertClipboardHtml(htmlSource)
-      ? clipboardHtmlToFormattedText(htmlSource, text)
-      : text;
-    const optimizedText = optimizeClipboardPlainText(formattedText);
+    const optimizedText = optimizeClipboardPlainText(text);
     const textTable = clipboardTextTableToMarkdown(text);
-    const structuredContent = htmlBlock || editorCode || textTable;
+    const structuredContent = editorCode || htmlMarkdown || textTable;
     if (structuredContent) {
-      const needsLeadingBreak = start > 0 && editorElement.value[start - 1] !== '\n';
-      const needsTrailingBreak = end < editorElement.value.length
-        && editorElement.value[end] !== '\n';
-      pastedContent = `${needsLeadingBreak ? '\n\n' : ''}${structuredContent}`
-        + `${needsTrailingBreak ? '\n\n' : ''}`;
+      pastedContent = joinClipboardStructuredContent(
+        editorElement.value,
+        start,
+        end,
+        structuredContent
+      );
     } else {
       pastedContent = optimizedText;
     }
@@ -5858,30 +5998,56 @@ hiddenDirectoryAdd.addEventListener('click', async () => {
     setSettingsBusy(false);
   }
 });
-deepseekApiKeySave.addEventListener('click', async () => {
+aiProviderInputs.forEach(input => {
+  input.addEventListener('change', () => {
+    if (!input.checked) return;
+    aiProviderKeys[selectedAiProvider] = aiProviderApiKey.value.trim();
+    selectedAiProvider = input.value;
+    renderActiveAiProvider(input.value);
+    updateAiProviderStatuses(input.value);
+  });
+});
+aiSettingsSave.addEventListener('click', async () => {
   if (settingsBusy) return;
   settingsError.textContent = '';
   setSettingsBusy(true);
   try {
+    const provider = aiProviderInputs.find(input => input.checked)?.value || 'deepseek';
+    const normalizedApiKey = aiProviderApiKey.value.trim();
+    if (normalizedApiKey && normalizedApiKey !== (aiProviderKeys[provider] || '')) {
+      renderAiKeyTestResult('正在使用 1 个输出 Token 验证密钥…', 'testing');
+      const testResult = await ipcRenderer.invoke('test-ai-api-key', {
+        provider,
+        apiKey: normalizedApiKey
+      });
+      if (!testResult.success) {
+        renderAiKeyTestResult(`验证失败 · ${testResult.error}`, 'error');
+        return;
+      }
+      renderAiKeyTestResult(`${testResult.providerName} · API Key 有效`, 'success');
+    }
     const result = await ipcRenderer.invoke('set-ai-settings', {
-      apiKey: deepseekApiKey.value,
+      provider,
+      apiKey: aiProviderApiKey.value,
       layoutPrompt: deepseekLayoutPrompt.value
     });
     if (!result.success) {
       settingsError.textContent = getSettingsErrorMessage('保存 API Key 失败', result.error);
       return;
     }
-    deepseekApiKey.value = deepseekApiKey.value.trim();
+    aiProviderKeys[provider] = aiProviderApiKey.value.trim();
+    activeAiProviderName = aiProviderNames[provider];
+    aiProviderApiKey.value = aiProviderKeys[provider];
     deepseekLayoutPrompt.value = result.layoutPrompt;
-    aiSettingsStatus.textContent = result.configured ? '已配置' : '未配置';
+    updateAiProviderStatuses(provider);
   } catch (error) {
     settingsError.textContent = getSettingsErrorMessage('保存 API Key 失败', error);
   } finally {
     setSettingsBusy(false);
   }
 });
-deepseekApiKey.addEventListener('keydown', event => {
-  if (event.key === 'Enter') deepseekApiKeySave.click();
+aiProviderApiKey.addEventListener('keydown', event => {
+  if (event.key === 'Enter') aiSettingsSave.click();
 });
 aiStampPositionInputs.forEach(input => {
   input.addEventListener('change', async () => {
@@ -6105,6 +6271,12 @@ ipcRenderer.on('ai-optimize-layout-selection', () => {
 });
 ipcRenderer.on('ai-translate', (event, targetLanguage) => {
   translateActiveNote(targetLanguage);
+});
+ipcRenderer.on('ai-translate-selection', (event, targetLanguage) => {
+  const selection = pendingAiContextSelection;
+  pendingAiContextSelection = null;
+  if (!selection) return;
+  translateActiveNote(targetLanguage, selection);
 });
 ipcRenderer.on('notes-tree-changed', scheduleTreeRefresh);
 window.addEventListener('focus', scheduleTreeRefresh);

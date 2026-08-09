@@ -5,7 +5,7 @@ const path = require('node:path');
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 
-test('main process persists DeepSeek API Key through validated IPC handlers', () => {
+test('main process persists independent provider API Keys through validated IPC handlers', () => {
   assert.match(
     main,
     /const defaultDeepseekLayoutPrompt = '保证原文的内容，不要随意串改，优化下面的正文排版，'[\s\S]*'使用markdown 标签优化展示，和层级结构'/
@@ -13,8 +13,10 @@ test('main process persists DeepSeek API Key through validated IPC handlers', ()
   assert.match(main, /ipcMain\.handle\('get-ai-settings'/);
   assert.match(main, /ipcMain\.handle\('set-ai-settings'/);
   assert.match(main, /typeof apiKey !== 'string'/);
-  assert.match(main, /config\.deepseekApiKey = normalizedApiKey/);
-  assert.match(main, /delete config\.deepseekApiKey/);
+  assert.match(main, /const keyName = `\$\{provider\}ApiKey`/);
+  assert.match(main, /config\[keyName\] = normalizedApiKey/);
+  assert.match(main, /delete config\[keyName\]/);
+  assert.match(main, /config\.aiProvider = provider/);
   assert.match(main, /config\.deepseekLayoutPrompt = normalizedLayoutPrompt/);
   assert.match(main, /ipcMain\.handle\('set-ai-stamp-position'/);
   assert.match(main, /config\.aiStampPosition = stampPosition/);
@@ -28,10 +30,21 @@ test('AI menu requests DeepSeek layout optimization for the active window', () =
   );
   assert.match(main, /ipcMain\.handle\('deepseek-optimize-layout'/);
   assert.match(main, /hostname: 'api\.deepseek\.com'/);
+  assert.match(main, /hostname: 'api\.deepseek\.com',[\s\S]*path: '\/chat\/completions'/);
+  assert.match(main, /hostname: 'api\.xiaomimimo\.com'/);
+  assert.match(main, /hostname: 'api\.xiaomimimo\.com',[\s\S]*path: '\/v1\/chat\/completions'/);
+  assert.match(main, /model: 'mimo-v2\.5-pro'/);
+  assert.match(main, /hostname: 'api\.hunyuan\.cloud\.tencent\.com'/);
+  assert.match(
+    main,
+    /hostname: 'api\.hunyuan\.cloud\.tencent\.com',[\s\S]*path: '\/v1\/chat\/completions'/
+  );
+  assert.match(main, /model: 'hunyuan-turbos-latest'/);
   assert.match(main, /path: '\/chat\/completions'/);
   assert.match(main, /model: 'deepseek-v4-flash'/);
   assert.match(main, /content: `\$\{prompt\}\\n\\n\$\{content\}`/);
   assert.match(main, /Authorization: `Bearer \$\{apiKey\}`/);
+  assert.equal((main.match(/path: provider\.path/g) || []).length, 2);
 });
 
 test('AI menu translates the active editor content to Chinese or English', () => {
@@ -46,4 +59,12 @@ test('AI menu translates the active editor content to Chinese or English', () =>
   assert.match(main, /ipcMain\.handle\('deepseek-translate'/);
   assert.match(main, /请将以下内容在中文和英文之间进行翻译/);
   assert.match(main, /请直接输出翻译结果，不需要解释翻译过程/);
+});
+
+test('new AI API Keys are tested with one output token before saving', () => {
+  assert.match(main, /ipcMain\.handle\('test-ai-api-key'/);
+  assert.match(main, /max_completion_tokens: 1/);
+  assert.match(main, /max_tokens: 1/);
+  assert.match(main, /await testAiApiKey\(provider, normalizedApiKey\)/);
+  assert.doesNotMatch(main, /console\.(?:log|info|debug)\([^)]*testAiApiKey/);
 });

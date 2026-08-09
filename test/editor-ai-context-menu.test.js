@@ -27,8 +27,10 @@ test('selected editor text exposes Chinese and English AI translation actions', 
     main,
     /show-editor-selection-context-menu'[\s\S]*label: 'AI 翻译'[\s\S]*label: '英文'/
   );
-  assert.match(main, /event\.sender\.send\('ai-translate', 'zh'\)/);
-  assert.match(main, /event\.sender\.send\('ai-translate', 'en'\)/);
+  assert.match(main, /event\.sender\.send\('ai-translate-selection', 'zh'\)/);
+  assert.match(main, /event\.sender\.send\('ai-translate-selection', 'en'\)/);
+  assert.match(renderer, /pendingAiContextSelection = \{/);
+  assert.match(renderer, /ipcRenderer\.on\('ai-translate-selection'/);
 });
 
 test('context AI layout replaces only the unchanged selected range', () => {

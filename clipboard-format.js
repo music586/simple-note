@@ -13,6 +13,56 @@ function joinClipboardTextAndImages(text, imageMarkdown) {
   return `${normalizedText}${separator}${imageMarkdown}`;
 }
 
+function normalizeClipboardMarkdown(value) {
+  const lines = normalizeClipboardText(value).split('\n');
+  const normalizedLines = [];
+  let fence = null;
+  let hasPendingBlankLine = false;
+
+  lines.forEach(line => {
+    const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (fence) {
+      normalizedLines.push(line);
+      if (
+        fenceMatch
+        && fenceMatch[1][0] === fence.marker
+        && fenceMatch[1].length >= fence.length
+      ) {
+        fence = null;
+      }
+      return;
+    }
+
+    const isPlaceholderLine = !line.replace(/[ \t\u00a0\u200b\u3000]/g, '');
+    if (isPlaceholderLine) {
+      if (normalizedLines.length) hasPendingBlankLine = true;
+      return;
+    }
+
+    if (hasPendingBlankLine) normalizedLines.push('');
+    hasPendingBlankLine = false;
+    normalizedLines.push(line);
+
+    if (fenceMatch) {
+      fence = { marker: fenceMatch[1][0], length: fenceMatch[1].length };
+    }
+  });
+
+  return normalizedLines.join('\n');
+}
+
+function joinClipboardStructuredContent(documentText, start, end, content) {
+  const before = String(documentText || '').slice(0, start);
+  const after = String(documentText || '').slice(end);
+  const leadingBreak = !before
+    ? ''
+    : before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+  const trailingBreak = !after
+    ? ''
+    : after.startsWith('\n\n') ? '' : after.startsWith('\n') ? '\n' : '\n\n';
+  return `${leadingBreak}${content}${trailingBreak}`;
+}
+
 function removeGeneratedBoundaryNewlines(value) {
   let result = normalizeClipboardText(value);
   if (result.startsWith('\n')) result = result.slice(1);
@@ -85,6 +135,8 @@ function optimizeClipboardPlainText(text) {
 module.exports = {
   normalizeClipboardText,
   joinClipboardTextAndImages,
+  normalizeClipboardMarkdown,
+  joinClipboardStructuredContent,
   removeGeneratedBoundaryNewlines,
   shouldConvertClipboardHtml,
   isMarkdownDocumentText,

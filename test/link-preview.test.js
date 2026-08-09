@@ -6,11 +6,12 @@ const { marked } = require('marked');
 
 const { normalizePreviewMarkdown } = require('../preview-markdown');
 
-test('editor pre-renders external and relative links with distinct indicators', () => {
+test('editor pre-renders web, application and relative links with distinct indicators', () => {
   const styles = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
 
   assert.match(styles, /\.cm-rendered-link\.is-external::after\s*\{[^}]*content: '↗'/s);
+  assert.match(styles, /\.cm-rendered-link\.is-application::after\s*\{[^}]*content: '◇'/s);
   assert.match(styles, /\.cm-rendered-link\.is-relative::after\s*\{[^}]*content: '›'/s);
   assert.match(renderer, /function createEditorLinkWidget\(label, href\)/);
   assert.match(renderer, /const link = createEditorLinkWidget\('', match\[2\]\)/);
@@ -43,9 +44,15 @@ test('preview links route external and relative targets without navigating the a
   assert.match(renderer, /function openRenderedMarkdownLink\(href, note\)/);
   assert.match(renderer, /link\.getAttribute\('href'\)/);
   assert.match(renderer, /ipcRenderer\.invoke\('open-relative-link'/);
+  assert.match(renderer, /ipcRenderer\.invoke\('open-application-url'/);
   assert.match(main, /ipcMain\.handle\('open-external-url'/);
+  assert.match(main, /ipcMain\.handle\('open-application-url'/);
   assert.match(main, /ipcMain\.handle\('open-relative-link'/);
   assert.match(main, /相对链接不能指向笔记库外部/);
   assert.match(main, /url\.protocol !== 'http:' && url\.protocol !== 'https:'/);
   assert.match(main, /shell\.openExternal\(url\.href\)/);
+  assert.match(
+    main,
+    /\['http:', 'https:', 'file:', 'javascript:', 'data:'\]\.includes\(url\.protocol\)/
+  );
 });

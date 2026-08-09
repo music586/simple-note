@@ -48,3 +48,14 @@ test('selecting a language focuses the editable content inside the rendered code
   assert.ok(applySelection);
   assert.doesNotMatch(applySelection[1], /codeMirror\.focus\(\)/);
 });
+
+test('clicking a rendered code block preserves the editor scroll position', () => {
+  assert.match(renderer, /function focusCodeWidgetWithoutScroll\(widget, target, focus\)/);
+  assert.match(renderer, /target\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(renderer, /scroller\.scrollTop = scrollTop/);
+  assert.match(renderer, /requestAnimationFrame\(restoreScroll\)/);
+  assert.match(
+    renderer,
+    /focusCodeWidgetWithoutScroll\(widget, codeElement, \(\) => \{[\s\S]*placeCaretInTableCell/
+  );
+});
