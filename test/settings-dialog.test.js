@@ -110,6 +110,10 @@ test('settings dialog supports local multi-provider API Key configuration', () =
   assert.match(renderer, /ipcRenderer\.invoke\('test-ai-api-key'/);
   assert.match(renderer, /正在使用 1 个输出 Token 验证密钥/);
   assert.match(renderer, /API Key 有效/);
+  assert.match(
+    renderer,
+    /normalizedApiKey !== \(savedAiProviderKeys\[provider\] \|\| ''\)/
+  );
   assert.match(styles, /\.ai-key-test-result\[data-state='success'\]/);
   assert.match(styles, /\.settings-prompt-input\s*\{/);
   assert.match(html, /name="aiStampPosition" value="hidden"/);

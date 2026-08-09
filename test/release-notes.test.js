@@ -24,6 +24,8 @@ test('Help menu opens the update page in the system browser', () => {
 
 test('release notes contain one collapsible paragraph block per version', () => {
   const versions = [
+    '2.0.0',
+    '1.2.0',
     '1.1.5',
     '1.1.4',
     '1.1.3',
@@ -44,11 +46,14 @@ test('release notes contain one collapsible paragraph block per version', () => 
   });
   assert.match(renderer, /document\.createElement\('details'\)/);
   assert.match(renderer, /overview\.className = 'editor-release-overview'/);
+  assert.match(renderer, /overview\.textContent = release\.content \|\| paragraphs\[0\]/);
+  assert.match(renderer, /detailedParagraphs\.forEach\(\(text, index\) =>/);
   assert.match(renderer, /changes\.appendChild\(item\)/);
 });
 
 test('every release displays its published date inside the version content', () => {
   const dates = [
+    '2026-08-10',
     '2026-08-01',
     '2026-07-30',
     '2026-07-26',

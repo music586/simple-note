@@ -237,6 +237,41 @@ const aiProgressLabel = document.getElementById('aiProgressLabel');
 const aiProgressBar = document.getElementById('aiProgressBar');
 const releaseNotes = [
   {
+    version: '2.0.0',
+    date: '2026-08-10',
+    title: '全新编辑内核与工作区体验',
+    content: '升级至 CodeMirror 6，加入历史版本、快速打开、HTML 导出和多平台 AI，'
+      + '并系统优化表格编辑、目录管理、粘贴与多窗口工作区体验。',
+    paragraphs: [
+      '编辑器内核全面升级至 CodeMirror 6，重新实现撤销与重做、文档级编辑状态、行号、'
+        + '正文查找、标题折叠和视口预渲染。新增 YAML Front Matter、数学公式、Callout、'
+        + 'Wiki 链接等 Markdown 方言支持，并改善长文档滚动、光标定位和主题跟随。',
+      '新增独立的历史版本系统，可查看差异、固定和命名快照、复制或插入历史片段，也可恢复'
+        + '完整版本；支持配置保留数量与时间。新增快速打开、单文件 HTML 导出和更安全的路径'
+        + '校验，导出的长文档、表格、主题及本地图片都能保持阅读效果。',
+      '表格编辑体验重新整理：增行、增列、右键结构操作和粘贴不再覆盖尚未提交的输入；单元格'
+        + '支持鼠标选择，回车会移动到下一行，位于末行时自动新增一行。列宽优先根据内容保持'
+        + '整体不换行，空单元格保留合理最小宽度，宽表格可在编辑区内横向滚动。',
+      '每个窗口现在拥有独立笔记仓库、目录监听与会话状态，新窗口可选择自己的工作目录，'
+        + '重启后会恢复窗口、笔记和目录展开状态。左侧目录支持同级拖动排序并持久化位置，'
+        + '同时保留将项目拖入目录的能力；目录重命名、切换与空仓库启动流程也更稳定。',
+      'AI 设置扩展为 DeepSeek、小米 MiMo 和腾讯混元等多个平台，每个平台独立保存 API Key，'
+        + '新密钥会在保存前进行轻量验证。腾讯混元已切换至 TokenHub 的 Hy3 服务，并针对'
+        + '无效密钥、服务未开通和接口错误提供更明确的中文提示。',
+      '粘贴流程增强了 Markdown、富文本、代码块和多段内容识别，减少结构丢失和多余空行；'
+        + '新建笔记的保存队列与历史记录彼此隔离，避免跨文档写入。同步完善主题色、引用与列表'
+        + '样式、目录动画、应用退出清理，以及 macOS 分架构安装包的构建和发布检查。'
+    ],
+    highlights: [
+      'CodeMirror 6 与 Markdown 方言',
+      '历史版本与 HTML 导出',
+      '可靠的表格编辑',
+      '独立工作区与目录排序',
+      '多平台 AI 与混元 Hy3',
+      '粘贴、主题与稳定性'
+    ]
+  },
+  {
     version: '1.2.0',
     date: '2026-08-01',
     title: 'macOS 安装包兼容性修复',
@@ -513,13 +548,14 @@ function createReleaseDetails(release, featured = false) {
   releaseDate.textContent = `发布于 ${formatReleaseDate(release.date)}`;
   const overview = document.createElement('p');
   overview.className = 'editor-release-overview';
-  overview.textContent = paragraphs[0];
+  overview.textContent = release.content || paragraphs[0];
   body.append(releaseDate, overview);
 
-  if (paragraphs.length > 1) {
+  const detailedParagraphs = release.content ? paragraphs : paragraphs.slice(1);
+  if (detailedParagraphs.length > 0) {
     const changes = document.createElement('div');
     changes.className = 'editor-release-changes';
-    paragraphs.slice(1).forEach((text, index) => {
+    detailedParagraphs.forEach((text, index) => {
       const item = document.createElement('section');
       item.className = 'editor-release-change';
       const label = document.createElement('strong');
@@ -1093,6 +1129,8 @@ function scheduleEditorDecorations(editorAdapter, getNote) {
     editorAdapter.decorationFrame = null;
     if (editorAdapter.renderingDecorations) return;
     const codeMirror = editorAdapter.codeMirror;
+    const activeTable = document.activeElement?.closest?.('.cm-table-widget');
+    if (activeTable && codeMirror.getWrapperElement().contains(activeTable)) return;
     preserveEditorScrollPosition(codeMirror, () => {
       codeMirror.operation(() => {
         renderEditorDecorations(editorAdapter, getNote());
@@ -1923,6 +1961,7 @@ const aiSettingsSave = document.getElementById('aiSettingsSave');
 const aiSettingsStatus = document.getElementById('aiSettingsStatus');
 const aiKeyTestResult = document.getElementById('aiKeyTestResult');
 let aiProviderKeys = {};
+let savedAiProviderKeys = {};
 let selectedAiProvider = 'deepseek';
 const aiStampPositionInputs = Array.from(
   document.querySelectorAll('input[name="aiStampPosition"]')
@@ -2177,6 +2216,7 @@ function renderHiddenDirectorySettings(directories) {
 function renderAiSettings(data) {
   aiProviderKeys = { ...data.apiKeys };
   if (!aiProviderKeys.deepseek && data.apiKey) aiProviderKeys.deepseek = data.apiKey;
+  savedAiProviderKeys = { ...aiProviderKeys };
   const provider = ['deepseek', 'mimo', 'hunyuan'].includes(data.provider)
     ? data.provider
     : 'deepseek';
@@ -2801,6 +2841,14 @@ function expandFolderPath(folderPath, items = tree, ancestors = []) {
 }
 
 const animatingTreeFolders = new Set();
+const treeDropClasses = ['drag-over', 'drag-reorder-before', 'drag-reorder-after'];
+
+function clearTreeDropIndicators() {
+  document.querySelectorAll(`.${treeDropClasses.join(', .')}`).forEach(element => {
+    element.classList.remove(...treeDropClasses);
+    delete element.dataset.dropPlacement;
+  });
+}
 
 function findTreeFolderElement(folderPath) {
   return [...notesList.querySelectorAll('.tree-folder')]
@@ -2892,7 +2940,12 @@ function createFolderElement(folder, level) {
   });
   
   folderEl.addEventListener('dragstart', (e) => {
-    draggedItem = { type: 'folder', path: folder.path, name: folder.name };
+    draggedItem = {
+      type: 'folder',
+      path: folder.path,
+      parentPath: path.dirname(folder.path),
+      name: folder.name
+    };
     folderEl.classList.add('dragging');
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', folder.path);
@@ -2901,28 +2954,47 @@ function createFolderElement(folder, level) {
   folderEl.addEventListener('dragend', () => {
     folderEl.classList.remove('dragging');
     draggedItem = null;
-    document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    clearTreeDropIndicators();
   });
   
   folderEl.addEventListener('dragover', (e) => {
     e.preventDefault();
+    e.stopPropagation();
     if (draggedItem && draggedItem.path !== folder.path) {
-      folderEl.classList.add('drag-over');
+      clearTreeDropIndicators();
+      const isSiblingFolder = draggedItem.type === 'folder'
+        && draggedItem.parentPath === path.dirname(folder.path);
+      const relativeY = (e.clientY - folderEl.getBoundingClientRect().top)
+        / folderEl.offsetHeight;
+      const placement = isSiblingFolder && relativeY < 0.34
+        ? 'before'
+        : isSiblingFolder && relativeY > 0.66
+          ? 'after'
+          : 'inside';
+      folderEl.dataset.dropPlacement = placement;
+      folderEl.classList.add(placement === 'inside' ? 'drag-over' : `drag-reorder-${placement}`);
       e.dataTransfer.dropEffect = 'move';
     }
   });
   
-  folderEl.addEventListener('dragleave', () => {
-    folderEl.classList.remove('drag-over');
+  folderEl.addEventListener('dragleave', (e) => {
+    e.stopPropagation();
+    folderEl.classList.remove(...treeDropClasses);
+    delete folderEl.dataset.dropPlacement;
   });
   
   folderEl.addEventListener('drop', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    folderEl.classList.remove('drag-over');
+    const placement = folderEl.dataset.dropPlacement || 'inside';
+    clearTreeDropIndicators();
     
     if (draggedItem && draggedItem.path !== folder.path) {
-      moveItem(draggedItem, folder.path);
+      if (placement === 'before' || placement === 'after') {
+        reorderFolder(draggedItem.path, folder.path, placement);
+      } else {
+        moveItem(draggedItem, folder.path);
+      }
     }
   });
   
@@ -3509,6 +3581,14 @@ function createEditorTableWidget(
   const viewport = document.createElement('span');
   viewport.className = 'cm-table-viewport';
   const table = document.createElement('table');
+  const getCurrentRows = () => Array.from(table.rows).map(tableRow => {
+    return Array.from(tableRow.cells).map(cell => {
+      return (cell.innerText || cell.textContent || '')
+        .replace(/\r\n?/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    });
+  });
 
   rows.forEach((row, rowIndex) => {
     const section = rowIndex === 0 ? table.createTHead() : table.tBodies[0] || table.createTBody();
@@ -3523,10 +3603,7 @@ function createEditorTableWidget(
       cell.style.textAlign = alignments[columnIndex] || 'left';
       cell.addEventListener('mousedown', event => {
         if (event.button !== 0) return;
-        event.preventDefault();
         event.stopPropagation();
-        cell.focus();
-        placeCaretInTableCell(cell, event.clientX, event.clientY);
       });
       cell.addEventListener('click', event => {
         event.stopPropagation();
@@ -3539,12 +3616,21 @@ function createEditorTableWidget(
           cell.blur();
           return;
         }
-        insertTableCellLineBreak(cell);
+        if (event.shiftKey) {
+          insertTableCellLineBreak(cell);
+          return;
+        }
+        const nextRow = table.rows[rowIndex + 1];
+        if (nextRow) {
+          focusEditableAtStart(nextRow.cells[columnIndex]);
+          return;
+        }
+        onAddRow(getCurrentRows(), columnIndex);
       });
       cell.addEventListener('contextmenu', event => {
         event.preventDefault();
         event.stopPropagation();
-        onContextMenu(rowIndex, columnIndex);
+        onContextMenu(rowIndex, columnIndex, getCurrentRows());
       });
       tableRow.appendChild(cell);
     });
@@ -3566,13 +3652,13 @@ function createEditorTableWidget(
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    onAddColumn();
+    onAddColumn(getCurrentRows());
   });
   addColumnButton.addEventListener('click', event => {
     if (event.detail !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    onAddColumn();
+    onAddColumn(getCurrentRows());
   });
 
   const addRowButton = document.createElement('button');
@@ -3594,13 +3680,13 @@ function createEditorTableWidget(
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    onAddRow();
+    onAddRow(getCurrentRows());
   });
   addRowButton.addEventListener('click', event => {
     if (event.detail !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    onAddRow();
+    onAddRow(getCurrentRows());
   });
 
   viewport.appendChild(table);
@@ -3628,18 +3714,19 @@ function createEditorTableWidget(
   widget.addEventListener('mouseleave', () => {
     widget.classList.remove('show-add-column', 'show-add-row');
   });
-  widget.addEventListener('focusout', () => {
+  widget.commitEdits = () => {
+    const nextRows = getCurrentRows();
+    if (JSON.stringify(nextRows) === JSON.stringify(rows)) return false;
+    return onCommit(nextRows);
+  };
+  widget.addEventListener('focusout', event => {
+    if (event.relatedTarget && !widget.contains(event.relatedTarget)) {
+      widget.commitEdits();
+      return;
+    }
     setTimeout(() => {
       if (!widget.isConnected || widget.contains(document.activeElement)) return;
-      const nextRows = Array.from(table.rows).map(tableRow => {
-        return Array.from(tableRow.cells).map(cell => {
-          return (cell.innerText || cell.textContent || '')
-            .replace(/\r\n?/g, '\n')
-            .replace(/\n{3,}/g, '\n\n')
-            .trim();
-        });
-      });
-      if (JSON.stringify(nextRows) !== JSON.stringify(rows)) onCommit(nextRows);
+      widget.commitEdits();
     }, 0);
   });
   return widget;
@@ -4316,17 +4403,25 @@ function renderEditorDecorations(editorAdapter, note) {
       const widget = createEditorTableWidget(
         rows,
         alignments,
-        () => {
-          const nextRows = rows.map(row => [...row, '']);
+        currentRows => {
+          const nextRows = currentRows.map(row => [...row, '']);
           replaceTable(nextRows, [...alignments, 'left']);
         },
-        () => {
-          const nextRows = [...rows, Array(header.length).fill('')];
+        (currentRows, focusColumnIndex) => {
+          if (Number.isInteger(focusColumnIndex)) {
+            pendingTableFocusEditor = {
+              editor: editorAdapter,
+              index: codeMirror.indexFromPos(from),
+              rowIndex: currentRows.length,
+              columnIndex: focusColumnIndex
+            };
+          }
+          const nextRows = [...currentRows, Array(header.length).fill('')];
           replaceTable(nextRows, alignments);
         },
-        (rowIndex, columnIndex) => {
+        (rowIndex, columnIndex, currentRows) => {
           tableContextActionHandler = action => {
-            const nextRows = rows.map(row => [...row]);
+            const nextRows = currentRows.map(row => [...row]);
             const nextAlignments = [...alignments];
             if (action === 'add-row') {
               nextRows.splice(rowIndex + 1, 0, Array(header.length).fill(''));
@@ -4364,8 +4459,11 @@ function renderEditorDecorations(editorAdapter, note) {
         && codeMirror.posFromIndex(pendingTableFocusEditor.index).line <= endLine
       ) {
         requestAnimationFrame(() => {
-          const firstCell = widget.querySelector('th, td');
-          if (!focusEditableAtStart(firstCell)) return;
+          const focusRowIndex = pendingTableFocusEditor.rowIndex || 0;
+          const focusColumnIndex = pendingTableFocusEditor.columnIndex || 0;
+          const targetCell = widget.querySelector('table')?.rows[focusRowIndex]
+            ?.cells[focusColumnIndex];
+          if (!focusEditableAtStart(targetCell)) return;
           if (pendingTableFocusEditor?.editor === editorAdapter) {
             pendingTableFocusEditor = null;
           }
@@ -5008,7 +5106,15 @@ async function pasteImages(event, editorElement, getCurrentNote) {
   editorElement.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function commitActiveTableEdit(editorElement) {
+  const wrapper = editorElement.codeMirror.getWrapperElement();
+  const tableWidget = document.activeElement?.closest?.('.cm-table-widget');
+  if (!tableWidget || !wrapper.contains(tableWidget)) return false;
+  return tableWidget.commitEdits?.() || false;
+}
+
 async function saveCurrentNote(options) {
+  commitActiveTableEdit(editor);
   return leftPanePersistence.save(options);
 }
 
@@ -5572,6 +5678,19 @@ async function moveItem(item, targetFolderPath) {
   }
 }
 
+async function reorderFolder(sourcePath, targetPath, placement) {
+  const result = await ipcRenderer.invoke('reorder-folder', {
+    sourcePath,
+    targetPath,
+    placement
+  });
+  if (!result.success) {
+    showConfirm('排序失败', result.error, () => {});
+    return;
+  }
+  await loadTree();
+}
+
 function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
@@ -6014,7 +6133,7 @@ aiSettingsSave.addEventListener('click', async () => {
   try {
     const provider = aiProviderInputs.find(input => input.checked)?.value || 'deepseek';
     const normalizedApiKey = aiProviderApiKey.value.trim();
-    if (normalizedApiKey && normalizedApiKey !== (aiProviderKeys[provider] || '')) {
+    if (normalizedApiKey && normalizedApiKey !== (savedAiProviderKeys[provider] || '')) {
       renderAiKeyTestResult('正在使用 1 个输出 Token 验证密钥…', 'testing');
       const testResult = await ipcRenderer.invoke('test-ai-api-key', {
         provider,
@@ -6036,6 +6155,7 @@ aiSettingsSave.addEventListener('click', async () => {
       return;
     }
     aiProviderKeys[provider] = aiProviderApiKey.value.trim();
+    savedAiProviderKeys[provider] = aiProviderKeys[provider];
     activeAiProviderName = aiProviderNames[provider];
     aiProviderApiKey.value = aiProviderKeys[provider];
     deepseekLayoutPrompt.value = result.layoutPrompt;
@@ -6373,6 +6493,7 @@ function updatePreviewRight(immediate = false) {
 }
 
 async function saveCurrentNoteRight(options) {
+  commitActiveTableEdit(editorRight);
   return rightPanePersistence.save(options);
 }
 
@@ -6395,9 +6516,11 @@ function handleImagePaste(event, editorElement, getCurrentNote) {
 }
 
 editor.addEventListener('paste', event => {
+  if (event.target.closest?.('.cm-table-widget [contenteditable]')) return;
   handleImagePaste(event, editor, () => currentNote);
 });
 editorRight.addEventListener('paste', event => {
+  if (event.target.closest?.('.cm-table-widget [contenteditable]')) return;
   handleImagePaste(event, editorRight, () => currentNoteRight);
 });
 

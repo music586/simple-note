@@ -255,12 +255,23 @@ const aiProviders = {
   },
   hunyuan: {
     name: '腾讯混元',
-    hostname: 'api.hunyuan.cloud.tencent.com',
+    hostname: 'tokenhub.tencentmaas.com',
     path: '/v1/chat/completions',
-    model: 'hunyuan-turbos-latest',
+    model: 'hy3',
     extras: {}
   }
 };
+
+function getAiProviderHttpError(providerId, statusCode, detail, action) {
+  if (providerId === 'hunyuan' && statusCode === 401) {
+    return new Error(
+      '腾讯混元 TokenHub API Key 无效或已失效，请在 TokenHub 控制台重新创建 API Key，'
+        + '并确认已为 Hy3 开启免费体验或后付费'
+    );
+  }
+  const provider = aiProviders[providerId];
+  return new Error(detail || `${provider.name} ${action}失败（HTTP ${statusCode}）`);
+}
 
 function requestAiLayout(providerId, apiKey, prompt, content, systemPrompt = null) {
   const provider = aiProviders[providerId] || aiProviders.deepseek;
@@ -310,8 +321,13 @@ function requestAiLayout(providerId, apiKey, prompt, content, systemPrompt = nul
           return;
         }
         if (response.statusCode < 200 || response.statusCode >= 300) {
-          const detail = data?.error?.message;
-          reject(new Error(detail || `${provider.name} 请求失败（HTTP ${response.statusCode}）`));
+          const detail = data?.error?.message_zh || data?.error?.message;
+          reject(getAiProviderHttpError(
+            providerId,
+            response.statusCode,
+            detail,
+            '请求'
+          ));
           return;
         }
         const optimizedContent = data?.choices?.[0]?.message?.content;
@@ -369,8 +385,12 @@ function testAiApiKey(providerId, apiKey) {
           }
         }
         if (response.statusCode < 200 || response.statusCode >= 300) {
-          reject(new Error(data?.error?.message
-            || `${provider.name} 验证失败（HTTP ${response.statusCode}）`));
+          reject(getAiProviderHttpError(
+            providerId,
+            response.statusCode,
+            data?.error?.message_zh || data?.error?.message,
+            '验证'
+          ));
           return;
         }
         resolve();
@@ -620,7 +640,17 @@ ipcMain.handle('open-relative-link', async (event, data) => {
 
 ipcMain.handle('get-app-version', () => app.getVersion());
 
-function getTree(dir, basePath = '', hiddenDirectories = getHiddenDirectories()) {
+function getFolderOrder(config, notesDir) {
+  const workspaceOrders = config.folderOrders?.[path.resolve(notesDir)];
+  return workspaceOrders && typeof workspaceOrders === 'object' ? workspaceOrders : {};
+}
+
+function getTree(
+  dir,
+  basePath = '',
+  hiddenDirectories = getHiddenDirectories(),
+  folderOrder = {}
+) {
   const result = [];
   if (!fs.existsSync(dir)) return result;
 
@@ -628,9 +658,20 @@ function getTree(dir, basePath = '', hiddenDirectories = getHiddenDirectories())
     entry: item,
     mtimeMs: fs.statSync(path.join(dir, item.name)).mtimeMs
   }));
+  const orderedNames = Array.isArray(folderOrder[basePath]) ? folderOrder[basePath] : [];
+  const folderOrderIndexes = new Map(orderedNames.map((name, index) => [name, index]));
   items.sort((a, b) => {
     if (a.entry.isDirectory() && !b.entry.isDirectory()) return -1;
     if (!a.entry.isDirectory() && b.entry.isDirectory()) return 1;
+    if (a.entry.isDirectory() && b.entry.isDirectory() && orderedNames.length > 0) {
+      const aIndex = folderOrderIndexes.get(a.entry.name);
+      const bIndex = folderOrderIndexes.get(b.entry.name);
+      if (aIndex !== undefined || bIndex !== undefined) {
+        if (aIndex === undefined) return 1;
+        if (bIndex === undefined) return -1;
+        if (aIndex !== bIndex) return aIndex - bIndex;
+      }
+    }
     return b.mtimeMs - a.mtimeMs || a.entry.name.localeCompare(b.entry.name, 'zh-CN');
   });
 
@@ -640,7 +681,7 @@ function getTree(dir, basePath = '', hiddenDirectories = getHiddenDirectories())
     if (item.isDirectory() && isHiddenDirectory(relativePath, hiddenDirectories)) continue;
 
     if (item.isDirectory()) {
-      const children = getTree(itemPath, relativePath, hiddenDirectories);
+      const children = getTree(itemPath, relativePath, hiddenDirectories, folderOrder);
       result.push({
         type: 'folder',
         name: item.name,
@@ -1945,7 +1986,13 @@ ipcMain.handle('remove-notes-dir', async (event, locationPath) => {
 
 ipcMain.handle('get-tree', async event => {
   ensureNotesDir(event);
-  return getTree(getNotesDir(event));
+  const notesDir = getNotesDir(event);
+  return getTree(
+    notesDir,
+    '',
+    getHiddenDirectories(),
+    getFolderOrder(getConfig(), notesDir)
+  );
 });
 
 ipcMain.handle('read-note', async (event, notePath) => {
@@ -2387,6 +2434,77 @@ ipcMain.handle('move-item', async (event, { sourcePath, targetPath, type }) => {
     getHistoryStore(event).migratePath(resolvedSourcePath, newPath);
     migrateAiOptimizedNotePaths(resolvedSourcePath, newPath);
     return { success: true, newPath };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('reorder-folder', async (event, { sourcePath, targetPath, placement }) => {
+  try {
+    if (!['before', 'after'].includes(placement)) {
+      return { success: false, error: '目录排序位置无效' };
+    }
+    const resolvedSourcePath = resolveNotesPath(event, sourcePath, {
+      expectedType: 'directory'
+    });
+    const resolvedTargetPath = resolveNotesPath(event, targetPath, {
+      expectedType: 'directory'
+    });
+    const parentPath = path.dirname(resolvedSourcePath);
+    if (parentPath !== path.dirname(resolvedTargetPath)) {
+      return { success: false, error: '只能调整同级目录的顺序' };
+    }
+
+    const notesDir = fs.realpathSync(getNotesDir(event));
+    const parentRelativePath = path.relative(notesDir, parentPath);
+    const hiddenDirectories = getHiddenDirectories();
+    const folderEntries = fs.readdirSync(parentPath, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .filter(entry => {
+        const relativePath = parentRelativePath
+          ? path.join(parentRelativePath, entry.name)
+          : entry.name;
+        return !isHiddenDirectory(relativePath, hiddenDirectories);
+      })
+      .map(entry => ({
+        name: entry.name,
+        mtimeMs: fs.statSync(path.join(parentPath, entry.name)).mtimeMs
+      }));
+    const sourceName = path.basename(resolvedSourcePath);
+    const targetName = path.basename(resolvedTargetPath);
+    const availableNames = new Set(folderEntries.map(entry => entry.name));
+    if (!availableNames.has(sourceName) || !availableNames.has(targetName)) {
+      return { success: false, error: '找不到要排序的目录' };
+    }
+
+    const config = getConfig();
+    const workspaceKey = path.resolve(getNotesDir(event));
+    const existingOrder = getFolderOrder(config, workspaceKey)[parentRelativePath] || [];
+    const existingOrderIndexes = new Map(
+      existingOrder.map((name, index) => [name, index])
+    );
+    folderEntries.sort((a, b) => {
+      const aIndex = existingOrderIndexes.get(a.name);
+      const bIndex = existingOrderIndexes.get(b.name);
+      if (aIndex === undefined && bIndex === undefined) {
+        return b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name, 'zh-CN');
+      }
+      if (aIndex === undefined) return 1;
+      if (bIndex === undefined) return -1;
+      return aIndex - bIndex;
+    });
+    const names = folderEntries.map(entry => entry.name);
+    names.splice(names.indexOf(sourceName), 1);
+    const insertionIndex = names.indexOf(targetName) + (placement === 'after' ? 1 : 0);
+    names.splice(insertionIndex, 0, sourceName);
+
+    if (!config.folderOrders || typeof config.folderOrders !== 'object') {
+      config.folderOrders = {};
+    }
+    if (!config.folderOrders[workspaceKey]) config.folderOrders[workspaceKey] = {};
+    config.folderOrders[workspaceKey][parentRelativePath] = names;
+    saveConfig(config);
+    return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
   }

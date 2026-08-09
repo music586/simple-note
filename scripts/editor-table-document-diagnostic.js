@@ -51,6 +51,9 @@ app.whenReady().then(async () => {
             key,
             rows: tableElement.rows.length,
             columns: tableElement.rows[0]?.cells.length || 0,
+            columnWidths: Array.from(tableElement.rows[0]?.cells || []).map(cell => (
+              Math.round(cell.getBoundingClientRect().width)
+            )),
             widgetHeight: Math.round(rect.height),
             tableHeight: Math.round(tableRect.height),
             scrollWidth: viewport.scrollWidth,
@@ -75,6 +78,23 @@ app.whenReady().then(async () => {
       const initialWidget = root.querySelector('.cm-table-widget');
       const emptyCell = initialWidget?.querySelector('tbody td');
       emptyCell?.focus();
+      const selectionMouseDown = new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+        button: 0
+      });
+      emptyCell?.dispatchEvent(selectionMouseDown);
+      const pasteData = new DataTransfer();
+      pasteData.setData('text/plain', '刚输入的内容');
+      const pasteEvent = new ClipboardEvent('paste', {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: pasteData
+      });
+      emptyCell?.dispatchEvent(pasteEvent);
+      if (emptyCell && !pasteEvent.defaultPrevented) {
+        emptyCell.textContent = pasteData.getData('text/plain');
+      }
       initialWidget?.querySelector('.cm-table-add-column')?.dispatchEvent(new MouseEvent(
         'mousedown',
         { bubbles: true, button: 0 }
@@ -85,9 +105,49 @@ app.whenReady().then(async () => {
         source: editor.value,
         rows: updatedWidget?.querySelector('table')?.rows.length || 0,
         columns: updatedWidget?.querySelector('table')?.rows[0]?.cells.length || 0,
-        emptyRowColumns: updatedWidget?.querySelector('table')?.rows[1]?.cells.length || 0
+        emptyRowColumns: updatedWidget?.querySelector('table')?.rows[1]?.cells.length || 0,
+        emptyColumnWidths: Array.from(
+          updatedWidget?.querySelector('table')?.rows[1]?.cells || []
+        ).filter(cell => !cell.textContent).map(cell => Math.round(cell.getBoundingClientRect().width))
       };
-      return { lines: codeMirror.lineCount(), samples, emptyRowColumnAdd, errors };
+      const headerCell = updatedWidget?.querySelector('thead th:nth-child(2)');
+      headerCell?.focus();
+      headerCell?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true
+      }));
+      const existingRowCell = document.activeElement?.closest?.('th, td');
+      const existingRowNavigation = {
+        activeRow: existingRowCell?.parentElement?.rowIndex ?? -1,
+        activeColumn: existingRowCell?.cellIndex ?? -1
+      };
+      const lastCell = updatedWidget?.querySelector('tbody tr:last-child td:nth-child(2)');
+      lastCell?.focus();
+      lastCell?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true
+      }));
+      await wait();
+      const enterWidget = root.querySelector('.cm-table-widget');
+      const enterTable = enterWidget?.querySelector('table');
+      const activeCell = document.activeElement?.closest?.('th, td');
+      const enterNavigation = {
+        rows: enterTable?.rows.length || 0,
+        activeRow: activeCell?.parentElement?.rowIndex ?? -1,
+        activeColumn: activeCell?.cellIndex ?? -1
+      };
+      return {
+        lines: codeMirror.lineCount(),
+        samples,
+        mouseSelectionBlocked: selectionMouseDown.defaultPrevented,
+        pasteDefaultPrevented: pasteEvent.defaultPrevented,
+        emptyRowColumnAdd,
+        existingRowNavigation,
+        enterNavigation,
+        errors
+      };
     })()
   `);
   result.controlPreview = await window.webContents.executeJavaScript(`
@@ -122,12 +182,17 @@ app.whenReady().then(async () => {
         };
       };
       const widgetRect = widget?.getBoundingClientRect();
+      const viewportRect = widget?.querySelector('.cm-table-viewport')?.getBoundingClientRect();
+      const rowButtonRect = rowButton?.getBoundingClientRect();
       const rowIconMetrics = getTextVisualMetrics(rowIcon);
       const rowLabelMetrics = getTextVisualMetrics(rowLabel);
       return {
         className: widget?.className || '',
         columnOpacity: columnButton ? getComputedStyle(columnButton).opacity : '',
         rowOpacity: rowButton ? getComputedStyle(rowButton).opacity : '',
+        rowStartsAfterViewport: Boolean(
+          viewportRect && rowButtonRect && rowButtonRect.top >= viewportRect.bottom - 0.5
+        ),
         rowIcon: rowIconMetrics,
         rowLabel: rowLabelMetrics,
         rowVisualCenterDelta: rowIconMetrics && rowLabelMetrics
@@ -149,12 +214,24 @@ app.whenReady().then(async () => {
   const emptyRowPassed = result.emptyRowColumnAdd.rows === 2
     && result.emptyRowColumnAdd.columns === 3
     && result.emptyRowColumnAdd.emptyRowColumns === 3
+    && result.emptyRowColumnAdd.emptyColumnWidths.every(width => width >= 50)
     && result.emptyRowColumnAdd.source === [
       '| 第一列 | 第二列 |  |',
       '| --- | --- | --- |',
-      '|  |  |  |'
+      '| 刚输入的内容 |  |  |'
     ].join('\n');
   const rowCenterPassed = result.controlPreview.rowVisualCenterDelta !== null
     && result.controlPreview.rowVisualCenterDelta <= 0.25;
-  app.exit(result.errors.length || !emptyRowPassed || !rowCenterPassed ? 1 : 0);
+  const enterPassed = result.enterNavigation.rows === 3
+    && result.enterNavigation.activeRow === 2
+    && result.enterNavigation.activeColumn === 1
+    && result.existingRowNavigation.activeRow === 1
+    && result.existingRowNavigation.activeColumn === 1;
+  app.exit(
+    result.errors.length || result.mouseSelectionBlocked || result.pasteDefaultPrevented
+      || !emptyRowPassed || !enterPassed
+      || !result.controlPreview.rowStartsAfterViewport || !rowCenterPassed
+      ? 1
+      : 0
+  );
 });
