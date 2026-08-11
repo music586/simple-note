@@ -18,6 +18,35 @@ test('editor pre-renders web, application and relative links with distinct indic
   assert.match(renderer, /replaceInlineRange\(match\.index, match\.index \+ match\[0\]\.length, link\)/);
 });
 
+test('editor pre-renders HTML links and focuses them back to source', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
+  const diagnostic = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'editor-prerender-diagnostic.js'),
+    'utf8'
+  );
+
+  assert.match(renderer, /function getHtmlPreviewRanges\(lineText\)/);
+  assert.match(renderer, /createInlineHtmlWidget\(range\.source, note\)/);
+  assert.match(renderer, /replaceHtmlPreviewRange\(/);
+  assert.ok(diagnostic.includes('<a href="./other.md">HTML 相对链接</a>'));
+  assert.match(diagnostic, /result\.htmlLinkFocusRestoresSource/);
+  assert.match(diagnostic, /result\.links === 5/);
+});
+
+test('completed Markdown links pre-render immediately on the active line', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
+  const diagnostic = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'editor-prerender-diagnostic.js'),
+    'utf8'
+  );
+
+  assert.match(renderer, /const activeLinkPattern = \/\\\[\(\[\^\\\]\]\+\)\\\]\\\(\(\[\^\)\]\+\)\\\)\/g/);
+  assert.match(renderer, /let activeLinkMatch;/);
+  assert.match(renderer, /activeCursor\.ch > fromCh && activeCursor\.ch < toCh/);
+  assert.ok(diagnostic.includes('[活动相对链接](./other.md)'));
+  assert.match(diagnostic, /result\.links === 5/);
+});
+
 test('right preview normalizes an accidental space after an HTTP protocol', () => {
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
 

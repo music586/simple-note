@@ -105,6 +105,40 @@ test('装饰高度变化后保持视口顶部可见行的位置', () => {
   assert.equal(scrollTop, 400);
 });
 
+test('滚动后使用实际高度对应行作为锚点而不是滞后的视口', () => {
+  let scrollTop = 13858;
+  let anchorLineTop = 13840;
+  const codeMirror = {
+    getScrollInfo: () => ({ top: scrollTop }),
+    getViewport: () => ({ from: 0, to: 50 }),
+    lineAtHeight: height => {
+      assert.equal(height, 13858);
+      return 500;
+    },
+    heightAtLine: line => {
+      assert.equal(line, 500);
+      return anchorLineTop;
+    },
+    scrollTo: (left, top) => {
+      assert.equal(left, null);
+      scrollTop = top;
+    }
+  };
+
+  const anchor = captureEditorScrollAnchor(codeMirror);
+  anchorLineTop = 14040;
+  restoreEditorScrollAnchor(codeMirror, anchor);
+
+  assert.equal(scrollTop, 14058);
+});
+
+test('代码块装饰向 CodeMirror 提供预估高度以稳定滚动条', () => {
+  assert.match(
+    renderer,
+    /estimatedHeight: Math\.max\(40, \(block\.end - block\.start - 1\) \* 22 \+ 40\)/
+  );
+});
+
 test('高度变化未引起滚动时不重复设置滚动位置', () => {
   let callback;
   let restoreCount = 0;
@@ -200,14 +234,25 @@ test('鼠标点击源码行后恢复原滚动位置', () => {
 test('目录点击仍会主动定位标题', () => {
   assert.match(
     renderer,
-    /item\.addEventListener\('click',[\s\S]{0,320}codeMirror\.scrollTo\(null, codeMirror\.heightAtLine\(heading\.line, 'local'\)\)/
+    /item\.addEventListener\('click',[\s\S]{0,240}navigateDocumentOutlineHeading\(codeMirror, heading\.line\)/
+  );
+  assert.match(
+    renderer,
+    /function navigateDocumentOutlineHeading[\s\S]*codeMirror\.heightAtLine\(lineNumber, 'local'\)/
   );
 });
 
 test('光标状态不影响预渲染时跳过装饰重建和滚动调整', () => {
   assert.match(renderer, /function getEditorDecorationCursorState\(editorAdapter\)/);
-  assert.match(renderer, /return hasSourceVisibilityChange \? `line:\$\{cursor\.line\}` : 'stable'/);
+  assert.match(
+    renderer,
+    /return hasSourceVisibilityChange \? `line:\$\{cursor\.line\}:html:outside` : 'stable'/
+  );
   assert.match(renderer, /const codeBlock = structure[\s\S]*findContainingCodeBlock/);
+  assert.match(
+    renderer,
+    /if \(!focused\) return hasSourceVisibilityChange \? 'blurred' : 'stable'/
+  );
   assert.match(renderer, /function scheduleCursorEditorDecorations\(editorAdapter, getNote\)/);
   assert.match(
     renderer,
@@ -234,7 +279,7 @@ test('点击编辑器空白区域只聚焦而不移动光标或触发重绘', ()
 
 test('滚动停稳后再更新视口装饰', () => {
   assert.match(renderer, /function scheduleViewportEditorDecorations/);
-  assert.match(renderer, /decorationViewportTimer = setTimeout\([\s\S]*}, 100\)/);
+  assert.match(renderer, /decorationViewportTimer = setTimeout\([\s\S]*}, 160\)/);
   assert.match(
     renderer,
     /on\('viewportChange',[\s\S]*scheduleViewportEditorDecorations\(editor/
@@ -242,8 +287,11 @@ test('滚动停稳后再更新视口装饰', () => {
 });
 
 test('视口在装饰缓冲范围内时复用现有装饰', () => {
-  assert.match(renderer, /viewport\.from - 80/);
-  assert.match(renderer, /viewport\.to \+ 80/);
+  assert.match(renderer, /lineCount <= 4000/);
+  assert.match(renderer, /viewport\.from - 320/);
+  assert.match(renderer, /viewport\.to \+ 320/);
+  assert.match(renderer, /range\.from \+ 120/);
+  assert.match(renderer, /range\.to - 120/);
   assert.match(
     renderer,
     /viewport\.from >= stableFrom && viewport\.to <= stableTo\) return/

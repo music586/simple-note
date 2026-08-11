@@ -35,7 +35,7 @@ const { tags } = require('@lezer/highlight');
 
 const addDecorationEffect = StateEffect.define();
 const clearDecorationEffect = StateEffect.define();
-const clearAllDecorationsEffect = StateEffect.define();
+const updateDecorationsEffect = StateEffect.define();
 let nextDecorationId = 1;
 
 const markdownHighlightStyle = HighlightStyle.define([
@@ -57,10 +57,10 @@ const markdownHighlightStyle = HighlightStyle.define([
 ]);
 
 class DomWidget extends WidgetType {
-  constructor(dom, block = false) {
+  constructor(dom, estimatedHeight = -1) {
     super();
     this.dom = dom;
-    this.block = block;
+    this.height = Number.isFinite(estimatedHeight) ? estimatedHeight : -1;
   }
 
   eq(other) {
@@ -69,6 +69,10 @@ class DomWidget extends WidgetType {
 
   toDOM() {
     return this.dom;
+  }
+
+  get estimatedHeight() {
+    return this.height;
   }
 
   ignoreEvent() {
@@ -83,14 +87,21 @@ const decorationField = StateField.define({
   update(decorations, transaction) {
     decorations = decorations.map(transaction.changes);
     for (const effect of transaction.effects) {
-      if (effect.is(clearAllDecorationsEffect)) {
-        decorations = Decoration.none;
-      } else if (effect.is(clearDecorationEffect)) {
+      if (effect.is(clearDecorationEffect)) {
         decorations = decorations.update({
           filter: (from, to, value) => value.spec.simpleNoteId !== effect.value
         });
       } else if (effect.is(addDecorationEffect)) {
         decorations = decorations.update({ add: [effect.value], sort: true });
+      } else if (effect.is(updateDecorationsEffect)) {
+        const { clearIds, additions } = effect.value;
+        decorations = decorations.update({
+          filter: clearIds.size
+            ? (from, to, value) => !clearIds.has(value.spec.simpleNoteId)
+            : undefined,
+          add: additions,
+          sort: true
+        });
       }
     }
     return decorations;
@@ -163,6 +174,8 @@ class CodeMirror6Adapter {
     this.undoLabels = [];
     this.redoLabels = [];
     this.pendingHistoryLabel = null;
+    this.decorationOperationDepth = 0;
+    this.pendingDecorationUpdate = null;
 
     const customKeys = Object.entries(options.extraKeys || {}).map(([key, handler]) => ({
       key: normalizeExtraKeyName(key),
@@ -363,7 +376,40 @@ class CodeMirror6Adapter {
   }
 
   operation(callback) {
-    return callback();
+    const outermost = this.decorationOperationDepth === 0;
+    if (outermost) {
+      this.pendingDecorationUpdate = { clearIds: new Set(), additions: [] };
+    }
+    this.decorationOperationDepth += 1;
+    try {
+      return callback();
+    } finally {
+      this.decorationOperationDepth -= 1;
+      if (outermost) this.flushDecorationOperation();
+    }
+  }
+
+  flushDecorationOperation() {
+    const update = this.pendingDecorationUpdate;
+    this.pendingDecorationUpdate = null;
+    if (!update || (!update.clearIds.size && !update.additions.length)) return;
+    this.view.dispatch({ effects: updateDecorationsEffect.of(update) });
+  }
+
+  addDecorationRange(range) {
+    if (this.pendingDecorationUpdate) {
+      this.pendingDecorationUpdate.additions.push(range);
+      return;
+    }
+    this.view.dispatch({ effects: addDecorationEffect.of(range) });
+  }
+
+  clearDecorationId(id) {
+    if (this.pendingDecorationUpdate) {
+      this.pendingDecorationUpdate.clearIds.add(id);
+      return;
+    }
+    this.view.dispatch({ effects: clearDecorationEffect.of(id) });
   }
 
   getValue() {
@@ -490,13 +536,13 @@ class CodeMirror6Adapter {
     const id = nextDecorationId++;
     const range = decoration.range(from, to);
     range.value.spec.simpleNoteId = id;
-    this.view.dispatch({ effects: addDecorationEffect.of(range) });
+    this.addDecorationRange(range);
     let cleared = false;
     return {
       clear: () => {
         if (cleared) return;
         cleared = true;
-        this.view.dispatch({ effects: clearDecorationEffect.of(id) });
+        this.clearDecorationId(id);
       },
       changed: () => this.view.requestMeasure(),
       find: () => {
@@ -540,10 +586,12 @@ class CodeMirror6Adapter {
     if (start === end && options.replacedWith) {
       decoration = Decoration.widget({
         ...spec,
-        widget: new DomWidget(options.replacedWith)
+        widget: new DomWidget(options.replacedWith, options.estimatedHeight)
       });
     } else if (options.collapsed || options.replacedWith) {
-      if (options.replacedWith) spec.widget = new DomWidget(options.replacedWith);
+      if (options.replacedWith) {
+        spec.widget = new DomWidget(options.replacedWith, options.estimatedHeight);
+      }
       if (options.className) spec.attributes = classAttributes(options.className);
       decoration = Decoration.replace(spec);
     } else {
@@ -583,7 +631,7 @@ class CodeMirror6Adapter {
       simpleNoteId: 0,
       block: true,
       side: 1,
-      widget: new DomWidget(dom, true)
+      widget: new DomWidget(dom)
     }));
   }
 
@@ -614,6 +662,11 @@ class CodeMirror6Adapter {
   heightAtLine(lineNumber) {
     const line = this.view.state.doc.line(Math.min(lineNumber + 1, this.lineCount()));
     return this.view.lineBlockAt(line.from).top;
+  }
+
+  lineAtHeight(height) {
+    const block = this.view.lineBlockAtHeight(Math.max(0, Number(height) || 0));
+    return this.view.state.doc.lineAt(block.from).number - 1;
   }
 
   cursorCoords(position, mode = 'page') {

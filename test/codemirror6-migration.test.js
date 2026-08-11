@@ -46,3 +46,11 @@ test('CM6 skips empty mark ranges without aborting viewport pre-render', () => {
   assert.match(adapter, /if \(start === end && !options\.replacedWith\)/);
   assert.match(adapter, /start === end && options\.replacedWith/);
 });
+
+test('CM6 batches decoration replacement into one state transaction', () => {
+  assert.match(adapter, /const updateDecorationsEffect = StateEffect\.define\(\)/);
+  assert.match(adapter, /pendingDecorationUpdate = \{ clearIds: new Set\(\), additions: \[\] \}/);
+  assert.match(adapter, /this\.view\.dispatch\(\{ effects: updateDecorationsEffect\.of\(update\) \}\)/);
+  assert.match(adapter, /this\.pendingDecorationUpdate\.additions\.push\(range\)/);
+  assert.match(adapter, /this\.pendingDecorationUpdate\.clearIds\.add\(id\)/);
+});

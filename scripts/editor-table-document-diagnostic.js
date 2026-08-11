@@ -66,6 +66,36 @@ app.whenReady().then(async () => {
       const targetLine = source.split('\\n').findIndex(line => line.startsWith('| 功能场景'));
       codeMirror.scrollTo(null, codeMirror.heightAtLine(targetLine, 'local'));
       await wait();
+      const markdownTableSource = [
+        '| 样式 | 链接 |',
+        '| --- | --- |',
+        '| **粗体**、*斜体*、~~删除~~、==高亮==、\`代码\`、<b>HTML粗体</b>、<u>下划线</u>、H<sub>2</sub>O | <a href="./other.md">HTML笔记</a> |'
+      ].join('\\n');
+      editor.value = markdownTableSource;
+      editor.setCursorIndex(markdownTableSource.length);
+      updatePreview(true);
+      await wait();
+      const markdownWidget = root.querySelector('.cm-table-widget');
+      const markdownCell = markdownWidget?.querySelector('tbody td');
+      const markdownLink = markdownWidget?.querySelector('tbody td:nth-child(2) .cm-rendered-link');
+      const markdownPreview = {
+        strong: markdownCell?.querySelectorAll('strong').length || 0,
+        emphasis: markdownCell?.querySelectorAll('em').length || 0,
+        strike: markdownCell?.querySelectorAll('del').length || 0,
+        highlight: markdownCell?.querySelectorAll('mark').length || 0,
+        code: markdownCell?.querySelectorAll('code').length || 0,
+        htmlBold: markdownCell?.querySelectorAll('b').length || 0,
+        underline: markdownCell?.querySelectorAll('u').length || 0,
+        subscript: markdownCell?.querySelectorAll('sub').length || 0,
+        links: markdownLink ? 1 : 0,
+        sourceBeforeFocus: markdownCell?.dataset.markdownSource || ''
+      };
+      focusEditableAtStart(markdownCell);
+      markdownPreview.editingSource = markdownCell?.textContent || '';
+      markdownCell?.dispatchEvent(new FocusEvent('blur'));
+      markdownPreview.renderedAfterBlur = markdownCell?.querySelectorAll('strong').length || 0;
+      codeMirror.focus();
+      await wait();
       const emptyRowSource = [
         '| 第一列 | 第二列 |',
         '| --- | --- |',
@@ -146,6 +176,7 @@ app.whenReady().then(async () => {
         emptyRowColumnAdd,
         existingRowNavigation,
         enterNavigation,
+        markdownPreview,
         errors
       };
     })()
@@ -227,9 +258,21 @@ app.whenReady().then(async () => {
     && result.enterNavigation.activeColumn === 1
     && result.existingRowNavigation.activeRow === 1
     && result.existingRowNavigation.activeColumn === 1;
+  const markdownPreviewPassed = result.markdownPreview.strong === 1
+    && result.markdownPreview.emphasis === 1
+    && result.markdownPreview.strike === 1
+    && result.markdownPreview.highlight === 1
+    && result.markdownPreview.code === 1
+    && result.markdownPreview.htmlBold === 1
+    && result.markdownPreview.underline === 1
+    && result.markdownPreview.subscript === 1
+    && result.markdownPreview.links === 1
+    && result.markdownPreview.sourceBeforeFocus.includes('**粗体**')
+    && result.markdownPreview.editingSource.includes('**粗体**')
+    && result.markdownPreview.renderedAfterBlur === 1;
   app.exit(
     result.errors.length || result.mouseSelectionBlocked || result.pasteDefaultPrevented
-      || !emptyRowPassed || !enterPassed
+      || !emptyRowPassed || !enterPassed || !markdownPreviewPassed
       || !result.controlPreview.rowStartsAfterViewport || !rowCenterPassed
       ? 1
       : 0

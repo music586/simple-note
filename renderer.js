@@ -225,6 +225,23 @@ function loadPaneDocument(persistence, editorAdapter, documentPath, content) {
   persistence.activateDocument(documentPath);
   editorAdapter.loadDocument(documentPath, content);
 }
+
+const paneScrollResetVersions = new WeakMap();
+
+function resetPaneScrollToTop(editorAdapter, previewElement) {
+  const version = (paneScrollResetVersions.get(editorAdapter) || 0) + 1;
+  paneScrollResetVersions.set(editorAdapter, version);
+  const reset = () => {
+    if (paneScrollResetVersions.get(editorAdapter) !== version) return;
+    editorAdapter.codeMirror.scrollTo(0, 0);
+    previewElement.scrollTop = 0;
+  };
+  reset();
+  requestAnimationFrame(() => {
+    reset();
+    requestAnimationFrame(reset);
+  });
+}
 const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
 const editorFindBar = document.getElementById('editorFindBar');
 const editorFindInput = document.getElementById('editorFindInput');
@@ -941,6 +958,12 @@ async function openRenderedMarkdownLink(href, note) {
   [previewRight, () => currentNoteRight]
 ].forEach(([container, getNote]) => {
   container.addEventListener('click', event => {
+    const image = event.target.closest('img');
+    if (image && container.contains(image)) {
+      event.preventDefault();
+      openImageViewer(image);
+      return;
+    }
     const link = event.target.closest('a[href]');
     if (!link || !container.contains(link)) return;
     event.preventDefault();
@@ -1142,28 +1165,49 @@ function scheduleEditorDecorations(editorAdapter, getNote) {
 
 function getEditorDecorationCursorState(editorAdapter) {
   const codeMirror = editorAdapter.codeMirror;
+  const focused = codeMirror.getWrapperElement().contains(document.activeElement);
   const cursor = codeMirror.getCursor();
   const lineText = codeMirror.getLine(cursor.line) || '';
+  const activeHtmlRange = getHtmlPreviewRanges(lineText).find(range => {
+    return cursor.ch >= range.from && cursor.ch <= range.to;
+  });
   const listPrefix = getRenderedListPrefix(lineText);
-  if (listPrefix) {
-    const listCursorCh = getActiveBulletSourceCursor(listPrefix, cursor.ch);
-    const showsRenderedPrefix = shouldRenderActiveListPrefix(listPrefix, listCursorCh);
-    return `line:${cursor.line}:list-prefix:${showsRenderedPrefix}`;
-  }
-
   const structure = editorAdapter.decorationStructure;
   const codeBlock = structure
     ? findContainingCodeBlock(structure.blocks, cursor.line)
     : null;
+  const htmlBlock = structure?.htmlBlocks?.find(block => {
+    return cursor.line >= block.start && cursor.line <= block.end;
+  });
   const hasSourceVisibilityChange = Boolean(
     codeBlock
+    || htmlBlock
     || /^\s*(?:#{1,6}\s+|>\s?)/.test(lineText)
     || /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(lineText)
     || /!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\)/.test(lineText)
     || /\*\*[^*]+\*\*|~~[^~]+~~|==[^=]+==|`[^`]+`/.test(lineText)
     || /(?<!\*)\*[^*]+\*(?!\*)/.test(lineText)
+    || /<\/?[a-z][^>]*>/i.test(lineText)
   );
-  return hasSourceVisibilityChange ? `line:${cursor.line}` : 'stable';
+  if (!focused) return hasSourceVisibilityChange ? 'blurred' : 'stable';
+  if (listPrefix) {
+    const listCursorCh = getActiveBulletSourceCursor(listPrefix, cursor.ch);
+    const showsRenderedPrefix = shouldRenderActiveListPrefix(listPrefix, listCursorCh);
+    const htmlState = activeHtmlRange
+      ? `${activeHtmlRange.from}-${activeHtmlRange.to}`
+      : 'outside';
+    return [
+      `line:${cursor.line}`,
+      `list-prefix:${listPrefix.type}`,
+      `label:${listPrefix.label || ''}`,
+      `rendered:${showsRenderedPrefix}`,
+      `html:${htmlState}`
+    ].join(':');
+  }
+  if (activeHtmlRange) {
+    return `line:${cursor.line}:html:${activeHtmlRange.from}-${activeHtmlRange.to}`;
+  }
+  return hasSourceVisibilityChange ? `line:${cursor.line}:html:outside` : 'stable';
 }
 
 function scheduleCursorEditorDecorations(editorAdapter, getNote) {
@@ -1181,8 +1225,8 @@ function scheduleViewportEditorDecorations(editorAdapter, getNote) {
   const range = editorAdapter.decorationRange;
   const lineCount = editorAdapter.codeMirror.lineCount();
   if (range) {
-    const stableFrom = range.from === 0 ? 0 : range.from + 20;
-    const stableTo = range.to === lineCount ? lineCount : range.to - 20;
+    const stableFrom = range.from === 0 ? 0 : range.from + 120;
+    const stableTo = range.to === lineCount ? lineCount : range.to - 120;
     if (viewport.from >= stableFrom && viewport.to <= stableTo) return;
   }
   if (editorAdapter.decorationViewportTimer) {
@@ -1191,7 +1235,7 @@ function scheduleViewportEditorDecorations(editorAdapter, getNote) {
   editorAdapter.decorationViewportTimer = setTimeout(() => {
     editorAdapter.decorationViewportTimer = null;
     scheduleEditorDecorations(editorAdapter, getNote);
-  }, 100);
+  }, 160);
 }
 
 function preserveEditorScrollOnClick(editorAdapter) {
@@ -1267,7 +1311,9 @@ editor.codeMirror.on('focus', () => {
   syncEditorHistoryState(editor);
   if (slashCommandState.editor && slashCommandState.editor !== editor) slashCommandMenu.close();
   updateSlashCommandForEditor(editor);
+  scheduleCursorEditorDecorations(editor, () => currentNote);
 });
+editor.codeMirror.on('blur', () => scheduleCursorEditorDecorations(editor, () => currentNote));
 editor.codeMirror.on('viewportChange', () => {
   scheduleViewportEditorDecorations(editor, () => currentNote);
 });
@@ -1287,6 +1333,10 @@ editorRight.codeMirror.on('focus', () => {
     slashCommandMenu.close();
   }
   updateSlashCommandForEditor(editorRight);
+  scheduleCursorEditorDecorations(editorRight, () => currentNoteRight);
+});
+editorRight.codeMirror.on('blur', () => {
+  scheduleCursorEditorDecorations(editorRight, () => currentNoteRight);
 });
 editorRight.codeMirror.on('viewportChange', () => {
   scheduleViewportEditorDecorations(editorRight, () => currentNoteRight);
@@ -1829,6 +1879,7 @@ document.addEventListener('pointerdown', event => {
   if (
     !app.classList.contains('reading-mode')
     || app.classList.contains('exporting-pdf')
+    || document.querySelector('.modal.active')
   ) return;
 
   const target = event.target;
@@ -3058,6 +3109,7 @@ async function selectNote(note) {
   closeReleaseNotes(editorPaneRight, editorRight, false);
 
   if (closedLeftReleaseNotes && currentNote && currentNote.path === note.path) {
+    resetPaneScrollToTop(editor, preview);
     requestAnimationFrame(() => editor.focus());
     return;
   }
@@ -3081,6 +3133,7 @@ async function selectNote(note) {
     optimizedState.success && optimizedState.optimized
   );
   updatePreview(true);
+  resetPaneScrollToTop(editor, preview);
   renderTree();
   saveWorkspaceSession();
 }
@@ -3092,6 +3145,64 @@ let mermaidRenderId = 0;
 const maxMermaidCacheEntries = 100;
 const mermaidSvgCache = new Map();
 const previewRenderVersions = new WeakMap();
+const imageViewer = document.createElement('div');
+imageViewer.className = 'modal image-viewer';
+imageViewer.setAttribute('role', 'dialog');
+imageViewer.setAttribute('aria-modal', 'true');
+imageViewer.setAttribute('aria-labelledby', 'imageViewerTitle');
+imageViewer.innerHTML = `
+  <div class="image-viewer-shell">
+    <div class="image-viewer-toolbar">
+      <div>
+        <strong id="imageViewerTitle">图片查看器</strong>
+        <span>原始尺寸 · 可滚动查看</span>
+      </div>
+      <button class="image-viewer-close" type="button" aria-label="关闭图片查看器"
+        title="关闭">×</button>
+    </div>
+    <div class="image-viewer-canvas">
+      <img class="image-viewer-image" alt="">
+    </div>
+  </div>
+`;
+document.body.appendChild(imageViewer);
+const imageViewerShell = imageViewer.querySelector('.image-viewer-shell');
+const imageViewerImage = imageViewer.querySelector('.image-viewer-image');
+const imageViewerClose = imageViewer.querySelector('.image-viewer-close');
+let imageViewerPreviousFocus = null;
+
+function closeImageViewer() {
+  if (!imageViewer.classList.contains('active')) return;
+  imageViewer.classList.remove('active');
+  imageViewerImage.removeAttribute('src');
+  imageViewerPreviousFocus?.focus?.({ preventScroll: true });
+  imageViewerPreviousFocus = null;
+}
+
+function openImageViewer(image) {
+  if (!image?.src) return;
+  imageViewerPreviousFocus = document.activeElement;
+  const label = image.alt?.trim() || '预览图片';
+  const naturalWidth = image.naturalWidth || image.getBoundingClientRect().width;
+  const naturalHeight = image.naturalHeight || image.getBoundingClientRect().height;
+  const availableWidth = Math.max(320, window.innerWidth - 48);
+  const availableHeight = Math.max(240, window.innerHeight - 48);
+  imageViewer.querySelector('#imageViewerTitle').textContent = label;
+  imageViewerImage.src = image.currentSrc || image.src;
+  imageViewerImage.alt = image.alt || '预览图片';
+  imageViewerImage.style.width = `${Math.ceil(naturalWidth)}px`;
+  imageViewerImage.style.height = `${Math.ceil(naturalHeight)}px`;
+  imageViewerShell.style.width = `${Math.min(availableWidth, naturalWidth + 64)}px`;
+  imageViewerShell.style.height = `${Math.min(availableHeight, naturalHeight + 123)}px`;
+  imageViewer.classList.add('active');
+  imageViewerClose.focus({ preventScroll: true });
+}
+
+imageViewerClose.addEventListener('click', closeImageViewer);
+imageViewer.addEventListener('click', event => {
+  if (event.target === imageViewer) closeImageViewer();
+});
+
 const mermaidViewer = document.createElement('div');
 mermaidViewer.className = 'modal mermaid-viewer';
 mermaidViewer.setAttribute('role', 'dialog');
@@ -3395,14 +3506,24 @@ function renderDocumentOutline(editorAdapter, container) {
     item.title = outlineText;
     item.addEventListener('click', () => {
       const codeMirror = editorAdapter.codeMirror;
-      codeMirror.setCursor({ line: heading.line, ch: 0 });
-      codeMirror.focus();
-      requestAnimationFrame(() => {
-        codeMirror.scrollTo(null, codeMirror.heightAtLine(heading.line, 'local'));
-        highlightDocumentOutlineTarget(codeMirror, heading.line);
-      });
+      navigateDocumentOutlineHeading(codeMirror, heading.line);
     });
     container.appendChild(item);
+  });
+}
+
+function navigateDocumentOutlineHeading(codeMirror, lineNumber) {
+  codeMirror.setCursor({ line: lineNumber, ch: 0 });
+  codeMirror.focus();
+  const scrollToHeading = () => {
+    codeMirror.scrollTo(null, codeMirror.heightAtLine(lineNumber, 'local'));
+  };
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      scrollToHeading();
+      highlightDocumentOutlineTarget(codeMirror, lineNumber);
+      requestAnimationFrame(scrollToHeading);
+    });
   });
 }
 
@@ -3524,6 +3645,12 @@ function getTableCellDisplayText(content) {
   return String(content || '').replace(/<br\s*\/?>/gi, '\n');
 }
 
+function showTableCellMarkdownSource(cell) {
+  if (!cell?.classList.contains('is-markdown-rendered')) return;
+  cell.textContent = getTableCellDisplayText(cell.dataset.markdownSource || '');
+  cell.classList.remove('is-markdown-rendered');
+}
+
 function insertTableCellLineBreak(cell) {
   const selection = window.getSelection();
   if (!selection?.rangeCount) return false;
@@ -3555,6 +3682,7 @@ function placeCaretInTableCell(cell, clientX, clientY) {
 
 function focusEditableAtStart(element) {
   if (!element || !element.isConnected) return false;
+  showTableCellMarkdownSource(element);
   element.focus();
   const range = document.createRange();
   range.selectNodeContents(element);
@@ -3566,13 +3694,138 @@ function focusEditableAtStart(element) {
   return true;
 }
 
+const safeInlineHtmlTags = new Set([
+  'STRONG', 'B', 'EM', 'I', 'DEL', 'S', 'MARK', 'CODE', 'U', 'SUB', 'SUP', 'A', 'BR'
+]);
+
+function createSafeInlineMarkdownFragment(source, note, interactiveLinks = true) {
+  const template = document.createElement('template');
+  template.innerHTML = sanitizePreviewHtml(marked.parseInline(String(source || '')));
+  Array.from(template.content.querySelectorAll('*')).forEach(element => {
+    if (!safeInlineHtmlTags.has(element.tagName)) {
+      element.replaceWith(document.createTextNode(element.textContent || ''));
+      return;
+    }
+    if (element.tagName === 'A') {
+      const href = element.getAttribute('href') || '';
+      const link = document.createElement('span');
+      link.className = 'cm-rendered-link';
+      link.textContent = element.textContent || href;
+      link.title = href;
+      if (interactiveLinks) {
+        link.tabIndex = 0;
+        link.setAttribute('role', 'link');
+        const openLink = event => {
+          if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          event.stopPropagation();
+          openRenderedMarkdownLink(href, note);
+        };
+        link.addEventListener('mousedown', event => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+        link.addEventListener('click', openLink);
+        link.addEventListener('keydown', openLink);
+      }
+      element.replaceWith(link);
+      return;
+    }
+    Array.from(element.attributes).forEach(attribute => element.removeAttribute(attribute.name));
+  });
+  return template.content;
+}
+
+const safeBlockHtmlTags = new Set([
+  ...safeInlineHtmlTags,
+  'DIV', 'P', 'SECTION', 'ARTICLE', 'HEADER', 'FOOTER', 'ASIDE', 'NAV',
+  'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'UL', 'OL', 'LI', 'HR', 'IMG'
+]);
+
+function createSafeHtmlBlockWidget(source, note) {
+  const widget = document.createElement('span');
+  widget.className = 'cm-rendered-html-block';
+  const template = document.createElement('template');
+  template.innerHTML = sanitizePreviewHtml(String(source || ''));
+  Array.from(template.content.querySelectorAll('*')).forEach(element => {
+    if (!safeBlockHtmlTags.has(element.tagName)) {
+      element.replaceWith(document.createTextNode(element.textContent || ''));
+      return;
+    }
+    if (element.tagName === 'A') {
+      const title = element.getAttribute('title') || '';
+      Array.from(element.attributes).forEach(attribute => {
+        element.removeAttribute(attribute.name);
+      });
+      if (title) element.title = title;
+      return;
+    }
+    if (element.tagName === 'IMG') {
+      const sourcePath = element.getAttribute('src') || '';
+      const alt = element.getAttribute('alt') || '图片';
+      const title = element.getAttribute('title') || '';
+      Array.from(element.attributes).forEach(attribute => element.removeAttribute(attribute.name));
+      element.alt = alt;
+      if (title) element.title = title;
+      try {
+        element.src = getImageUrl(sourcePath, note);
+      } catch (err) {
+        element.alt = `${alt}（路径无效）`;
+      }
+      return;
+    }
+    Array.from(element.attributes).forEach(attribute => element.removeAttribute(attribute.name));
+  });
+  widget.appendChild(template.content);
+  return widget;
+}
+
+function getHtmlPreviewBlocks(lines, fencedLines = new Set()) {
+  const blocks = [];
+  const openingPattern = /^\s*<(div|p|section|article|header|footer|aside|nav|blockquote|ul|ol|li)\b[^>]*>/i;
+  for (let start = 0; start < lines.length; start += 1) {
+    if (fencedLines.has(start)) continue;
+    const opening = String(lines[start] || '').match(openingPattern);
+    if (!opening) continue;
+    const tag = opening[1].toLowerCase();
+    const openTagPattern = new RegExp(`<${tag}\\b[^>]*>`, 'gi');
+    const closeTagPattern = new RegExp(`</${tag}\\s*>`, 'gi');
+    let depth = 0;
+    let end = start;
+    for (; end < lines.length && end - start <= 400; end += 1) {
+      if (fencedLines.has(end)) break;
+      const line = String(lines[end] || '');
+      depth += (line.match(openTagPattern) || []).length;
+      depth -= (line.match(closeTagPattern) || []).length;
+      if (depth <= 0) break;
+    }
+    if (depth !== 0 || end >= lines.length || fencedLines.has(end)) continue;
+    blocks.push({ start, end, source: lines.slice(start, end + 1).join('\n') });
+    start = end;
+  }
+  return blocks;
+}
+
+function renderTableCellMarkdown(cell, source, note) {
+  const markdownSource = String(source || '');
+  cell.dataset.markdownSource = markdownSource;
+  cell.classList.add('is-markdown-rendered');
+  const containsHtmlLink = /<a\s+[^>]*href\s*=/i.test(markdownSource);
+  cell.replaceChildren(createSafeInlineMarkdownFragment(
+    markdownSource,
+    note,
+    !containsHtmlLink
+  ));
+}
+
 function createEditorTableWidget(
   rows,
   alignments,
   onAddColumn,
   onAddRow,
   onContextMenu,
-  onCommit
+  onCommit,
+  note
 ) {
   const widget = document.createElement('span');
   widget.className = 'cm-table-widget';
@@ -3583,6 +3836,12 @@ function createEditorTableWidget(
   const table = document.createElement('table');
   const getCurrentRows = () => Array.from(table.rows).map(tableRow => {
     return Array.from(tableRow.cells).map(cell => {
+      if (
+        cell.classList.contains('is-markdown-rendered')
+        && cell !== document.activeElement
+      ) {
+        return cell.dataset.markdownSource || '';
+      }
       return (cell.innerText || cell.textContent || '')
         .replace(/\r\n?/g, '\n')
         .replace(/\n{3,}/g, '\n\n')
@@ -3597,12 +3856,22 @@ function createEditorTableWidget(
       const cell = rowIndex === 0
         ? document.createElement('th')
         : document.createElement('td');
-      cell.textContent = getTableCellDisplayText(content);
       cell.contentEditable = 'plaintext-only';
       cell.spellcheck = false;
       cell.style.textAlign = alignments[columnIndex] || 'left';
+      renderTableCellMarkdown(cell, content, note);
+      cell.addEventListener('focus', () => showTableCellMarkdownSource(cell));
+      cell.addEventListener('blur', () => {
+        if (cell.classList.contains('is-markdown-rendered')) return;
+        const source = (cell.innerText || cell.textContent || '')
+          .replace(/\r\n?/g, '\n')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+        renderTableCellMarkdown(cell, source, note);
+      });
       cell.addEventListener('mousedown', event => {
         if (event.button !== 0) return;
+        showTableCellMarkdownSource(cell);
         event.stopPropagation();
       });
       cell.addEventListener('click', event => {
@@ -3820,11 +4089,7 @@ function createEditorCodeWidget(code, requestedLanguage, onCommit, highlightCach
   codeElement.spellcheck = false;
   codeElement.addEventListener('mousedown', event => {
     if (event.button !== 0) return;
-    event.preventDefault();
     event.stopPropagation();
-    focusCodeWidgetWithoutScroll(widget, codeElement, () => {
-      placeCaretInTableCell(codeElement, event.clientX, event.clientY);
-    });
   });
   codeElement.addEventListener('click', event => event.stopPropagation());
   pre.appendChild(codeElement);
@@ -3999,6 +4264,35 @@ function createRichInlineWidget(source) {
   return widget;
 }
 
+function createInlineHtmlWidget(source, note) {
+  const widget = document.createElement('span');
+  widget.className = 'cm-rich-inline-widget cm-rendered-html-inline';
+  widget.classList.toggle('cm-rendered-strong', /^<(?:strong|b)\b/i.test(source));
+  widget.appendChild(createSafeInlineMarkdownFragment(source, note, false));
+  return widget;
+}
+
+function getHtmlPreviewRanges(lineText) {
+  const ranges = [];
+  const patterns = [
+    /<(?:img|hr)\b[^>]*>|<(div|p|section|article|header|footer|aside|nav|h[1-6]|blockquote|ul|ol|li)\b[^>]*>[^\n]*?<\/\1>/gi,
+    /<(strong|b|em|i|del|s|mark|code|u|sub|sup)\b[^>]*>([^\n]*?)<\/\1>|<br\s*\/?>/gi,
+    /<a\s+[^>]*href\s*=\s*(['"])(.*?)\1[^>]*>([^<]+)<\/a>/gi
+  ];
+  patterns.forEach((pattern, patternIndex) => {
+    let match;
+    while ((match = pattern.exec(lineText)) !== null) {
+      ranges.push({
+        from: match.index,
+        to: match.index + match[0].length,
+        source: match[0],
+        block: patternIndex === 0
+      });
+    }
+  });
+  return ranges.sort((left, right) => left.from - right.from || right.to - left.to);
+}
+
 function getCachedDecorationStructure(editorAdapter) {
   if (!editorAdapter.decorationStructureDirty) return editorAdapter.decorationStructure;
   const codeMirror = editorAdapter.codeMirror;
@@ -4007,6 +4301,10 @@ function getCachedDecorationStructure(editorAdapter) {
     (_, line) => codeMirror.getLine(line)
   );
   const blocks = getFencedCodeBlocks(lines);
+  const fencedLines = new Set();
+  blocks.forEach(block => {
+    for (let line = block.start; line <= block.end; line += 1) fencedLines.add(line);
+  });
   const headingSections = getHeadingSectionMap(lines, blocks);
 
   const frontMatter = getFrontMatterBlock(lines);
@@ -4016,6 +4314,7 @@ function getCachedDecorationStructure(editorAdapter) {
   editorAdapter.decorationStructure = {
     lines,
     blocks,
+    htmlBlocks: getHtmlPreviewBlocks(lines, fencedLines),
     headingSections,
     frontMatter,
     mathBlocks,
@@ -4054,6 +4353,36 @@ function getRenderedQuotePrefix(lineText) {
   };
 }
 
+function isHtmlPreviewContentHit(widget, clientX, clientY) {
+  const pointInside = rect => {
+    return clientX >= rect.left && clientX <= rect.right
+      && clientY >= rect.top && clientY <= rect.bottom;
+  };
+  const media = Array.from(widget.querySelectorAll('img, hr'));
+  if (media.some(element => pointInside(element.getBoundingClientRect()))) return true;
+
+  const walker = document.createTreeWalker(widget, NodeFilter.SHOW_TEXT);
+  let textNode = walker.nextNode();
+  while (textNode) {
+    if (textNode.nodeValue?.trim()) {
+      const range = document.createRange();
+      range.selectNodeContents(textNode);
+      if (Array.from(range.getClientRects()).some(pointInside)) return true;
+    }
+    textNode = walker.nextNode();
+  }
+  return false;
+}
+
+document.addEventListener('mousedown', event => {
+  const widget = event.target instanceof Element
+    ? event.target.closest('.cm-rendered-html-block')
+    : null;
+  if (!widget || isHtmlPreviewContentHit(widget, event.clientX, event.clientY)) return;
+  event.preventDefault();
+  event.stopPropagation();
+}, true);
+
 function renderEditorDecorations(editorAdapter, note) {
   if (editorAdapter.renderingDecorations) return;
   editorAdapter.renderingDecorations = true;
@@ -4077,10 +4406,16 @@ function renderEditorDecorations(editorAdapter, note) {
     return;
   }
 
-  const activeLine = codeMirror.getCursor().line;
+  const activeLine = wrapper.contains(document.activeElement)
+    ? codeMirror.getCursor().line
+    : -1;
   const viewport = codeMirror.getViewport();
-  const firstLine = Math.max(0, viewport.from - 80);
-  const lastLine = Math.min(codeMirror.lineCount(), viewport.to + 80);
+  const lineCount = codeMirror.lineCount();
+  const renderWholeDocument = lineCount <= 4000;
+  const firstLine = renderWholeDocument ? 0 : Math.max(0, viewport.from - 320);
+  const lastLine = renderWholeDocument
+    ? lineCount
+    : Math.min(lineCount, viewport.to + 320);
   editorAdapter.decorationRange = { from: firstLine, to: lastLine };
   const structure = getCachedDecorationStructure(editorAdapter);
   const documentLines = structure.lines;
@@ -4100,11 +4435,25 @@ function renderEditorDecorations(editorAdapter, note) {
       codeMirror.setCursor({ line: block.start, ch: 0 });
       codeMirror.focus();
     };
-    widget.addEventListener('dblclick', editSource);
+    if (widget.classList.contains('cm-rendered-html-block')) {
+      widget.title = '单击编辑 HTML 源码';
+      const focusTarget = widget.firstElementChild || widget;
+      focusTarget.addEventListener('mousedown', event => {
+        if (!isHtmlPreviewContentHit(widget, event.clientX, event.clientY)) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        editSource(event);
+      });
+    } else {
+      widget.addEventListener('dblclick', editSource);
+    }
     mark = addMark(from, to, {
       replacedWith: widget,
       atomic: true,
-      handleMouseEvents: true
+      handleMouseEvents: true,
+      estimatedHeight: Math.max(48, (block.end - block.start + 1) * 28)
     });
     for (let line = block.start; line <= block.end; line += 1) renderedLines.add(line);
   }
@@ -4209,6 +4558,42 @@ function renderEditorDecorations(editorAdapter, note) {
     return link;
   }
 
+  function createRenderedListMarker(listPrefix) {
+    const marker = document.createElement('span');
+    marker.className = `cm-rendered-list-marker cm-rendered-${listPrefix.type}`;
+    marker.classList.toggle('is-nested', Boolean(listPrefix.nested));
+    marker.textContent = listPrefix.type === 'ordered'
+      ? `${listPrefix.label} `
+      : listPrefix.nested ? '' : listPrefix.label;
+    return marker;
+  }
+
+  function replaceHtmlPreviewRange(lineNumber, range, occupiedRanges) {
+    if (occupiedRanges.some(item => range.from < item.to && range.to > item.from)) return false;
+    const widget = range.block
+      ? createSafeHtmlBlockWidget(range.source, note)
+      : createInlineHtmlWidget(range.source, note);
+    let mark;
+    const revealSource = event => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (mark) mark.clear();
+      codeMirror.setCursor({ line: lineNumber, ch: range.from });
+      codeMirror.focus();
+    };
+    widget.tabIndex = 0;
+    widget.title = '单击编辑 HTML 源码';
+    widget.addEventListener('mousedown', revealSource);
+    widget.addEventListener('focusin', revealSource);
+    mark = addMark(
+      { line: lineNumber, ch: range.from },
+      { line: lineNumber, ch: range.to },
+      { replacedWith: widget, atomic: true, handleMouseEvents: true }
+    );
+    occupiedRanges.push(range);
+    return true;
+  }
+
   Array.from(editorAdapter.collapsedHeadings).forEach(headingLine => {
     const section = headingSections.get(headingLine);
     if (!section || section.startLine > section.endLine) {
@@ -4253,6 +4638,12 @@ function renderEditorDecorations(editorAdapter, note) {
       }
     });
 
+    structure.htmlBlocks.forEach(block => {
+      const widget = createSafeHtmlBlockWidget(block.source, note);
+      widget.classList.add('is-multiline');
+      replaceBlockWithWidget(block, widget, renderedSpecialLines);
+    });
+
     codeBlocks.forEach(block => {
       if (!block.closed) return;
       if (block.end < firstLine || block.start >= lastLine) return;
@@ -4290,7 +4681,8 @@ function renderEditorDecorations(editorAdapter, note) {
         codeMark = addMark(from, to, {
           replacedWith: widget,
           atomic: true,
-          handleMouseEvents: true
+          handleMouseEvents: true,
+          estimatedHeight: Math.max(96, (block.end - block.start - 1) * 22 + 40)
         });
         renderedCodeLines.add(block.start);
         return;
@@ -4305,7 +4697,8 @@ function renderEditorDecorations(editorAdapter, note) {
       codeMark = addMark(from, to, {
         replacedWith: widget,
         atomic: true,
-        handleMouseEvents: true
+        handleMouseEvents: true,
+        estimatedHeight: Math.max(40, (block.end - block.start - 1) * 22 + 40)
       });
       scheduleDecorationHeightChange(() => {
         return editorAdapter.decorationMarks.includes(codeMark) ? codeMark : null;
@@ -4446,7 +4839,8 @@ function renderEditorDecorations(editorAdapter, note) {
         },
         nextRows => {
           replaceTable(nextRows, alignments);
-        }
+        },
+        note
       );
       tableMark = addMark(from, to, {
         replacedWith: widget,
@@ -4591,11 +4985,7 @@ function renderEditorDecorations(editorAdapter, note) {
           { replacedWith: checkbox, atomic: true, handleMouseEvents: true }
         );
       } else if (renderActiveListPrefix) {
-        const marker = document.createElement('span');
-        marker.className = `cm-rendered-list-marker cm-rendered-${activeListPrefix.type}`;
-        marker.textContent = activeListPrefix.type === 'ordered'
-          ? `${activeListPrefix.label} `
-          : activeListPrefix.label;
+        const marker = createRenderedListMarker(activeListPrefix);
         addMark(
           { line: lineNumber, ch: activeListPrefix.fromCh },
           { line: lineNumber, ch: activeListPrefix.toCh },
@@ -4603,6 +4993,28 @@ function renderEditorDecorations(editorAdapter, note) {
         );
       }
       markCompletedTaskText(lineNumber, lineText, activeListPrefix);
+
+      const activeLinkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
+      let activeLinkMatch;
+      while ((activeLinkMatch = activeLinkPattern.exec(lineText)) !== null) {
+        const fromCh = activeLinkMatch.index;
+        const toCh = activeLinkMatch.index + activeLinkMatch[0].length;
+        if (activeCursor.ch > fromCh && activeCursor.ch < toCh) continue;
+        const formattedLabel = /(?:\*\*|\*|~~|`)/.test(activeLinkMatch[1]);
+        const link = createEditorLinkWidget('', activeLinkMatch[2]);
+        if (formattedLabel) link.appendChild(createRichInlineWidget(activeLinkMatch[1]));
+        else link.textContent = activeLinkMatch[1];
+        addMark(
+          { line: lineNumber, ch: fromCh },
+          { line: lineNumber, ch: toCh },
+          { replacedWith: link, atomic: true, handleMouseEvents: true }
+        );
+      }
+      const occupiedHtmlRanges = [];
+      getHtmlPreviewRanges(lineText).forEach(range => {
+        if (activeCursor.ch >= range.from && activeCursor.ch <= range.to) return;
+        replaceHtmlPreviewRange(lineNumber, range, occupiedHtmlRanges);
+      });
       return;
     }
 
@@ -4709,11 +5121,7 @@ function renderEditorDecorations(editorAdapter, note) {
         { replacedWith: checkbox, atomic: true, handleMouseEvents: true }
       );
     } else if (listPrefix) {
-      const marker = document.createElement('span');
-      marker.className = `cm-rendered-list-marker cm-rendered-${listPrefix.type}`;
-      marker.textContent = listPrefix.type === 'ordered'
-        ? `${listPrefix.label} `
-        : listPrefix.label;
+      const marker = createRenderedListMarker(listPrefix);
       addMark(
         { line: lineNumber, ch: listPrefix.fromCh },
         { line: lineNumber, ch: listPrefix.toCh },
@@ -4736,6 +5144,10 @@ function renderEditorDecorations(editorAdapter, note) {
       occupiedRanges.push({ from, to });
       return true;
     };
+
+    getHtmlPreviewRanges(lineText).forEach(range => {
+      replaceHtmlPreviewRange(lineNumber, range, occupiedRanges);
+    });
 
     const richInlinePattern = /\*\*\*(?=\S)(.+?)(?<=\S)\*\*\*/g;
     while ((match = richInlinePattern.exec(lineText)) !== null) {
@@ -6264,7 +6676,9 @@ templateModal.addEventListener('click', event => {
 });
 
 function closeTopmostModal() {
-  if (mermaidViewer.classList.contains('active')) {
+  if (imageViewer.classList.contains('active')) {
+    closeImageViewer();
+  } else if (mermaidViewer.classList.contains('active')) {
     closeMermaidViewer();
   } else if (noteHistoryModal.classList.contains('active')) {
     hideNoteHistory();
@@ -6454,6 +6868,7 @@ async function openInRightPanel(note) {
   updatePreviewRight(true);
   rightPanel.style.display = 'flex';
   panelDivider.classList.remove('hidden');
+  resetPaneScrollToTop(editorRight, previewRight);
   renderTree();
   saveWorkspaceSession();
 }

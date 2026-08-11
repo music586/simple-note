@@ -32,9 +32,18 @@ app.whenReady().then(async () => {
         '',
         '# 一级标题',
         '',
-        '普通 **粗体** *斜体* ~~删除~~ ==高亮== 和 \`代码\`。',
+        '普通 **粗体** 与 <strong>HTML 粗体</strong>、<u>下划线</u>、H<sub>2</sub>O *斜体* ~~删除~~ ==高亮== 和 \`代码\`。',
         '',
         '[相对链接](./other.md) 与 [外部链接](https://example.com)',
+        '<a href="./other.md">HTML 相对链接</a>',
+        '<div>',
+        '  <div><strong>HTML 容器</strong></div>',
+        '</div>',
+        '',
+        '<p>HTML 段落</p>',
+        '',
+        '<img src="missing.png" alt="HTML 图片" onerror="window.previewSecurityTriggered = true">',
+        '',
         '[[内部笔记|Wiki 链接]] 与 ***粗斜体***',
         '行内公式 $E = mc^2$',
         '<img src="missing.png" onerror="window.previewSecurityTriggered = true">',
@@ -63,7 +72,8 @@ app.whenReady().then(async () => {
         'const answer = 42;',
         '\`\`\`',
         '',
-        '诊断结束'
+        '诊断结束',
+        '[活动相对链接](./other.md)'
       ].join('\\n');
       currentNote = { path: ${JSON.stringify(path.join(__dirname, '..', 'diagnostic.md'))} };
       window.previewSecurityTriggered = false;
@@ -72,7 +82,8 @@ app.whenReady().then(async () => {
       previewHiddenLeft = false;
       updatePreview(true);
       await waitFrames(8);
-      const root = editor.codeMirror.getWrapperElement();
+      const codeMirror = editor.codeMirror;
+      const root = codeMirror.getWrapperElement();
       const count = selector => root.querySelectorAll(selector).length;
       const result = {
         valueMatches: editor.value === source,
@@ -94,6 +105,15 @@ app.whenReady().then(async () => {
         callouts: count('.cm-callout-widget'),
         wikiLinks: count('.cm-rendered-link.is-wiki-link'),
         richInline: count('.cm-rich-inline-widget'),
+        htmlInline: count('.cm-rendered-html-inline'),
+        htmlBlocks: count('.cm-rendered-html-block'),
+        htmlBlockImages: count('.cm-rendered-html-block img'),
+        htmlBlockContentWidth: root.querySelector('.cm-rendered-html-block')
+          ?.firstElementChild?.getBoundingClientRect().width || 0,
+        htmlBlockEditorWidth: root.getBoundingClientRect().width,
+        htmlStrongWeights: Array.from(root.querySelectorAll(
+          '.cm-rendered-html-inline strong, .cm-rendered-html-block strong'
+        )).map(element => Number.parseInt(getComputedStyle(element).fontWeight, 10)),
         previewFrontMatter: preview.querySelectorAll('.preview-frontmatter').length,
         previewMath: preview.querySelectorAll('.katex').length,
         previewCallouts: preview.querySelectorAll('.callout').length,
@@ -102,6 +122,76 @@ app.whenReady().then(async () => {
         previewEventAttributes: preview.querySelectorAll('[onerror], [onclick], [onload]').length,
         previewSecurityTriggered: window.previewSecurityTriggered
       };
+
+      codeMirror.scrollTo(null, codeMirror.getScrollInfo().height);
+      await waitFrames(3);
+      const firstOutlineItem = documentOutline.querySelector('.document-outline-item');
+      firstOutlineItem?.click();
+      await waitFrames(6);
+      const outlineTargetLine = Number(firstOutlineItem?.dataset.line ?? -1);
+      result.firstOutlineClick = {
+        targetLine: outlineTargetLine,
+        cursorLine: codeMirror.getCursor().line,
+        scrollDelta: outlineTargetLine >= 0
+          ? Math.abs(
+            codeMirror.getScrollInfo().top
+              - codeMirror.heightAtLine(outlineTargetLine, 'local')
+          )
+          : Number.POSITIVE_INFINITY
+      };
+
+      const htmlLinkPreview = root.querySelector('.cm-rendered-html-inline .cm-rendered-link');
+      htmlLinkPreview?.dispatchEvent(new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+        button: 0
+      }));
+      await waitFrames(3);
+      result.htmlLinkFocusRestoresSource = codeMirror.getCursor().line === 10
+        && codeMirror.getLine(10).startsWith('<a href=');
+      documentOutline.querySelector('.document-outline-item')?.focus();
+      await waitFrames(4);
+
+      const htmlBlock = root.querySelector('.cm-rendered-html-block');
+      const htmlBlockText = htmlBlock?.querySelector('strong');
+      const htmlBlockTextRect = htmlBlockText?.getBoundingClientRect();
+      htmlBlock?.firstElementChild?.dispatchEvent(new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        clientX: htmlBlockTextRect ? htmlBlockTextRect.left + 2 : 0,
+        clientY: htmlBlockTextRect ? htmlBlockTextRect.top + htmlBlockTextRect.height / 2 : 0
+      }));
+      await waitFrames(3);
+      result.htmlFocusRestoresSource = codeMirror.getCursor().line === 11
+        && codeMirror.getLine(11) === '<div>';
+      documentOutline.querySelector('.document-outline-item')?.focus();
+      await waitFrames(4);
+      result.htmlBlurRestoresPreview = root.querySelectorAll('.cm-rendered-html-block').length === 4;
+      const restoredHtmlBlock = root.querySelector('.cm-rendered-html-block');
+      const restoredRect = restoredHtmlBlock?.getBoundingClientRect();
+      const cursorBeforeBlankClick = codeMirror.getCursor().line;
+      const blankClientX = restoredRect ? restoredRect.right - 1 : 0;
+      const blankClientY = restoredRect ? restoredRect.bottom - 1 : 0;
+      const blankHit = restoredHtmlBlock
+        ? isHtmlPreviewContentHit(restoredHtmlBlock, blankClientX, blankClientY)
+        : true;
+      restoredHtmlBlock?.firstElementChild?.dispatchEvent(new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        clientX: blankClientX,
+        clientY: blankClientY
+      }));
+      await waitFrames(2);
+      result.htmlBlankArea = {
+        hit: blankHit,
+        cursorBefore: cursorBeforeBlankClick,
+        cursorAfter: codeMirror.getCursor().line,
+        blocksAfter: root.querySelectorAll('.cm-rendered-html-block').length
+      };
+      result.htmlBlankAreaIgnored = !blankHit
+        && result.htmlBlankArea.blocksAfter === 4;
 
       const tableCell = root.querySelector('.cm-table-widget tbody td');
       const selection = window.getSelection();
@@ -143,12 +233,12 @@ app.whenReady().then(async () => {
 
   const passed = result.valueMatches
     && result.heading === 1
-    && result.strong >= 1
+    && result.strong >= 2
     && result.emphasis >= 1
     && result.strike >= 1
     && result.highlight >= 1
     && result.inlineCode >= 1
-    && result.links === 3
+    && result.links === 5
     && result.quotes >= 1
     && result.lists >= 3
     && result.tasks === 1
@@ -160,6 +250,13 @@ app.whenReady().then(async () => {
     && result.callouts === 1
     && result.wikiLinks === 1
     && result.richInline >= 1
+    && result.htmlInline === 4
+    && result.htmlBlocks === 4
+    && result.htmlBlockImages === 2
+    && result.htmlBlockContentWidth > 0
+    && result.htmlBlockContentWidth < result.htmlBlockEditorWidth * 0.9
+    && result.htmlStrongWeights.length === 2
+    && result.htmlStrongWeights.every(weight => weight >= 700)
     && result.previewFrontMatter === 1
     && result.previewMath >= 2
     && result.previewCallouts === 1
@@ -167,6 +264,13 @@ app.whenReady().then(async () => {
     && result.previewScripts === 0
     && result.previewEventAttributes === 0
     && !result.previewSecurityTriggered
+    && result.firstOutlineClick.targetLine >= 0
+    && result.firstOutlineClick.cursorLine === result.firstOutlineClick.targetLine
+    && result.firstOutlineClick.scrollDelta <= 1
+    && result.htmlFocusRestoresSource
+    && result.htmlLinkFocusRestoresSource
+    && result.htmlBlurRestoresPreview
+    && result.htmlBlankAreaIgnored
     && result.tableLineBreakSaved
     && result.tableLineBreakRendered;
   await window.close();

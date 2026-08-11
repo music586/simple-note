@@ -140,6 +140,29 @@ test('table cells preserve line breaks as Markdown inline HTML', () => {
   assert.match(cells, /white-space:\s*pre;/);
 });
 
+test('table cells pre-render inline Markdown without losing editable source', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
+  const styles = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+
+  assert.match(renderer, /function renderTableCellMarkdown\(cell, source, note\)/);
+  assert.match(renderer, /sanitizePreviewHtml\(marked\.parseInline\(String\(source \|\| ''\)\)\)/);
+  assert.match(renderer, /'STRONG', 'B', 'EM', 'I', 'DEL', 'S', 'MARK', 'CODE', 'U', 'SUB', 'SUP'/);
+  assert.match(renderer, /cell\.dataset\.markdownSource = markdownSource/);
+  assert.match(renderer, /cell\.classList\.add\('is-markdown-rendered'\)/);
+  assert.match(renderer, /function showTableCellMarkdownSource\(cell\)/);
+  assert.match(renderer, /showTableCellMarkdownSource\(element\);/);
+  assert.match(renderer, /showTableCellMarkdownSource\(cell\);/);
+  assert.match(renderer, /renderTableCellMarkdown\(cell, source, note\)/);
+  assert.match(renderer, /return cell\.dataset\.markdownSource \|\| ''/);
+  assert.match(renderer, /cell !== document\.activeElement/);
+  assert.match(renderer, /openRenderedMarkdownLink\(href, note\)/);
+  assert.match(renderer, /const containsHtmlLink = \/<a\\s\+\[\^>\]\*href\\s\*=\/i/);
+  assert.match(renderer, /note,\s*!containsHtmlLink/);
+  assert.match(styles, /\.cm-table-widget \.is-markdown-rendered strong/);
+  assert.match(styles, /\.cm-table-widget \.is-markdown-rendered code/);
+  assert.match(styles, /\.cm-table-widget \.is-markdown-rendered sub/);
+});
+
 test('Electron diagnostic covers Enter navigation and appending a table row', () => {
   const diagnostic = fs.readFileSync(
     path.join(__dirname, '..', 'scripts', 'editor-table-document-diagnostic.js'),
@@ -151,6 +174,18 @@ test('Electron diagnostic covers Enter navigation and appending a table row', ()
   assert.match(diagnostic, /result\.enterNavigation\.activeRow === 2/);
   assert.match(diagnostic, /result\.enterNavigation\.activeColumn === 1/);
   assert.match(diagnostic, /result\.existingRowNavigation\.activeRow === 1/);
+});
+
+test('Electron diagnostic covers table Markdown preview and source restoration', () => {
+  const diagnostic = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'editor-table-document-diagnostic.js'),
+    'utf8'
+  );
+
+  assert.match(diagnostic, /const markdownTableSource =/);
+  assert.match(diagnostic, /markdownPreview\.editingSource/);
+  assert.match(diagnostic, /markdownPreview\.renderedAfterBlur/);
+  assert.match(diagnostic, /markdownPreviewPassed/);
 });
 
 test('wide editor tables keep readable columns and scroll inside the editor page', () => {

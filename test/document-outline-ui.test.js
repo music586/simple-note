@@ -3,6 +3,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const diagnostic = fs.readFileSync(
+  path.join(__dirname, '..', 'scripts', 'editor-prerender-diagnostic.js'),
+  'utf8'
+);
+
 test('outline is available only for wide edit-only containers and pins headings to top', () => {
   const index = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
@@ -20,9 +25,10 @@ test('outline is available only for wide edit-only containers and pins headings 
   assert.match(renderer, /function updateDocumentOutlineSelection\(/);
   assert.match(renderer, /item\.classList\.toggle\('active', active\)/);
   assert.match(renderer, /aria-current', 'location'/);
+  assert.match(renderer, /function navigateDocumentOutlineHeading\(codeMirror, lineNumber\)/);
   assert.match(
     renderer,
-    /codeMirror\.scrollTo\(null, codeMirror\.heightAtLine\(heading\.line, 'local'\)\)/
+    /codeMirror\.scrollTo\(null, codeMirror\.heightAtLine\(lineNumber, 'local'\)\)/
   );
   assert.match(styles, /\.document-outline-item\.active/);
   assert.match(styles, /\.document-outline-item\.active::before/);
@@ -85,7 +91,20 @@ test('clicking an outline item briefly highlights the target editor heading', ()
     renderer,
     /codeMirror\.removeLineDecoration\(lineNumber, 'wrap', 'document-outline-target'\)/
   );
-  assert.match(renderer, /highlightDocumentOutlineTarget\(codeMirror, heading\.line\)/);
+  assert.match(renderer, /highlightDocumentOutlineTarget\(codeMirror, lineNumber\)/);
   assert.match(styles, /\.document-outline-target\s*\{[^}]*animation:/s);
   assert.match(styles, /@keyframes document-outline-target-highlight/);
+});
+
+test('first outline click scrolls after decoration scroll restoration', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
+  const navigation = renderer.match(
+    /function navigateDocumentOutlineHeading\(codeMirror, lineNumber\) \{([\s\S]*?)\n\}/
+  )?.[1] || '';
+
+  assert.match(navigation, /codeMirror\.setCursor\(\{ line: lineNumber, ch: 0 \}\)/);
+  assert.match(navigation, /requestAnimationFrame\(\(\) => \{[\s\S]*requestAnimationFrame\(\(\) => \{/);
+  assert.match(navigation, /requestAnimationFrame\(scrollToHeading\)/);
+  assert.match(diagnostic, /firstOutlineItem\?\.click\(\)/);
+  assert.match(diagnostic, /result\.firstOutlineClick\.scrollDelta <= 1/);
 });

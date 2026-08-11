@@ -49,13 +49,18 @@ test('selecting a language focuses the editable content inside the rendered code
   assert.doesNotMatch(applySelection[1], /codeMirror\.focus\(\)/);
 });
 
-test('clicking a rendered code block preserves the editor scroll position', () => {
+test('code block text supports native selection while preserving editor scroll', () => {
   assert.match(renderer, /function focusCodeWidgetWithoutScroll\(widget, target, focus\)/);
   assert.match(renderer, /target\.focus\(\{ preventScroll: true \}\)/);
   assert.match(renderer, /scroller\.scrollTop = scrollTop/);
   assert.match(renderer, /requestAnimationFrame\(restoreScroll\)/);
-  assert.match(
-    renderer,
-    /focusCodeWidgetWithoutScroll\(widget, codeElement, \(\) => \{[\s\S]*placeCaretInTableCell/
+  const codeMouseHandler = renderer.match(
+    /codeElement\.addEventListener\('mousedown', event => \{([\s\S]*?)\n  \}\);/
   );
+  assert.ok(codeMouseHandler);
+  assert.match(codeMouseHandler[1], /event\.stopPropagation\(\)/);
+  assert.doesNotMatch(codeMouseHandler[1], /event\.preventDefault\(\)/);
+  assert.doesNotMatch(codeMouseHandler[1], /placeCaretInTableCell/);
+  assert.match(styles, /\.cm-code-widget code\.hljs\s*\{[^}]*user-select: text;/s);
+  assert.match(styles, /\.cm-code-widget code\.hljs\s*\{[^}]*cursor: text;/s);
 });

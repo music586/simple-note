@@ -8,7 +8,9 @@ function captureEditorScrollAnchor(codeMirror) {
   }
 
   const viewport = codeMirror.getViewport();
-  const line = Math.max(0, viewport.from);
+  const line = typeof codeMirror.lineAtHeight === 'function'
+    ? Math.max(0, codeMirror.lineAtHeight(scrollTop, 'local'))
+    : Math.max(0, viewport.from);
   return {
     line,
     offset: codeMirror.heightAtLine(line, 'local') - scrollTop,

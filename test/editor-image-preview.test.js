@@ -22,7 +22,7 @@ test('pressing an image preview selects it without moving the editor cursor', ()
   assert.match(renderer, /widget\.classList\.toggle\('is-selected'\)/);
   const imageWidgetFactory = renderer.slice(
     renderer.indexOf('function createImageWidget'),
-    renderer.indexOf('Array.from(editorAdapter.collapsedHeadings)')
+    renderer.indexOf('function createTaskCheckbox')
   );
   assert.doesNotMatch(imageWidgetFactory, /codeMirror\.setCursor/);
 });

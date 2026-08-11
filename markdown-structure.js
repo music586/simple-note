@@ -36,6 +36,7 @@ const MARKDOWN_STRUCTURE_COMMANDS = [
   },
   { id: 'quote', label: '引用', hint: '>', prefix: '> ', keywords: ['引用', 'yy', '>'] }
 ];
+const LIST_INDENT = '      ';
 
 function filterStructureCommands(query) {
   const normalized = String(query || '').trim().toLowerCase();
@@ -71,9 +72,14 @@ function getRenderedListPrefix(lineText) {
 
   const bullet = lineText.match(/^(\s*)[-*+]\s+/);
   if (!bullet) return null;
+  const indentWidth = Array.from(bullet[1]).reduce((width, character) => {
+    return width + (character === '\t' ? LIST_INDENT.length : 1);
+  }, 0);
+  const isSecondLevel = Math.floor(indentWidth / LIST_INDENT.length) === 1;
   return {
     type: 'bullet',
-    label: '•',
+    label: isSecondLevel ? '◦' : '•',
+    nested: isSecondLevel,
     fromCh: bullet[1].length,
     toCh: bullet[0].length
   };
@@ -81,7 +87,7 @@ function getRenderedListPrefix(lineText) {
 
 function shouldRenderActiveListPrefix(listPrefix, cursorCh) {
   if (!listPrefix) return false;
-  return cursorCh > listPrefix.toCh;
+  return cursorCh >= listPrefix.toCh;
 }
 
 function getActiveBulletSourceCursor(listPrefix, cursorCh) {
@@ -281,6 +287,17 @@ function getEnterEdit(context) {
   if (context.inFence || context.ch < context.contentStart) return null;
   if (!['heading', 'bullet', 'ordered', 'task', 'quote'].includes(context.type)) return null;
   if (context.emptyItem && context.type !== 'heading') {
+    const isList = ['bullet', 'ordered', 'task'].includes(context.type);
+    if (isList && context.indent.startsWith(LIST_INDENT)) {
+      return createEdit(
+        context,
+        0,
+        LIST_INDENT.length,
+        '',
+        context.line,
+        Math.max(0, context.ch - LIST_INDENT.length)
+      );
+    }
     return createEdit(context, 0, context.text.length, '', context.line, 0);
   }
 
@@ -303,17 +320,40 @@ function getEnterEdit(context) {
 
 function getIndentEdit(context, direction) {
   if (context.inFence || !['bullet', 'ordered', 'task'].includes(context.type)) return null;
-  if (direction > 0) return createEdit(context, 0, 0, '      ', context.line, context.ch + 6);
-  if (!context.indent.startsWith('      ')) return null;
-  return createEdit(context, 0, 6, '', context.line, Math.max(0, context.ch - 6));
+  if (direction > 0) {
+    return createEdit(
+      context,
+      0,
+      0,
+      LIST_INDENT,
+      context.line,
+      context.ch + LIST_INDENT.length
+    );
+  }
+  if (!context.indent.startsWith(LIST_INDENT)) return null;
+  return createEdit(
+    context,
+    0,
+    LIST_INDENT.length,
+    '',
+    context.line,
+    Math.max(0, context.ch - LIST_INDENT.length)
+  );
 }
 
 function getBackspaceEdit(context) {
   if (context.inFence || context.ch !== context.contentStart) return null;
   if (!['heading', 'bullet', 'ordered', 'task', 'quote'].includes(context.type)) return null;
   const isList = ['bullet', 'ordered', 'task'].includes(context.type);
-  if (isList && context.indent.startsWith('      ')) {
-    return createEdit(context, 0, 6, '', context.line, context.ch - 6);
+  if (isList && context.indent.startsWith(LIST_INDENT)) {
+    return createEdit(
+      context,
+      0,
+      LIST_INDENT.length,
+      '',
+      context.line,
+      context.ch - LIST_INDENT.length
+    );
   }
   if (isList && context.indent) return null;
   return createEdit(context, 0, context.contentStart, '', context.line, 0);

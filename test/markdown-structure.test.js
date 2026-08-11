@@ -31,11 +31,11 @@ test('active list markers show source while the cursor is inside or next to the 
 
   assert.equal(shouldRenderActiveListPrefix(bullet, 0), false);
   assert.equal(shouldRenderActiveListPrefix(bullet, 1), false);
-  assert.equal(shouldRenderActiveListPrefix(bullet, 2), false);
+  assert.equal(shouldRenderActiveListPrefix(bullet, 2), true);
   assert.equal(shouldRenderActiveListPrefix(bullet, 3), true);
-  assert.equal(shouldRenderActiveListPrefix(ordered, ordered.toCh), false);
+  assert.equal(shouldRenderActiveListPrefix(ordered, ordered.toCh), true);
   assert.equal(shouldRenderActiveListPrefix(ordered, ordered.toCh + 1), true);
-  assert.equal(shouldRenderActiveListPrefix(task, task.toCh), false);
+  assert.equal(shouldRenderActiveListPrefix(task, task.toCh), true);
   assert.equal(shouldRenderActiveListPrefix(task, task.toCh + 1), true);
   assert.equal(getActiveBulletSourceCursor(bullet, 0), 1);
   assert.equal(getActiveBulletSourceCursor(bullet, 1), 1);
@@ -218,6 +218,15 @@ test('rendered list prefixes preserve ordered numbers and task state', () => {
   });
   assert.equal(getRenderedListPrefix('3) item').label, '3)');
   assert.equal(getRenderedListPrefix('- item').label, '•');
+  assert.equal(getRenderedListPrefix('- ').label, '•');
+  assert.equal(getRenderedListPrefix('  - indented top-level').label, '•');
+  assert.equal(getRenderedListPrefix('  - indented top-level').nested, false);
+  assert.equal(getRenderedListPrefix('      - ').label, '◦');
+  assert.equal(getRenderedListPrefix('      - ').nested, true);
+  assert.equal(getRenderedListPrefix('\t- tab nested').nested, true);
+  assert.equal(getRenderedListPrefix('- ').nested, false);
+  assert.equal(getRenderedListPrefix('            * third level').label, '•');
+  assert.equal(getRenderedListPrefix('            * third level').nested, false);
   assert.deepEqual(getRenderedListPrefix('- [x] done'), {
     type: 'task',
     checked: true,
@@ -297,9 +306,26 @@ test('Enter inserts a continuation without replacing a mid-line suffix', () => {
   });
 });
 
-test('Enter exits empty list and quote items but continues an empty heading', () => {
+test('Enter outdents empty nested list items one level before exiting the list', () => {
+  const nestedCases = [
+    ['            - ', 14, '      - ', 8],
+    ['      3. ', 9, '3. ', 3],
+    ['      - [ ] ', 12, '- [ ] ', 6]
+  ];
+  for (const [line, ch, text, cursorCh] of nestedCases) {
+    assert.deepEqual(getEnterEdit(analyzeLineContext([line], { line: 0, ch })), {
+      from: { line: 0, ch: 0 },
+      to: { line: 0, ch: 6 },
+      text: '',
+      cursor: { line: 0, ch: cursorCh }
+    });
+    assert.equal(line.slice(6), text);
+  }
+});
+
+test('Enter exits top-level empty list and quote items but continues an empty heading', () => {
   const cases = [
-    ['  - ', 4],
+    ['- ', 2],
     ['3. ', 3],
     ['- [ ] ', 6],
     ['> ', 2]

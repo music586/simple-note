@@ -14,6 +14,26 @@ test('list markers and unchecked task controls use the body color', () => {
   assert.match(styles, /\.cm-rendered-checkbox\s*\{[^}]*border-color: var\(--md-body\)/s);
 });
 
+test('nested unordered list markers use a font-independent hollow circle', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8');
+
+  assert.match(renderer, /classList\.toggle\('is-nested', Boolean\([^)]*\.nested\)\)/);
+  assert.match(
+    styles,
+    /\.cm-rendered-bullet\.is-nested::before\s*\{[^}]*border: 1\.4px solid currentColor/s
+  );
+  assert.match(styles, /\.cm-rendered-bullet\.is-nested::before\s*\{[^}]*border-radius: 50%/s);
+  assert.match(
+    styles,
+    /\.cm-rendered-bullet\.is-nested::before\s*\{[^}]*top: 50%;[^}]*left: 50%;/s
+  );
+  assert.match(styles, /transform: translate\(-50%, -50%\)/);
+  assert.match(renderer, /function createRenderedListMarker\(listPrefix\)/);
+  assert.match(renderer, /listPrefix\.nested \? '' : listPrefix\.label/);
+  assert.match(renderer, /createRenderedListMarker\(activeListPrefix\)/);
+  assert.match(renderer, /createRenderedListMarker\(listPrefix\)/);
+});
+
 test('checked task controls follow the selected accent theme', () => {
   assert.match(styles, /:root\[data-accent\] \{[^}]*--md-task-checked: var\(--accent-color\)/s);
   assert.match(styles, /\.cm-rendered-checkbox\.is-checked\s*\{[^}]*var\(--md-task-checked\)/s);
