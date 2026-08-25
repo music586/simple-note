@@ -13,7 +13,9 @@ const {
   getFencedCodeBlocks,
   analyzeLineContext,
   getEnterEdit,
+  getSoftBreakEdit,
   getIndentEdit,
+  getListSelectionIndentEdit,
   getBackspaceEdit,
   getSlashMenuUpdate,
   getSlashCommandEdit
@@ -212,7 +214,11 @@ test('filter matches Chinese, pinyin initials, and Markdown markers', () => {
 test('rendered list prefixes preserve ordered numbers and task state', () => {
   assert.deepEqual(getRenderedListPrefix('  12. item'), {
     type: 'ordered',
+    indent: '  ',
+    number: 12,
     label: '12.',
+    delimiter: '.',
+    content: 'item',
     fromCh: 2,
     toCh: 6
   });
@@ -221,15 +227,18 @@ test('rendered list prefixes preserve ordered numbers and task state', () => {
   assert.equal(getRenderedListPrefix('- ').label, '•');
   assert.equal(getRenderedListPrefix('  - indented top-level').label, '•');
   assert.equal(getRenderedListPrefix('  - indented top-level').nested, false);
-  assert.equal(getRenderedListPrefix('      - ').label, '◦');
-  assert.equal(getRenderedListPrefix('      - ').nested, true);
+  assert.equal(getRenderedListPrefix('    - ').label, '◦');
+  assert.equal(getRenderedListPrefix('    - ').nested, true);
   assert.equal(getRenderedListPrefix('\t- tab nested').nested, true);
   assert.equal(getRenderedListPrefix('- ').nested, false);
-  assert.equal(getRenderedListPrefix('            * third level').label, '•');
-  assert.equal(getRenderedListPrefix('            * third level').nested, false);
+  assert.equal(getRenderedListPrefix('        * third level').label, '▪');
+  assert.equal(getRenderedListPrefix('        * third level').nested, true);
   assert.deepEqual(getRenderedListPrefix('- [x] done'), {
     type: 'task',
+    indent: '',
+    marker: '-',
     checked: true,
+    content: 'done',
     fromCh: 0,
     toCh: 6,
     toggleCh: 3
@@ -283,6 +292,14 @@ test('Enter continues supported structures', () => {
     text: '\n- [ ] ',
     cursor: { line: 1, ch: 6 }
   });
+  assert.equal(
+    getEnterEdit(analyzeLineContext(['* [ ] task'], { line: 0, ch: 10 })).text,
+    '\n* [ ] '
+  );
+  assert.equal(
+    getEnterEdit(analyzeLineContext(['3) item'], { line: 0, ch: 7 })).text,
+    '\n4) '
+  );
   assert.deepEqual(getEnterEdit(analyzeLineContext(['> > quote'], { line: 0, ch: 9 })), {
     from: { line: 0, ch: 9 },
     to: { line: 0, ch: 9 },
@@ -308,18 +325,18 @@ test('Enter inserts a continuation without replacing a mid-line suffix', () => {
 
 test('Enter outdents empty nested list items one level before exiting the list', () => {
   const nestedCases = [
-    ['            - ', 14, '      - ', 8],
-    ['      3. ', 9, '3. ', 3],
-    ['      - [ ] ', 12, '- [ ] ', 6]
+    ['        - ', 10, 8, '    ', '    - ', 6],
+    ['    3. ', 7, 4, '', '3. ', 3],
+    ['    - [ ] ', 10, 4, '', '- [ ] ', 6]
   ];
-  for (const [line, ch, text, cursorCh] of nestedCases) {
+  for (const [line, ch, indentLength, replacement, text, cursorCh] of nestedCases) {
     assert.deepEqual(getEnterEdit(analyzeLineContext([line], { line: 0, ch })), {
       from: { line: 0, ch: 0 },
-      to: { line: 0, ch: 6 },
-      text: '',
+      to: { line: 0, ch: indentLength },
+      text: replacement,
       cursor: { line: 0, ch: cursorCh }
     });
-    assert.equal(line.slice(6), text);
+    assert.equal(`${replacement}${line.slice(indentLength)}`, text);
   }
 });
 
@@ -347,18 +364,18 @@ test('Enter exits top-level empty list and quote items but continues an empty he
   });
 });
 
-test('Tab and Shift+Tab change list indentation by six spaces', () => {
+test('Tab and Shift+Tab change list indentation by four spaces', () => {
   const context = analyzeLineContext(['- item'], { line: 0, ch: 2 });
   assert.deepEqual(getIndentEdit(context, 1), {
     from: { line: 0, ch: 0 },
     to: { line: 0, ch: 0 },
-    text: '      ',
-    cursor: { line: 0, ch: 8 }
+    text: '    ',
+    cursor: { line: 0, ch: 6 }
   });
-  const nested = analyzeLineContext(['      - item'], { line: 0, ch: 8 });
+  const nested = analyzeLineContext(['    - item'], { line: 0, ch: 6 });
   assert.deepEqual(getIndentEdit(nested, -1), {
     from: { line: 0, ch: 0 },
-    to: { line: 0, ch: 6 },
+    to: { line: 0, ch: 4 },
     text: '',
     cursor: { line: 0, ch: 2 }
   });
@@ -366,10 +383,10 @@ test('Tab and Shift+Tab change list indentation by six spaces', () => {
 });
 
 test('Backspace outdents nested items before removing top-level markers', () => {
-  const nested = getBackspaceEdit(analyzeLineContext(['      - item'], { line: 0, ch: 8 }));
+  const nested = getBackspaceEdit(analyzeLineContext(['    - item'], { line: 0, ch: 6 }));
   assert.deepEqual(nested, {
     from: { line: 0, ch: 0 },
-    to: { line: 0, ch: 6 },
+    to: { line: 0, ch: 4 },
     text: '',
     cursor: { line: 0, ch: 2 }
   });
@@ -390,10 +407,68 @@ test('keyboard transformations return null inside fenced code', () => {
   assert.equal(getBackspaceEdit(context), null);
 });
 
-test('outdent transformations preserve tab and mixed whitespace indentation', () => {
+test('outdent transformations handle tabs and mixed whitespace indentation', () => {
   for (const line of ['\t\t- item', ' \t- item']) {
     const context = analyzeLineContext([line], { line: 0, ch: 4 });
-    assert.equal(getIndentEdit(context, -1), null);
-    assert.equal(getBackspaceEdit(context), null);
+    assert.ok(getIndentEdit(context, -1));
+    assert.ok(getBackspaceEdit(context));
   }
+});
+
+test('mixed indentation outdents by one visual level in a single edit', () => {
+  const context = analyzeLineContext([' \t- item'], { line: 0, ch: 4 });
+  assert.deepEqual(getIndentEdit(context, -1), {
+    from: { line: 0, ch: 0 },
+    to: { line: 0, ch: 2 },
+    text: '',
+    cursor: { line: 0, ch: 2 }
+  });
+});
+
+test('Shift+Enter inserts an aligned continuation line inside a list item', () => {
+  assert.deepEqual(getSoftBreakEdit(analyzeLineContext(['- item'], { line: 0, ch: 6 })), {
+    from: { line: 0, ch: 6 },
+    to: { line: 0, ch: 6 },
+    text: '\n  ',
+    cursor: { line: 1, ch: 2 }
+  });
+  assert.equal(
+    getSoftBreakEdit(analyzeLineContext(['\t- item'], { line: 0, ch: 7 })).text,
+    '\n\t  '
+  );
+});
+
+test('selected list lines indent and outdent as one edit while preserving selection', () => {
+  const lines = ['- one', '  continuation', '- two'];
+  const indent = getListSelectionIndentEdit(
+    lines,
+    { line: 0, ch: 0 },
+    { line: 2, ch: 5 },
+    1
+  );
+  assert.equal(indent.text, '    - one\n      continuation\n    - two');
+  assert.deepEqual(indent.selection.head, { line: 2, ch: 9 });
+  const outdent = getListSelectionIndentEdit(
+    ['    - one', '    - two'],
+    { line: 0, ch: 4 },
+    { line: 1, ch: 9 },
+    -1
+  );
+  assert.equal(outdent.text, '- one\n- two');
+  const reverse = getListSelectionIndentEdit(
+    ['- one', '- two'],
+    { line: 1, ch: 5 },
+    { line: 0, ch: 0 },
+    1
+  );
+  assert.deepEqual(reverse.selection, {
+    anchor: { line: 1, ch: 9 },
+    head: { line: 0, ch: 4 }
+  });
+  assert.equal(getListSelectionIndentEdit(
+    ['ordinary paragraph', '- item'],
+    { line: 0, ch: 0 },
+    { line: 1, ch: 6 },
+    1
+  ), null);
 });

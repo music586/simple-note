@@ -15,6 +15,11 @@ function createCm(selected = false) {
   return {
     calls,
     somethingSelected: () => selected,
+    lineCount: () => 2,
+    getLine: line => ['- one', '- two'][line],
+    getCursor: which => which === 'from'
+      ? { line: 0, ch: 0 }
+      : { line: 1, ch: 5 },
     execCommand: command => calls.push(['execCommand', command]),
     operation: callback => {
       calls.push(['operation']);
@@ -57,8 +62,16 @@ function createHarness(overrides = {}) {
       calls.push(['enterEdit', value]);
       return edit;
     },
+    getSoftBreakEdit: value => {
+      calls.push(['softBreakEdit', value]);
+      return edit;
+    },
     getIndentEdit: (value, direction) => {
       calls.push(['indentEdit', value, direction]);
+      return edit;
+    },
+    getListSelectionIndentEdit: (lines, from, to, direction) => {
+      calls.push(['selectionIndentEdit', lines, from, to, direction]);
       return edit;
     },
     getBackspaceEdit: value => {
@@ -104,16 +117,38 @@ test('applyCodeMirrorEdit applies one isolated CodeMirror operation', () => {
   ]);
 });
 
-test('selection falls back without reading or applying structure context', () => {
+test('selection uses native Enter and structured list indentation', () => {
   const harness = createHarness();
   const cm = createCm(true);
 
   assert.equal(harness.handlers.Enter(cm), undefined);
-  assert.equal(harness.handlers.Tab(cm), Pass);
-  assert.equal(harness.handlers['Shift-Tab'](cm), Pass);
+  assert.equal(harness.handlers.Tab(cm), true);
+  assert.equal(harness.handlers['Shift-Tab'](cm), true);
   assert.equal(harness.handlers.Backspace(cm), Pass);
   assert.deepEqual(cm.calls, [['execCommand', 'newlineAndIndent']]);
-  assert.deepEqual(harness.calls, []);
+  assert.deepEqual(harness.calls, [
+    ['selectionIndentEdit', ['- one', '- two'], { line: 0, ch: 0 }, { line: 1, ch: 5 }, 1],
+    ['apply', harness.edit],
+    ['selectionIndentEdit', ['- one', '- two'], { line: 0, ch: 0 }, { line: 1, ch: 5 }, -1],
+    ['apply', harness.edit]
+  ]);
+});
+
+test('list indentation forwards the original selection direction', () => {
+  const harness = createHarness();
+  const cm = createCm(true);
+  cm.getSelectionRange = () => ({
+    anchor: { line: 1, ch: 5 },
+    head: { line: 0, ch: 0 }
+  });
+  harness.handlers.Tab(cm);
+  assert.deepEqual(harness.calls[0], [
+    'selectionIndentEdit',
+    ['- one', '- two'],
+    { line: 1, ch: 5 },
+    { line: 0, ch: 0 },
+    1
+  ]);
 });
 
 test('Enter dispatches owned menu, composition, opening fence, structure, then fallback', () => {
@@ -193,6 +228,16 @@ test('structure keys apply edits or return CodeMirror.Pass', () => {
   assert.equal(fallback.handlers.Tab(cm), Pass);
   assert.equal(fallback.handlers['Shift-Tab'](cm), Pass);
   assert.equal(fallback.handlers.Backspace(cm), Pass);
+});
+
+test('Shift+Enter inserts a soft list continuation when available', () => {
+  const harness = createHarness();
+  assert.equal(harness.handlers['Shift-Enter'](createCm()), true);
+  assert.deepEqual(harness.calls, [
+    'context',
+    ['softBreakEdit', { type: 'bullet' }],
+    ['apply', harness.edit]
+  ]);
 });
 
 test('packaged renderer includes its keymap and structure dependencies', () => {

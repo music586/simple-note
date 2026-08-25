@@ -96,7 +96,16 @@ test('settings dialog supports local multi-provider API Key configuration', () =
   assert.match(html, /<strong>AI 设置<\/strong>/);
   assert.match(html, /name="aiProvider" value="deepseek"/);
   assert.match(html, /name="aiProvider" value="mimo"/);
-  assert.match(html, /name="aiProvider" value="hunyuan"/);
+  assert.match(html, /name="aiProvider" value="custom"/);
+  assert.match(html, /id="aiCustomProtocol"/);
+  assert.match(html, /id="aiCustomAlias"/);
+  assert.match(html, /value="openai-chat"/);
+  assert.match(html, /value="anthropic-messages"/);
+  assert.match(html, /id="aiCustomBaseUrl"/);
+  assert.match(html, /id="aiCustomModel"/);
+  assert.match(html, /id="aiCustomTemperature"/);
+  assert.match(html, /id="aiCustomMaxTokens"/);
+  assert.match(html, /id="aiCustomTimeout"/);
   assert.match(html, /id="aiProviderApiKey"[^>]*type="password"/);
   assert.match(html, /id="deepseekLayoutPrompt"[^>]*class="settings-prompt-input"/);
   assert.match(html, /各平台 API Key 独立保存在当前设备，不会写入笔记。/);
@@ -190,7 +199,8 @@ test('AI request displays estimated progress only in the active editor panel', (
     renderer,
     /`\$\{aiProgressAction\} · \$\{activeAiProviderName\}`[\s\S]*` · 预计 \$\{normalizedValue\}%`/
   );
-  assert.match(renderer, /activeAiProviderName = aiProviderNames\[provider\]/);
+  assert.match(renderer, /activeAiProviderName = getAiProviderDisplayName\(provider, custom\)/);
+  assert.match(renderer, /provider === 'custom' && custom\?\.alias\?\.trim\(\)/);
   assert.match(
     renderer,
     /aiLayoutBusy = true;[\s\S]*startAiProgress\(targetEditor\);[\s\S]*finishAiProgress\(completed\)/

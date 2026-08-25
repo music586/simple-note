@@ -30,8 +30,10 @@ test('nested unordered list markers use a font-independent hollow circle', () =>
   assert.match(styles, /transform: translate\(-50%, -50%\)/);
   assert.match(renderer, /function createRenderedListMarker\(listPrefix\)/);
   assert.match(renderer, /listPrefix\.nested \? '' : listPrefix\.label/);
-  assert.match(renderer, /createRenderedListMarker\(activeListPrefix\)/);
-  assert.match(renderer, /createRenderedListMarker\(listPrefix\)/);
+  assert.match(renderer, /`is-level-\$\{\(listPrefix\.level \|\| 0\) % 3\}`/);
+  assert.match(renderer, /function renderListPrefixDecoration/);
+  assert.match(renderer, /renderListPrefixDecoration\([\s\S]*activeListPrefix/);
+  assert.match(renderer, /renderListPrefixDecoration\(lineNumber, lineText, listPrefix\)/);
 });
 
 test('checked task controls follow the selected accent theme', () => {

@@ -36,7 +36,8 @@ const MARKDOWN_STRUCTURE_COMMANDS = [
   },
   { id: 'quote', label: '引用', hint: '>', prefix: '> ', keywords: ['引用', 'yy', '>'] }
 ];
-const LIST_INDENT = '      ';
+const LIST_INDENT = '    ';
+const LIST_INDENT_SIZE = LIST_INDENT.length;
 
 function filterStructureCommands(query) {
   const normalized = String(query || '').trim().toLowerCase();
@@ -48,41 +49,76 @@ function filterStructureCommands(query) {
   ));
 }
 
-function getRenderedListPrefix(lineText) {
-  const task = lineText.match(/^(\s*)[-*+]\s+\[([ xX])\]\s+/);
+function getIndentVisualWidth(indent) {
+  return Array.from(indent).reduce((width, character) => {
+    if (character !== '\t') return width + 1;
+    return width + LIST_INDENT_SIZE - (width % LIST_INDENT_SIZE);
+  }, 0);
+}
+
+function getOutdentedIndent(indent) {
+  if (!indent) return '';
+  const targetWidth = Math.max(0, getIndentVisualWidth(indent) - LIST_INDENT_SIZE);
+  let width = 0;
+  let retained = '';
+  for (const character of indent) {
+    const nextWidth = character === '\t'
+      ? width + LIST_INDENT_SIZE - (width % LIST_INDENT_SIZE)
+      : width + 1;
+    if (nextWidth > targetWidth) break;
+    retained += character;
+    width = nextWidth;
+  }
+  return retained;
+}
+
+function parseMarkdownListLine(lineText) {
+  const task = lineText.match(/^(\s*)([-*+])\s+\[([ xX])\]\s?(.*)$/);
   if (task) {
     return {
       type: 'task',
-      checked: task[2].toLowerCase() === 'x',
+      indent: task[1],
+      marker: task[2],
+      checked: task[3].toLowerCase() === 'x',
+      content: task[4],
       fromCh: task[1].length,
-      toCh: task[0].length,
-      toggleCh: task[0].indexOf('[') + 1
+      toCh: lineText.length - task[4].length,
+      toggleCh: lineText.indexOf('[') + 1
     };
   }
 
-  const ordered = lineText.match(/^(\s*)(\d+)([.)])\s+/);
+  const ordered = lineText.match(/^(\s*)(\d+)([.)])\s+(.*)$/);
   if (ordered) {
     return {
       type: 'ordered',
+      indent: ordered[1],
+      number: Number(ordered[2]),
       label: `${ordered[2]}${ordered[3]}`,
+      delimiter: ordered[3],
+      content: ordered[4],
       fromCh: ordered[1].length,
-      toCh: ordered[0].length
+      toCh: lineText.length - ordered[4].length
     };
   }
 
-  const bullet = lineText.match(/^(\s*)[-*+]\s+/);
+  const bullet = lineText.match(/^(\s*)([-*+])\s+(.*)$/);
   if (!bullet) return null;
-  const indentWidth = Array.from(bullet[1]).reduce((width, character) => {
-    return width + (character === '\t' ? LIST_INDENT.length : 1);
-  }, 0);
-  const isSecondLevel = Math.floor(indentWidth / LIST_INDENT.length) === 1;
+  const level = Math.floor(getIndentVisualWidth(bullet[1]) / LIST_INDENT_SIZE);
   return {
     type: 'bullet',
-    label: isSecondLevel ? '◦' : '•',
-    nested: isSecondLevel,
+    indent: bullet[1],
+    marker: bullet[2],
+    content: bullet[3],
+    label: level % 3 === 1 ? '◦' : level % 3 === 2 ? '▪' : '•',
+    nested: level > 0,
+    level,
     fromCh: bullet[1].length,
-    toCh: bullet[0].length
+    toCh: lineText.length - bullet[3].length
   };
+}
+
+function getRenderedListPrefix(lineText) {
+  return parseMarkdownListLine(lineText);
 }
 
 function shouldRenderActiveListPrefix(listPrefix, cursorCh) {
@@ -225,9 +261,7 @@ function analyzeLineContext(lines, cursor) {
   const indent = (text.match(/^\s*/) || [''])[0];
   const inFence = isInsideFence(lines, cursor.line);
   const slashMatch = !inFence && !after.trim() ? before.match(/^\/(.*)$/) : null;
-  const task = text.match(/^(\s*)- \[([ xX])\]\s?(.*)$/);
-  const bullet = text.match(/^(\s*)[-+*]\s+(.*)$/);
-  const ordered = text.match(/^(\s*)(\d+)[.)]\s+(.*)$/);
+  const list = parseMarkdownListLine(text);
   const quote = text.match(/^(\s*)((?:>\s*)+)(.*)$/);
   const heading = text.match(/^(\s*)#{1,6}\s+(.*)$/);
   let type = 'plain';
@@ -235,19 +269,15 @@ function analyzeLineContext(lines, cursor) {
   let content = text.trim();
   let number = null;
 
-  if (task) [type, marker, content] = ['task', `${task[1]}- [${task[2]}] `, task[3]];
-  else if (bullet) {
-    [type, marker, content] = [
-      'bullet',
-      text.slice(0, text.length - bullet[2].length),
-      bullet[2]
-    ];
-  }
-  else if (ordered) {
-    type = 'ordered';
-    marker = text.slice(0, text.length - ordered[3].length);
-    content = ordered[3];
-    number = Number(ordered[2]);
+  let listMarker = null;
+  let orderedDelimiter = null;
+  if (list) {
+    type = list.type;
+    marker = text.slice(0, list.toCh);
+    content = list.content;
+    number = list.number ?? null;
+    listMarker = list.marker || null;
+    orderedDelimiter = list.delimiter || null;
   } else if (quote) [type, marker, content] = ['quote', `${quote[1]}${quote[2]}`, quote[3]];
   else if (heading) {
     [type, marker, content] = [
@@ -269,6 +299,8 @@ function analyzeLineContext(lines, cursor) {
     marker,
     contentStart: marker.length,
     number,
+    listMarker,
+    orderedDelimiter,
     emptyItem: type !== 'plain' && !content.trim(),
     slashQuery: slashMatch ? slashMatch[1] : null
   };
@@ -288,14 +320,15 @@ function getEnterEdit(context) {
   if (!['heading', 'bullet', 'ordered', 'task', 'quote'].includes(context.type)) return null;
   if (context.emptyItem && context.type !== 'heading') {
     const isList = ['bullet', 'ordered', 'task'].includes(context.type);
-    if (isList && context.indent.startsWith(LIST_INDENT)) {
+    const outdentedIndent = getOutdentedIndent(context.indent);
+    if (isList && outdentedIndent !== context.indent) {
       return createEdit(
         context,
         0,
-        LIST_INDENT.length,
-        '',
+        context.indent.length,
+        outdentedIndent,
         context.line,
-        Math.max(0, context.ch - LIST_INDENT.length)
+        Math.max(0, context.ch - context.indent.length + outdentedIndent.length)
       );
     }
     return createEdit(context, 0, context.text.length, '', context.line, 0);
@@ -303,9 +336,11 @@ function getEnterEdit(context) {
 
   let continuation = '';
   if (context.type === 'heading') continuation = '\n';
-  if (context.type === 'bullet') continuation = `\n${context.indent}- `;
-  if (context.type === 'ordered') continuation = `\n${context.indent}${context.number + 1}. `;
-  if (context.type === 'task') continuation = `\n${context.indent}- [ ] `;
+  if (context.type === 'bullet') continuation = `\n${context.indent}${context.listMarker} `;
+  if (context.type === 'ordered') {
+    continuation = `\n${context.indent}${context.number + 1}${context.orderedDelimiter} `;
+  }
+  if (context.type === 'task') continuation = `\n${context.indent}${context.listMarker} [ ] `;
   if (context.type === 'quote') continuation = `\n${context.marker}`;
 
   return createEdit(
@@ -330,14 +365,15 @@ function getIndentEdit(context, direction) {
       context.ch + LIST_INDENT.length
     );
   }
-  if (!context.indent.startsWith(LIST_INDENT)) return null;
+  const outdentedIndent = getOutdentedIndent(context.indent);
+  if (outdentedIndent === context.indent) return null;
   return createEdit(
     context,
     0,
-    LIST_INDENT.length,
-    '',
+    context.indent.length,
+    outdentedIndent,
     context.line,
-    Math.max(0, context.ch - LIST_INDENT.length)
+    Math.max(0, context.ch - context.indent.length + outdentedIndent.length)
   );
 }
 
@@ -345,18 +381,85 @@ function getBackspaceEdit(context) {
   if (context.inFence || context.ch !== context.contentStart) return null;
   if (!['heading', 'bullet', 'ordered', 'task', 'quote'].includes(context.type)) return null;
   const isList = ['bullet', 'ordered', 'task'].includes(context.type);
-  if (isList && context.indent.startsWith(LIST_INDENT)) {
+  const outdentedIndent = getOutdentedIndent(context.indent);
+  if (isList && outdentedIndent !== context.indent) {
     return createEdit(
       context,
       0,
-      LIST_INDENT.length,
-      '',
+      context.indent.length,
+      outdentedIndent,
       context.line,
-      context.ch - LIST_INDENT.length
+      context.ch - context.indent.length + outdentedIndent.length
     );
   }
   if (isList && context.indent) return null;
   return createEdit(context, 0, context.contentStart, '', context.line, 0);
+}
+
+function getSoftBreakEdit(context) {
+  if (context.inFence || context.ch < context.contentStart) return null;
+  if (!['bullet', 'ordered', 'task'].includes(context.type)) return null;
+  const markerWidth = context.contentStart - context.indent.length;
+  const continuationIndent = `${context.indent}${' '.repeat(markerWidth)}`;
+  return createEdit(
+    context,
+    context.ch,
+    context.ch,
+    `\n${continuationIndent}`,
+    context.line + 1,
+    continuationIndent.length
+  );
+}
+
+function getListSelectionIndentEdit(lines, from, to, direction) {
+  if (!Array.isArray(lines) || !from || !to || direction === 0) return null;
+  const startLine = Math.min(from.line, to.line);
+  let endLine = Math.max(from.line, to.line);
+  const endPosition = from.line > to.line ? from : to;
+  if (endLine > startLine && endPosition.ch === 0) endLine -= 1;
+  const fencedLines = new Set();
+  getFencedCodeBlocks(lines).forEach(block => {
+    for (let line = block.start; line <= block.end; line += 1) fencedLines.add(line);
+  });
+  const selected = lines.slice(startLine, endLine + 1);
+  if (!selected.length || selected.some((line, index) => fencedLines.has(startLine + index))) {
+    return null;
+  }
+  const parsedLines = selected.map(parseMarkdownListLine);
+  const firstList = parsedLines.find(Boolean);
+  if (!firstList) return null;
+  const baseIndentWidth = getIndentVisualWidth(firstList.indent);
+  const belongsToList = selected.every((line, index) => {
+    if (!line.trim() || parsedLines[index]) return true;
+    const indent = (line.match(/^\s*/) || [''])[0];
+    return getIndentVisualWidth(indent) > baseIndentWidth;
+  });
+  if (!belongsToList) return null;
+  const changes = selected.map(line => {
+    if (direction > 0) return `${LIST_INDENT}${line}`;
+    const indent = (line.match(/^\s*/) || [''])[0];
+    return `${getOutdentedIndent(indent)}${line.slice(indent.length)}`;
+  });
+  if (direction < 0 && changes.every((line, index) => line === selected[index])) return null;
+  const added = direction > 0 ? LIST_INDENT.length : null;
+  const adjustCh = (line, ch) => {
+    if (line < startLine || line > endLine) return ch;
+    if (added !== null) return ch + added;
+    const indent = (lines[line].match(/^\s*/) || [''])[0];
+    const outdentedIndent = getOutdentedIndent(indent);
+    return Math.max(0, ch - indent.length + outdentedIndent.length);
+  };
+  return {
+    from: { line: startLine, ch: 0 },
+    to: { line: endLine, ch: lines[endLine].length },
+    text: changes.join('\n'),
+    cursor: { line: endPosition.line, ch: adjustCh(endPosition.line, endPosition.ch) },
+    selection: {
+      anchor: { line: from.line, ch: adjustCh(from.line, from.ch) },
+      head: { line: to.line, ch: adjustCh(to.line, to.ch) }
+    },
+    historyLabel: direction > 0 ? '缩进列表' : '减少列表缩进'
+  };
 }
 
 function isValidCursor(lines, cursor) {
@@ -406,7 +509,10 @@ function getSlashCommandEdit(lines, cursor, options) {
 
 module.exports = {
   MARKDOWN_STRUCTURE_COMMANDS,
+  LIST_INDENT_SIZE,
   filterStructureCommands,
+  parseMarkdownListLine,
+  getIndentVisualWidth,
   getRenderedListPrefix,
   shouldRenderActiveListPrefix,
   getActiveBulletSourceCursor,
@@ -416,7 +522,9 @@ module.exports = {
   getFencedCodeBlocks,
   analyzeLineContext,
   getEnterEdit,
+  getSoftBreakEdit,
   getIndentEdit,
+  getListSelectionIndentEdit,
   getBackspaceEdit,
   getSlashMenuUpdate,
   getSlashCommandEdit

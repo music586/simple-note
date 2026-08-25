@@ -469,10 +469,10 @@
                 <span><strong>MiMo</strong><small data-provider-status="mimo">未配置</small></span>
                 <span class="ai-provider-check" aria-hidden="true"></span>
               </label>
-              <label class="ai-provider-option hunyuan">
-                <input type="radio" name="aiProvider" value="hunyuan">
-                <span class="ai-provider-mark">混</span>
-                <span><strong>腾讯混元</strong><small data-provider-status="hunyuan">未配置</small></span>
+              <label class="ai-provider-option custom">
+                <input type="radio" name="aiProvider" value="custom">
+                <span class="ai-provider-mark">自</span>
+                <span><strong>自定义</strong><small data-provider-status="custom">未配置</small></span>
                 <span class="ai-provider-check" aria-hidden="true"></span>
               </label>
             </div>
@@ -485,6 +485,40 @@
               <input id="aiProviderApiKey" class="settings-api-key-input" type="password"
                 placeholder="请输入 DeepSeek API Key" autocomplete="off" spellcheck="false">
             </div>
+          </div>
+          <div id="aiCustomSettings" class="ai-custom-settings" hidden>
+            <label class="settings-field-label" for="aiCustomAlias">别名</label>
+            <input id="aiCustomAlias" class="settings-api-key-input" type="text"
+              maxlength="50" placeholder="例如：公司 GPT" autocomplete="off" spellcheck="false">
+            <p class="settings-field-hint">用于 AI 处理进度和状态展示，留空时显示“自定义”。</p>
+            <label class="settings-field-label" for="aiCustomProtocol">协议类型</label>
+            <select id="aiCustomProtocol" class="settings-select">
+              <option value="openai-chat">OpenAI Chat Completions</option>
+              <option value="anthropic-messages">Anthropic Messages</option>
+            </select>
+            <label class="settings-field-label" for="aiCustomBaseUrl">Base URL</label>
+            <input id="aiCustomBaseUrl" class="settings-api-key-input" type="url"
+              placeholder="例如：https://api.openai.com/v1" autocomplete="off" spellcheck="false">
+            <p id="aiCustomBaseUrlHint" class="settings-field-hint">
+              将自动请求 /chat/completions，也可填写完整接口地址。
+            </p>
+            <label class="settings-field-label" for="aiCustomModel">模型名称</label>
+            <input id="aiCustomModel" class="settings-api-key-input" type="text"
+              placeholder="例如：gpt-4.1-mini" autocomplete="off" spellcheck="false">
+            <details class="ai-custom-advanced">
+              <summary>高级参数（可选）</summary>
+              <div class="ai-custom-parameter-grid">
+                <label for="aiCustomTemperature">温度（0–2）</label>
+                <input id="aiCustomTemperature" class="settings-api-key-input" type="number"
+                  min="0" max="2" step="0.1" placeholder="由模型决定">
+                <label for="aiCustomMaxTokens">最大输出 Token</label>
+                <input id="aiCustomMaxTokens" class="settings-api-key-input" type="number"
+                  min="1" max="1000000" step="1" placeholder="由模型决定">
+                <label for="aiCustomTimeout">请求超时（秒）</label>
+                <input id="aiCustomTimeout" class="settings-api-key-input" type="number"
+                  min="10" max="600" step="1" value="120">
+              </div>
+            </details>
           </div>
           <p id="aiKeyTestResult" class="ai-key-test-result" role="status" aria-live="polite"></p>
           <p class="settings-field-hint">各平台 API Key 独立保存在当前设备，不会写入笔记。</p>

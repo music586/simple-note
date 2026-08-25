@@ -465,6 +465,14 @@ class CodeMirror6Adapter {
     return toLineCh(this.view.state, position);
   }
 
+  getSelectionRange() {
+    const selection = this.view.state.selection.main;
+    return {
+      anchor: toLineCh(this.view.state, selection.anchor),
+      head: toLineCh(this.view.state, selection.head)
+    };
+  }
+
   setCursor(position) {
     const anchor = normalizeLineCh(this.view.state, position);
     this.view.dispatch({ selection: EditorSelection.cursor(anchor) });
@@ -513,11 +521,16 @@ class CodeMirror6Adapter {
     const text = String(edit.text);
     const currentDocument = this.view.state.doc.toString();
     const nextDocument = currentDocument.slice(0, from) + text + currentDocument.slice(to);
-    const cursor = lineChToTextOffset(nextDocument, edit.cursor);
+    const selection = edit.selection
+      ? EditorSelection.single(
+          lineChToTextOffset(nextDocument, edit.selection.anchor),
+          lineChToTextOffset(nextDocument, edit.selection.head)
+        )
+      : EditorSelection.cursor(lineChToTextOffset(nextDocument, edit.cursor));
     this.withHistoryLabel(edit.historyLabel || '编辑 Markdown 结构', () => {
       this.view.dispatch({
         changes: { from, to, insert: text },
-        selection: EditorSelection.cursor(cursor),
+        selection,
         annotations: isolateHistory.of('before')
       });
     });

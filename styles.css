@@ -4368,6 +4368,11 @@ textarea,
   transform-origin: center;
 }
 
+.cm-rendered-checkbox:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 72%, white);
+  outline-offset: 2px;
+}
+
 .cm-rendered-link.is-external::after {
   content: '↗';
   margin-left: 3px;
@@ -4691,6 +4696,19 @@ textarea,
   border-radius: 50%;
   box-sizing: border-box;
   transform: translate(-50%, -50%);
+}
+
+.cm-rendered-bullet.is-level-2::before {
+  width: 5px;
+  height: 5px;
+  border: 0;
+  border-radius: 1px;
+  background: currentColor;
+}
+
+.cm-rendered-bullet.is-nested.is-level-0::before {
+  border: 0;
+  background: currentColor;
 }
 
 .cm-rendered-code,
@@ -6718,7 +6736,55 @@ textarea:focus-visible {
 
 .ai-provider-option.deepseek { --provider-color: #5d91e8; }
 .ai-provider-option.mimo { --provider-color: #ff6a35; }
-.ai-provider-option.hunyuan { --provider-color: #8b72df; }
+.ai-provider-option.custom { --provider-color: #8b72df; }
+
+.ai-custom-settings {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  display: grid;
+  gap: 8px;
+  background: color-mix(in srgb, var(--bg-tertiary) 56%, transparent);
+}
+
+.ai-custom-settings[hidden] { display: none; }
+
+.settings-select {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  font: inherit;
+}
+
+.settings-select:focus-visible {
+  border-color: var(--accent-color);
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 24%, transparent);
+  outline-offset: 1px;
+}
+
+.ai-custom-advanced summary {
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-custom-parameter-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: minmax(120px, 0.55fr) minmax(0, 1fr);
+  gap: 9px 12px;
+  align-items: center;
+}
+
+.ai-custom-parameter-grid label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
 
 .ai-provider-option input {
   position: absolute;
@@ -7143,6 +7209,15 @@ textarea:focus-visible {
 
   .ai-provider-grid {
     grid-template-columns: 1fr;
+  }
+
+  .ai-custom-parameter-grid {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .ai-custom-parameter-grid input + label {
+    margin-top: 4px;
   }
 
   .hidden-directory-row {

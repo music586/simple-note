@@ -19,5 +19,5 @@ test('ordered list editor and preview preserve the natural source position', () 
     renderer,
     /className = `cm-rendered-list-marker cm-rendered-\$\{listPrefix\.type\}`/
   );
-  assert.match(renderer, /createRenderedListMarker\(activeListPrefix\)/);
+  assert.match(renderer, /renderListPrefixDecoration\([\s\S]*activeListPrefix/);
 });

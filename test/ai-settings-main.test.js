@@ -34,17 +34,14 @@ test('AI menu requests DeepSeek layout optimization for the active window', () =
   assert.match(main, /hostname: 'api\.xiaomimimo\.com'/);
   assert.match(main, /hostname: 'api\.xiaomimimo\.com',[\s\S]*path: '\/v1\/chat\/completions'/);
   assert.match(main, /model: 'mimo-v2\.5-pro'/);
-  assert.match(main, /hostname: 'tokenhub\.tencentmaas\.com'/);
-  assert.match(
-    main,
-    /hostname: 'tokenhub\.tencentmaas\.com',[\s\S]*path: '\/v1\/chat\/completions'/
-  );
-  assert.match(main, /model: 'hy3'/);
-  assert.doesNotMatch(main, /model: 'hy3-preview'/);
-  assert.doesNotMatch(main, /hostname: 'api\.hunyuan\.cloud\.tencent\.com'/);
+  assert.match(main, /custom: \{[\s\S]*name: '自定义'/);
+  assert.match(main, /\['openai-chat', 'anthropic-messages'\]/);
+  assert.match(main, /endpoint\.pathname\.endsWith\(suffix\)/);
+  assert.match(main, /'x-api-key': apiKey/);
+  assert.match(main, /'anthropic-version': '2023-06-01'/);
   assert.match(main, /path: '\/chat\/completions'/);
   assert.match(main, /model: 'deepseek-v4-flash'/);
-  assert.match(main, /content: `\$\{prompt\}\\n\\n\$\{content\}`/);
+  assert.match(main, /const userContent = `\$\{prompt\}\\n\\n\$\{content\}`/);
   assert.match(main, /Authorization: `Bearer \$\{apiKey\}`/);
   assert.equal((main.match(/path: provider\.path/g) || []).length, 2);
 });
@@ -67,14 +64,17 @@ test('new AI API Keys are tested with one output token before saving', () => {
   assert.match(main, /ipcMain\.handle\('test-ai-api-key'/);
   assert.match(main, /max_completion_tokens: 1/);
   assert.match(main, /max_tokens: 1/);
-  assert.match(main, /await testAiApiKey\(provider, normalizedApiKey\)/);
+  assert.match(main, /await testAiApiKey\(provider, normalizedApiKey, custom\)/);
   assert.doesNotMatch(main, /console\.(?:log|info|debug)\([^)]*testAiApiKey/);
 });
 
-test('Hunyuan authentication failures explain how to replace an invalid API Key', () => {
-  assert.match(main, /providerId === 'hunyuan' && statusCode === 401/);
-  assert.match(main, /腾讯混元 TokenHub API Key 无效或已失效/);
-  assert.match(main, /Hy3 开启免费体验或后付费/);
+test('custom AI validates and persists endpoint, protocol, model and optional parameters', () => {
+  assert.match(main, /normalizeCustomAiSettings/);
+  assert.match(main, /alias\.length > 50/);
+  assert.match(main, /config\.customAiSettings = normalizeCustomAiSettings\(settings\.custom\)/);
+  assert.match(main, /temperature: parseOptionalNumber/);
+  assert.match(main, /maxTokens: parseOptionalNumber/);
+  assert.match(main, /timeoutSeconds: parseOptionalNumber/);
   assert.equal((main.match(/data\?\.error\?\.message_zh \|\| data\?\.error\?\.message/g) || []).length, 2);
   assert.equal((main.match(/getAiProviderHttpError\(/g) || []).length, 3);
 });

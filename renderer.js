@@ -59,6 +59,7 @@ const {
   optimizeClipboardPlainText
 } = require('./clipboard-format');
 const {
+  LIST_INDENT_SIZE,
   filterStructureCommands,
   analyzeLineContext,
   getRenderedListPrefix,
@@ -68,7 +69,9 @@ const {
   getDocumentOutline,
   getFencedCodeBlocks,
   getEnterEdit,
+  getSoftBreakEdit,
   getIndentEdit,
+  getListSelectionIndentEdit,
   getBackspaceEdit,
   getSlashMenuUpdate,
   getSlashCommandEdit
@@ -272,8 +275,8 @@ const releaseNotes = [
       '每个窗口现在拥有独立笔记仓库、目录监听与会话状态，新窗口可选择自己的工作目录，'
         + '重启后会恢复窗口、笔记和目录展开状态。左侧目录支持同级拖动排序并持久化位置，'
         + '同时保留将项目拖入目录的能力；目录重命名、切换与空仓库启动流程也更稳定。',
-      'AI 设置扩展为 DeepSeek、小米 MiMo 和腾讯混元等多个平台，每个平台独立保存 API Key，'
-        + '新密钥会在保存前进行轻量验证。腾讯混元已切换至 TokenHub 的 Hy3 服务，并针对'
+      'AI 设置扩展为 DeepSeek、小米 MiMo 和自定义服务，每个平台独立保存 API Key，'
+        + '自定义服务支持 OpenAI 与 Anthropic 协议、模型、Base URL 和高级参数，并针对'
         + '无效密钥、服务未开通和接口错误提供更明确的中文提示。',
       '粘贴流程增强了 Markdown、富文本、代码块和多段内容识别，减少结构丢失和多余空行；'
         + '新建笔记的保存队列与历史记录彼此隔离，避免跨文档写入。同步完善主题色、引用与列表'
@@ -284,7 +287,7 @@ const releaseNotes = [
       '历史版本与 HTML 导出',
       '可靠的表格编辑',
       '独立工作区与目录排序',
-      '多平台 AI 与混元 Hy3',
+      '多平台 AI 与自定义模型',
       '粘贴、主题与稳定性'
     ]
   },
@@ -1383,7 +1386,9 @@ function createCodeEditor(textarea) {
     handleOpeningCodeFence,
     getContext: getCodeMirrorContext,
     getEnterEdit,
+    getSoftBreakEdit,
     getIndentEdit,
+    getListSelectionIndentEdit,
     getBackspaceEdit,
     applyEdit: applyCodeMirrorEdit
   })(() => editorAdapter);
@@ -1391,9 +1396,9 @@ function createCodeEditor(textarea) {
     mode: 'markdown',
     lineWrapping: true,
     // The active source line uses the proportional Chinese reading font, where
-    // six half-width spaces are approximately as wide as two Chinese glyphs.
-    indentUnit: 6,
-    tabSize: 6,
+    // Four spaces keep nested lists compatible with common Markdown editors.
+    indentUnit: LIST_INDENT_SIZE,
+    tabSize: LIST_INDENT_SIZE,
     viewportMargin: 20,
     lineNumbers: lineNumbersEnabled,
     extraKeys: {
@@ -2007,6 +2012,15 @@ const hiddenDirectoryAdd = document.getElementById('hiddenDirectoryAdd');
 const aiProviderApiKey = document.getElementById('aiProviderApiKey');
 const aiProviderKeyLabel = document.getElementById('aiProviderKeyLabel');
 const aiProviderInputs = Array.from(document.querySelectorAll('input[name="aiProvider"]'));
+const aiCustomSettings = document.getElementById('aiCustomSettings');
+const aiCustomAlias = document.getElementById('aiCustomAlias');
+const aiCustomProtocol = document.getElementById('aiCustomProtocol');
+const aiCustomBaseUrl = document.getElementById('aiCustomBaseUrl');
+const aiCustomBaseUrlHint = document.getElementById('aiCustomBaseUrlHint');
+const aiCustomModel = document.getElementById('aiCustomModel');
+const aiCustomTemperature = document.getElementById('aiCustomTemperature');
+const aiCustomMaxTokens = document.getElementById('aiCustomMaxTokens');
+const aiCustomTimeout = document.getElementById('aiCustomTimeout');
 const deepseekLayoutPrompt = document.getElementById('deepseekLayoutPrompt');
 const aiSettingsSave = document.getElementById('aiSettingsSave');
 const aiSettingsStatus = document.getElementById('aiSettingsStatus');
@@ -2049,7 +2063,7 @@ let aiLayoutBusy = false;
 let aiProgressTimer = null;
 let aiProgressHideTimer = null;
 let aiProgressAction = 'AI 优化排版';
-const aiProviderNames = { deepseek: 'DeepSeek', mimo: 'MiMo', hunyuan: '腾讯混元' };
+const aiProviderNames = { deepseek: 'DeepSeek', mimo: 'MiMo', custom: '自定义' };
 let activeAiProviderName = 'DeepSeek';
 let aiStampRequestId = 0;
 let outlineEnabled = localStorage.getItem('outline-enabled') !== 'false';
@@ -2131,7 +2145,7 @@ window.addEventListener('resize', () => {
 ipcRenderer.invoke('get-ai-settings').then(result => {
   if (!result.success) return;
   applyAiStampPosition(result.stampPosition);
-  activeAiProviderName = aiProviderNames[result.provider] || 'DeepSeek';
+  activeAiProviderName = getAiProviderDisplayName(result.provider, result.custom);
 });
 
 function showModal(title, placeholder, defaultValue, callback) {
@@ -2268,12 +2282,20 @@ function renderAiSettings(data) {
   aiProviderKeys = { ...data.apiKeys };
   if (!aiProviderKeys.deepseek && data.apiKey) aiProviderKeys.deepseek = data.apiKey;
   savedAiProviderKeys = { ...aiProviderKeys };
-  const provider = ['deepseek', 'mimo', 'hunyuan'].includes(data.provider)
+  const provider = ['deepseek', 'mimo', 'custom'].includes(data.provider)
     ? data.provider
     : 'deepseek';
-  if (data.provider) activeAiProviderName = aiProviderNames[provider];
   aiProviderInputs.forEach(input => { input.checked = input.value === provider; });
   selectedAiProvider = provider;
+  const custom = data.custom || {};
+  if (data.provider) activeAiProviderName = getAiProviderDisplayName(provider, custom);
+  aiCustomAlias.value = custom.alias || '';
+  aiCustomProtocol.value = custom.protocol || 'openai-chat';
+  aiCustomBaseUrl.value = custom.baseUrl || '';
+  aiCustomModel.value = custom.model || '';
+  aiCustomTemperature.value = custom.temperature ?? '';
+  aiCustomMaxTokens.value = custom.maxTokens ?? '';
+  aiCustomTimeout.value = custom.timeoutSeconds || 120;
   renderActiveAiProvider(provider);
   deepseekLayoutPrompt.value = data.layoutPrompt || '';
   updateAiProviderStatuses(provider);
@@ -2284,7 +2306,19 @@ function renderActiveAiProvider(provider) {
   aiProviderKeyLabel.textContent = `${aiProviderNames[provider]} API Key`;
   aiProviderApiKey.placeholder = `请输入 ${aiProviderNames[provider]} API Key`;
   aiProviderApiKey.value = aiProviderKeys[provider] || '';
+  aiCustomSettings.hidden = provider !== 'custom';
   renderAiKeyTestResult('', '');
+}
+
+function updateAiCustomProtocolHint() {
+  aiCustomBaseUrlHint.textContent = aiCustomProtocol.value === 'anthropic-messages'
+    ? '将自动请求 /messages，也可填写完整接口地址。'
+    : '将自动请求 /chat/completions，也可填写完整接口地址。';
+}
+
+function getAiProviderDisplayName(provider, custom = null) {
+  if (provider === 'custom' && custom?.alias?.trim()) return custom.alias.trim();
+  return aiProviderNames[provider] || 'DeepSeek';
 }
 
 function renderAiKeyTestResult(message, state) {
@@ -2347,6 +2381,8 @@ function setSettingsBusy(busy) {
     });
   }
   aiProviderApiKey.disabled = busy;
+  [aiCustomAlias, aiCustomProtocol, aiCustomBaseUrl, aiCustomModel, aiCustomTemperature,
+    aiCustomMaxTokens, aiCustomTimeout].forEach(control => { control.disabled = busy; });
   aiProviderInputs.forEach(input => { input.disabled = busy; });
   deepseekLayoutPrompt.disabled = busy;
   aiSettingsSave.disabled = busy;
@@ -4513,13 +4549,20 @@ function renderEditorDecorations(editorAdapter, note) {
     checkbox.setAttribute('aria-checked', String(listPrefix.checked));
     checkbox.setAttribute('aria-label', listPrefix.checked ? '标记为未完成' : '标记为已完成');
     checkbox.title = listPrefix.checked ? '标记为未完成' : '标记为已完成';
-    checkbox.addEventListener('mousedown', event => {
+    checkbox.tabIndex = 0;
+    const toggleTask = event => {
       event.preventDefault();
       event.stopPropagation();
       const from = { line: lineNumber, ch: listPrefix.toggleCh };
       const to = { line: lineNumber, ch: listPrefix.toggleCh + 1 };
       codeMirror.replaceRange(listPrefix.checked ? ' ' : 'x', from, to, 'task-toggle');
+      codeMirror.setCursor({ line: lineNumber, ch: listPrefix.toCh });
       codeMirror.focus();
+    };
+    checkbox.addEventListener('mousedown', toggleTask);
+    checkbox.addEventListener('keydown', event => {
+      if (![' ', 'Enter'].includes(event.key)) return;
+      toggleTask(event);
     });
     return checkbox;
   }
@@ -4562,10 +4605,34 @@ function renderEditorDecorations(editorAdapter, note) {
     const marker = document.createElement('span');
     marker.className = `cm-rendered-list-marker cm-rendered-${listPrefix.type}`;
     marker.classList.toggle('is-nested', Boolean(listPrefix.nested));
+    if (listPrefix.type === 'bullet') {
+      marker.classList.add(`is-level-${(listPrefix.level || 0) % 3}`);
+    }
     marker.textContent = listPrefix.type === 'ordered'
       ? `${listPrefix.label} `
       : listPrefix.nested ? '' : listPrefix.label;
     return marker;
+  }
+
+  function renderListPrefixDecoration(lineNumber, lineText, listPrefix, renderPrefix = true) {
+    if (!listPrefix) return;
+    addLineStyle(lineNumber, 'cm-rendered-list-line');
+    if (renderPrefix) {
+      const widget = listPrefix.type === 'task'
+        ? createTaskCheckbox(listPrefix, lineNumber)
+        : createRenderedListMarker(listPrefix);
+      addMark(
+        { line: lineNumber, ch: listPrefix.fromCh },
+        { line: lineNumber, ch: listPrefix.toCh },
+        {
+          replacedWith: widget,
+          ...(listPrefix.type === 'task'
+            ? { atomic: true, handleMouseEvents: true }
+            : {})
+        }
+      );
+    }
+    markCompletedTaskText(lineNumber, lineText, listPrefix);
   }
 
   function replaceHtmlPreviewRange(lineNumber, range, occupiedRanges) {
@@ -4976,23 +5043,12 @@ function renderEditorDecorations(editorAdapter, note) {
         activeListPrefix,
         activeListCursorCh
       );
-      if (activeListPrefix) addLineStyle(lineNumber, 'cm-rendered-list-line');
-      if (renderActiveListPrefix && activeListPrefix.type === 'task') {
-        const checkbox = createTaskCheckbox(activeListPrefix, lineNumber);
-        addMark(
-          { line: lineNumber, ch: activeListPrefix.fromCh },
-          { line: lineNumber, ch: activeListPrefix.toCh },
-          { replacedWith: checkbox, atomic: true, handleMouseEvents: true }
-        );
-      } else if (renderActiveListPrefix) {
-        const marker = createRenderedListMarker(activeListPrefix);
-        addMark(
-          { line: lineNumber, ch: activeListPrefix.fromCh },
-          { line: lineNumber, ch: activeListPrefix.toCh },
-          { replacedWith: marker }
-        );
-      }
-      markCompletedTaskText(lineNumber, lineText, activeListPrefix);
+      renderListPrefixDecoration(
+        lineNumber,
+        lineText,
+        activeListPrefix,
+        renderActiveListPrefix
+      );
 
       const activeLinkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
       let activeLinkMatch;
@@ -5112,23 +5168,7 @@ function renderEditorDecorations(editorAdapter, note) {
     }
 
     const listPrefix = getRenderedListPrefix(lineText);
-    if (listPrefix) addLineStyle(lineNumber, 'cm-rendered-list-line');
-    if (listPrefix?.type === 'task') {
-      const checkbox = createTaskCheckbox(listPrefix, lineNumber);
-      addMark(
-        { line: lineNumber, ch: listPrefix.fromCh },
-        { line: lineNumber, ch: listPrefix.toCh },
-        { replacedWith: checkbox, atomic: true, handleMouseEvents: true }
-      );
-    } else if (listPrefix) {
-      const marker = createRenderedListMarker(listPrefix);
-      addMark(
-        { line: lineNumber, ch: listPrefix.fromCh },
-        { line: lineNumber, ch: listPrefix.toCh },
-        { replacedWith: marker }
-      );
-    }
-    markCompletedTaskText(lineNumber, lineText, listPrefix);
+    renderListPrefixDecoration(lineNumber, lineText, listPrefix);
 
     const occupiedRanges = [];
     const isOccupied = (from, to) => occupiedRanges.some(range => {
@@ -6535,6 +6575,7 @@ aiProviderInputs.forEach(input => {
     aiProviderKeys[selectedAiProvider] = aiProviderApiKey.value.trim();
     selectedAiProvider = input.value;
     renderActiveAiProvider(input.value);
+    updateAiCustomProtocolHint();
     updateAiProviderStatuses(input.value);
   });
 });
@@ -6549,7 +6590,8 @@ aiSettingsSave.addEventListener('click', async () => {
       renderAiKeyTestResult('正在使用 1 个输出 Token 验证密钥…', 'testing');
       const testResult = await ipcRenderer.invoke('test-ai-api-key', {
         provider,
-        apiKey: normalizedApiKey
+        apiKey: normalizedApiKey,
+        custom: getAiCustomSettings()
       });
       if (!testResult.success) {
         renderAiKeyTestResult(`验证失败 · ${testResult.error}`, 'error');
@@ -6560,6 +6602,7 @@ aiSettingsSave.addEventListener('click', async () => {
     const result = await ipcRenderer.invoke('set-ai-settings', {
       provider,
       apiKey: aiProviderApiKey.value,
+      custom: getAiCustomSettings(),
       layoutPrompt: deepseekLayoutPrompt.value
     });
     if (!result.success) {
@@ -6568,7 +6611,7 @@ aiSettingsSave.addEventListener('click', async () => {
     }
     aiProviderKeys[provider] = aiProviderApiKey.value.trim();
     savedAiProviderKeys[provider] = aiProviderKeys[provider];
-    activeAiProviderName = aiProviderNames[provider];
+    activeAiProviderName = getAiProviderDisplayName(provider, result.custom);
     aiProviderApiKey.value = aiProviderKeys[provider];
     deepseekLayoutPrompt.value = result.layoutPrompt;
     updateAiProviderStatuses(provider);
@@ -6578,6 +6621,19 @@ aiSettingsSave.addEventListener('click', async () => {
     setSettingsBusy(false);
   }
 });
+function getAiCustomSettings() {
+  return {
+    alias: aiCustomAlias.value,
+    protocol: aiCustomProtocol.value,
+    baseUrl: aiCustomBaseUrl.value,
+    model: aiCustomModel.value,
+    temperature: aiCustomTemperature.value,
+    maxTokens: aiCustomMaxTokens.value,
+    timeoutSeconds: aiCustomTimeout.value
+  };
+}
+
+aiCustomProtocol.addEventListener('change', updateAiCustomProtocolHint);
 aiProviderApiKey.addEventListener('keydown', event => {
   if (event.key === 'Enter') aiSettingsSave.click();
 });

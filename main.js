@@ -1,6 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const http = require('http');
 const https = require('https');
 const { fileURLToPath } = require('url');
 const {
@@ -253,56 +254,138 @@ const aiProviders = {
     model: 'mimo-v2.5-pro',
     extras: { thinking: { type: 'disabled' } }
   },
-  hunyuan: {
-    name: '腾讯混元',
-    hostname: 'tokenhub.tencentmaas.com',
-    path: '/v1/chat/completions',
-    model: 'hy3',
+  custom: {
+    name: '自定义',
     extras: {}
   }
 };
 
-function getAiProviderHttpError(providerId, statusCode, detail, action) {
-  if (providerId === 'hunyuan' && statusCode === 401) {
-    return new Error(
-      '腾讯混元 TokenHub API Key 无效或已失效，请在 TokenHub 控制台重新创建 API Key，'
-        + '并确认已为 Hy3 开启免费体验或后付费'
-    );
+function normalizeCustomAiSettings(settings) {
+  if (!settings || typeof settings !== 'object') throw new Error('自定义 AI 设置格式无效');
+  const protocol = settings.protocol || 'openai-chat';
+  if (!['openai-chat', 'anthropic-messages'].includes(protocol)) {
+    throw new Error('自定义 AI 协议无效');
   }
+  if (typeof settings.baseUrl !== 'string' || !settings.baseUrl.trim()) {
+    throw new Error('Base URL 不能为空');
+  }
+  let baseUrl;
+  try {
+    baseUrl = new URL(settings.baseUrl.trim());
+  } catch (err) {
+    throw new Error('Base URL 格式无效');
+  }
+  if (!['http:', 'https:'].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password) {
+    throw new Error('Base URL 仅支持 HTTP 或 HTTPS，且不能包含账号密码');
+  }
+  if (baseUrl.href.length > 2048 || /[\r\n\0]/.test(baseUrl.href)) {
+    throw new Error('Base URL 格式无效');
+  }
+  if (typeof settings.model !== 'string' || !settings.model.trim()) {
+    throw new Error('模型名称不能为空');
+  }
+  const model = settings.model.trim();
+  if (model.length > 200 || /[\r\n\0]/.test(model)) throw new Error('模型名称格式无效');
+  const alias = typeof settings.alias === 'string' ? settings.alias.trim() : '';
+  if (alias.length > 50 || /[\r\n\0]/.test(alias)) throw new Error('自定义 AI 别名格式无效');
+
+  const parseOptionalNumber = (value, name, min, max) => {
+    if (value === '' || value === null || value === undefined) return null;
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < min || number > max) {
+      throw new Error(`${name}必须在 ${min}–${max} 之间`);
+    }
+    return number;
+  };
+  return {
+    alias,
+    protocol,
+    baseUrl: baseUrl.href.replace(/\/$/, ''),
+    model,
+    temperature: parseOptionalNumber(settings.temperature, '温度', 0, 2),
+    maxTokens: parseOptionalNumber(settings.maxTokens, '最大输出 Token', 1, 1000000),
+    timeoutSeconds: parseOptionalNumber(settings.timeoutSeconds, '请求超时', 10, 600) || 120
+  };
+}
+
+function getAiRequestProvider(providerId, customSettings = null) {
+  if (providerId !== 'custom') return aiProviders[providerId] || aiProviders.deepseek;
+  const custom = normalizeCustomAiSettings(customSettings);
+  const suffix = custom.protocol === 'anthropic-messages' ? '/messages' : '/chat/completions';
+  const endpoint = new URL(custom.baseUrl);
+  if (!endpoint.pathname.endsWith(suffix)) {
+    endpoint.pathname = `${endpoint.pathname.replace(/\/$/, '')}${suffix}`;
+  }
+  return {
+    name: '自定义',
+    protocol: custom.protocol,
+    requestModule: endpoint.protocol === 'http:' ? http : https,
+    hostname: endpoint.hostname,
+    port: endpoint.port || undefined,
+    path: `${endpoint.pathname}${endpoint.search}`,
+    model: custom.model,
+    temperature: custom.temperature,
+    maxTokens: custom.maxTokens,
+    timeout: custom.timeoutSeconds * 1000,
+    extras: {}
+  };
+}
+
+function getAiProviderHttpError(providerId, statusCode, detail, action) {
   const provider = aiProviders[providerId];
   return new Error(detail || `${provider.name} ${action}失败（HTTP ${statusCode}）`);
 }
 
-function requestAiLayout(providerId, apiKey, prompt, content, systemPrompt = null) {
-  const provider = aiProviders[providerId] || aiProviders.deepseek;
-  const requestBody = JSON.stringify({
+function requestAiLayout(
+  providerId,
+  apiKey,
+  prompt,
+  content,
+  systemPrompt = null,
+  customSettings = null
+) {
+  const provider = getAiRequestProvider(providerId, customSettings);
+  const system = systemPrompt
+    || '只返回优化排版后的完整 Markdown，不要解释，不要使用代码围栏包裹结果。';
+  const userContent = `${prompt}\n\n${content}`;
+  const requestData = provider.protocol === 'anthropic-messages' ? {
+    model: provider.model,
+    system,
+    messages: [{ role: 'user', content: userContent }],
+    max_tokens: provider.maxTokens || 8192,
+    stream: false
+  } : {
     model: provider.model,
     messages: [
-      {
-        role: 'system',
-        content: systemPrompt
-          || '只返回优化排版后的完整 Markdown，不要解释，不要使用代码围栏包裹结果。'
-      },
-      {
-        role: 'user',
-        content: `${prompt}\n\n${content}`
-      }
+      { role: 'system', content: system },
+      { role: 'user', content: userContent }
     ],
     stream: false,
     ...provider.extras
-  });
+  };
+  if (provider.temperature !== null && provider.temperature !== undefined) {
+    requestData.temperature = provider.temperature;
+  }
+  if (provider.maxTokens && provider.protocol !== 'anthropic-messages') {
+    requestData.max_tokens = provider.maxTokens;
+  }
+  const requestBody = JSON.stringify(requestData);
+  const headers = provider.protocol === 'anthropic-messages'
+    ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+    : { Authorization: `Bearer ${apiKey}` };
 
   return new Promise((resolve, reject) => {
-    const request = https.request({
+    const request = (provider.requestModule || https).request({
       hostname: provider.hostname,
+      port: provider.port,
       path: provider.path,
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        ...headers,
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(requestBody)
       },
-      timeout: 120000
+      timeout: provider.timeout || 120000
     }, response => {
       let responseBody = '';
       response.setEncoding('utf8');
@@ -330,7 +413,9 @@ function requestAiLayout(providerId, apiKey, prompt, content, systemPrompt = nul
           ));
           return;
         }
-        const optimizedContent = data?.choices?.[0]?.message?.content;
+        const optimizedContent = provider.protocol === 'anthropic-messages'
+          ? data?.content?.find(block => block?.type === 'text')?.text
+          : data?.choices?.[0]?.message?.content;
         if (typeof optimizedContent !== 'string' || !optimizedContent.trim()) {
           reject(new Error(`${provider.name} 未返回处理后的内容`));
           return;
@@ -346,8 +431,15 @@ function requestAiLayout(providerId, apiKey, prompt, content, systemPrompt = nul
   });
 }
 
-function testAiApiKey(providerId, apiKey) {
-  const provider = aiProviders[providerId];
+function testAiApiKey(providerId, apiKey, customSettings = null) {
+  const provider = getAiRequestProvider(providerId, customSettings);
+  if (provider.protocol === 'anthropic-messages') {
+    return requestAiLayout(providerId, apiKey, '', '1', '只返回数字 1。', {
+      ...customSettings,
+      maxTokens: 1,
+      timeoutSeconds: Math.min(customSettings.timeoutSeconds || 30, 30)
+    });
+  }
   const tokenLimit = providerId === 'mimo'
     ? { max_completion_tokens: 1 }
     : { max_tokens: 1 };
@@ -360,8 +452,9 @@ function testAiApiKey(providerId, apiKey) {
   });
 
   return new Promise((resolve, reject) => {
-    const request = https.request({
+    const request = (provider.requestModule || https).request({
       hostname: provider.hostname,
+      port: provider.port,
       path: provider.path,
       method: 'POST',
       headers: {
@@ -369,7 +462,7 @@ function testAiApiKey(providerId, apiKey) {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(requestBody)
       },
-      timeout: 30000
+      timeout: Math.min(provider.timeout || 30000, 30000)
     }, response => {
       let responseBody = '';
       response.setEncoding('utf8');
@@ -1628,8 +1721,19 @@ ipcMain.handle('get-ai-settings', async () => {
     const apiKeys = {
       deepseek: typeof config.deepseekApiKey === 'string' ? config.deepseekApiKey : '',
       mimo: typeof config.mimoApiKey === 'string' ? config.mimoApiKey : '',
-      hunyuan: typeof config.hunyuanApiKey === 'string' ? config.hunyuanApiKey : ''
+      custom: typeof config.customApiKey === 'string' ? config.customApiKey : ''
     };
+    const custom = config.customAiSettings && typeof config.customAiSettings === 'object'
+      ? config.customAiSettings
+      : {
+          alias: '',
+          protocol: 'openai-chat',
+          baseUrl: '',
+          model: '',
+          temperature: null,
+          maxTokens: null,
+          timeoutSeconds: 120
+        };
     const layoutPrompt = typeof config.deepseekLayoutPrompt === 'string'
       && config.deepseekLayoutPrompt.trim()
       ? config.deepseekLayoutPrompt
@@ -1643,6 +1747,7 @@ ipcMain.handle('get-ai-settings', async () => {
       provider,
       apiKey: apiKeys.deepseek,
       apiKeys,
+      custom,
       layoutPrompt,
       stampPosition
     };
@@ -1669,6 +1774,9 @@ ipcMain.handle('set-ai-settings', async (event, settings) => {
       throw new Error('优化排版提示词格式无效');
     }
     const config = getConfig();
+    if (provider === 'custom') {
+      config.customAiSettings = normalizeCustomAiSettings(settings.custom);
+    }
     const keyName = `${provider}ApiKey`;
     if (normalizedApiKey) config[keyName] = normalizedApiKey;
     else delete config[keyName];
@@ -1679,6 +1787,7 @@ ipcMain.handle('set-ai-settings', async (event, settings) => {
       success: true,
       provider,
       configured: Boolean(normalizedApiKey),
+      custom: config.customAiSettings,
       layoutPrompt: normalizedLayoutPrompt
     };
   } catch (err) {
@@ -1696,8 +1805,14 @@ ipcMain.handle('test-ai-api-key', async (event, settings) => {
     if (normalizedApiKey.length > 512 || /[\r\n\0]/.test(normalizedApiKey)) {
       throw new Error('API Key 格式无效');
     }
-    await testAiApiKey(provider, normalizedApiKey);
-    return { success: true, provider, providerName: aiProviders[provider].name };
+    const custom = provider === 'custom'
+      ? normalizeCustomAiSettings(settings.custom)
+      : null;
+    await testAiApiKey(provider, normalizedApiKey, custom);
+    const providerName = provider === 'custom' && custom.alias
+      ? custom.alias
+      : aiProviders[provider].name;
+    return { success: true, provider, providerName };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -1736,7 +1851,9 @@ ipcMain.handle('deepseek-optimize-layout', async (event, content) => {
       provider,
       apiKey,
       layoutPrompt,
-      content
+      content,
+      null,
+      provider === 'custom' ? config.customAiSettings : null
     );
     return { success: true, content: optimizedContent };
   } catch (err) {
@@ -1765,7 +1882,8 @@ ipcMain.handle('deepseek-translate', async (event, data) => {
       apiKey,
       prompt,
       content,
-      '只返回翻译后的完整内容，不要解释，不要使用代码围栏包裹结果。'
+      '只返回翻译后的完整内容，不要解释，不要使用代码围栏包裹结果。',
+      provider === 'custom' ? config.customAiSettings : null
     );
     return { success: true, content: translatedContent };
   } catch (err) {
