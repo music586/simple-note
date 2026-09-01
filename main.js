@@ -239,6 +239,32 @@ function migrateAiOptimizedNotePaths(sourcePath, destinationPath = null) {
   saveConfig(config);
 }
 
+function migrateAiReviewSessions(sourcePath, destinationPath = null) {
+  const config = getConfig();
+  const sessions = config.aiReviewSessions && typeof config.aiReviewSessions === 'object'
+    ? config.aiReviewSessions
+    : {};
+  const source = path.resolve(sourcePath);
+  const destination = destinationPath ? path.resolve(destinationPath) : null;
+  const sourcePrefix = source + path.sep;
+  let changed = false;
+  const nextSessions = {};
+  Object.entries(sessions).forEach(([notePath, session]) => {
+    const resolvedPath = path.resolve(notePath);
+    if (resolvedPath !== source && !resolvedPath.startsWith(sourcePrefix)) {
+      nextSessions[resolvedPath] = session;
+      return;
+    }
+    changed = true;
+    if (!destination) return;
+    const nextPath = path.join(destination, path.relative(source, resolvedPath));
+    nextSessions[nextPath] = { ...session, notePath: nextPath };
+  });
+  if (!changed) return;
+  config.aiReviewSessions = nextSessions;
+  saveConfig(config);
+}
+
 const aiProviders = {
   deepseek: {
     name: 'DeepSeek',
@@ -1254,6 +1280,11 @@ function rebuildApplicationMenu() {
       label: 'AI',
       submenu: [
         {
+          label: '继续审阅 AI 排版…',
+          click: () => sendToActiveWindow('ai-resume-layout-review')
+        },
+        { type: 'separator' },
+        {
           label: '优化排版',
           click: () => sendToActiveWindow('ai-optimize-layout')
         },
@@ -1922,6 +1953,87 @@ ipcMain.handle('set-ai-optimized-state', async (event, { notePath, optimized }) 
   }
 });
 
+function getAiReviewSessions(config) {
+  return config.aiReviewSessions && typeof config.aiReviewSessions === 'object'
+    ? config.aiReviewSessions
+    : {};
+}
+
+ipcMain.handle('get-ai-review-session', async (event, notePath) => {
+  try {
+    const resolvedPath = resolveNotesPath(event, notePath, {
+      expectedType: 'file',
+      markdownOnly: true
+    });
+    return { success: true, session: getAiReviewSessions(getConfig())[resolvedPath] || null };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('set-ai-review-session', async (event, session) => {
+  try {
+    if (!session || typeof session !== 'object') throw new Error('AI 审阅会话无效');
+    const resolvedPath = resolveNotesPath(event, session.notePath, {
+      expectedType: 'file',
+      markdownOnly: true
+    });
+    const textFields = ['originalEditorContent', 'originalContent', 'candidateContent'];
+    textFields.forEach(field => {
+      if (typeof session[field] !== 'string') throw new Error('AI 审阅内容无效');
+      if (Buffer.byteLength(session[field], 'utf8') > 10 * 1024 * 1024) {
+        throw new Error('AI 审阅内容不能超过 10MB');
+      }
+    });
+    const selectionStart = Number(session.selectionStart);
+    const selectionEnd = Number(session.selectionEnd);
+    if (!Number.isInteger(selectionStart) || !Number.isInteger(selectionEnd)
+      || selectionStart < 0 || selectionEnd < selectionStart) {
+      throw new Error('AI 审阅选区无效');
+    }
+    const acceptedSignatures = Array.isArray(session.acceptedSignatures)
+      ? session.acceptedSignatures.filter(value => (
+        typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
+      )).slice(0, 10000)
+      : [];
+    const config = getConfig();
+    config.aiReviewSessions = getAiReviewSessions(config);
+    config.aiReviewSessions[resolvedPath] = {
+      notePath: resolvedPath,
+      originalEditorContent: session.originalEditorContent,
+      originalContent: session.originalContent,
+      candidateContent: session.candidateContent,
+      selectionOnly: session.selectionOnly === true,
+      selectionStart,
+      selectionEnd,
+      acceptedSignatures,
+      createdAt: Number.isFinite(session.createdAt) ? session.createdAt : Date.now(),
+      updatedAt: Date.now()
+    };
+    saveConfig(config);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('delete-ai-review-session', async (event, notePath) => {
+  try {
+    const resolvedPath = resolveNotesPath(event, notePath, {
+      expectedType: 'file',
+      markdownOnly: true
+    });
+    const config = getConfig();
+    const sessions = getAiReviewSessions(config);
+    delete sessions[resolvedPath];
+    config.aiReviewSessions = sessions;
+    saveConfig(config);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 ipcMain.handle('export-current-pdf', async (event, suggestedName) => {
   const sourceWindow = BrowserWindow.fromWebContents(event.sender);
   if (!sourceWindow || sourceWindow.isDestroyed()) {
@@ -2466,6 +2578,7 @@ ipcMain.handle('delete-note', async (event, notePath) => {
     fs.unlinkSync(filePath);
   }
   migrateAiOptimizedNotePaths(filePath);
+  migrateAiReviewSessions(filePath);
   return true;
 });
 
@@ -2480,6 +2593,7 @@ ipcMain.handle('delete-folder', async (event, folderPath) => {
     fs.rmSync(resolvedFolderPath, { recursive: true, force: true });
   }
   migrateAiOptimizedNotePaths(resolvedFolderPath);
+  migrateAiReviewSessions(resolvedFolderPath);
   return true;
 });
 
@@ -2498,6 +2612,7 @@ ipcMain.handle('rename-note', async (event, { oldPath, newName }) => {
   if (newPath !== filePath) fs.renameSync(filePath, newPath);
   getHistoryStore(event).migratePath(filePath, newPath);
   migrateAiOptimizedNotePaths(filePath, newPath);
+  migrateAiReviewSessions(filePath, newPath);
   return { name: safeName, path: newPath, mtime: fs.statSync(newPath).mtime };
 });
 
@@ -2511,6 +2626,7 @@ ipcMain.handle('rename-folder', async (event, { oldPath, newName }) => {
   if (newPath !== folderPath) fs.renameSync(folderPath, newPath);
   getHistoryStore(event).migratePath(folderPath, newPath);
   migrateAiOptimizedNotePaths(folderPath, newPath);
+  migrateAiReviewSessions(folderPath, newPath);
   return { name: safeName, path: newPath };
 });
 
@@ -2551,6 +2667,7 @@ ipcMain.handle('move-item', async (event, { sourcePath, targetPath, type }) => {
     fs.renameSync(resolvedSourcePath, newPath);
     getHistoryStore(event).migratePath(resolvedSourcePath, newPath);
     migrateAiOptimizedNotePaths(resolvedSourcePath, newPath);
+    migrateAiReviewSessions(resolvedSourcePath, newPath);
     return { success: true, newPath };
   } catch (err) {
     return { success: false, error: err.message };

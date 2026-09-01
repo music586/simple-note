@@ -6,6 +6,11 @@ const { ipcRenderer, clipboard } = require('electron');
 const { marked } = require('marked');
 const hljs = require('highlight.js');
 const katex = require('katex');
+const { Compartment, EditorState } = require('@codemirror/state');
+const { Decoration, EditorView, keymap, lineNumbers } = require('@codemirror/view');
+const { defaultKeymap } = require('@codemirror/commands');
+const { markdown } = require('@codemirror/lang-markdown');
+const { MergeView } = require('@codemirror/merge');
 const TurndownService = require('turndown');
 const { gfm } = require('turndown-plugin-gfm');
 const CodeMirror = require('./codemirror6-adapter');
@@ -121,6 +126,37 @@ const noteHistoryReplaceSelection = document.getElementById('noteHistoryReplaceS
 const noteHistoryError = document.getElementById('noteHistoryError');
 const noteHistoryCancel = document.getElementById('noteHistoryCancel');
 const noteHistoryRestore = document.getElementById('noteHistoryRestore');
+const aiReviewModal = document.getElementById('aiReviewModal');
+const aiReviewNoteName = document.getElementById('aiReviewNoteName');
+const aiReviewSummary = document.getElementById('aiReviewSummary');
+const aiReviewEditor = document.getElementById('aiReviewEditor');
+const aiReviewStatus = document.getElementById('aiReviewStatus');
+const aiReviewPrevious = document.getElementById('aiReviewPrevious');
+const aiReviewNext = document.getElementById('aiReviewNext');
+const aiReviewAcceptChange = document.getElementById('aiReviewAcceptChange');
+const aiReviewRejectChange = document.getElementById('aiReviewRejectChange');
+const aiReviewRejectAll = document.getElementById('aiReviewRejectAll');
+const aiReviewCancel = document.getElementById('aiReviewCancel');
+const aiReviewAcceptAll = document.getElementById('aiReviewAcceptAll');
+const aiReviewPending = document.getElementById('aiReviewPending');
+const aiReviewPendingText = document.getElementById('aiReviewPendingText');
+const aiReviewPendingOpen = document.getElementById('aiReviewPendingOpen');
+const aiReviewPendingDiscard = document.getElementById('aiReviewPendingDiscard');
+const aiReviewState = {
+  mergeView: null,
+  targetEditor: null,
+  targetNotePath: null,
+  originalEditorContent: '',
+  originalContent: '',
+  selectionOnly: false,
+  selectionStart: 0,
+  selectionEnd: 0,
+  acceptedSignatures: new Set(),
+  acceptedDecorations: null,
+  currentChunk: 0,
+  createdAt: 0,
+  persistTimer: null
+};
 const noteHistoryState = {
   target: null,
   versions: [],
@@ -2529,6 +2565,344 @@ function finishAiProgress(completed) {
   }, 500);
 }
 
+function getAiReviewEditorExtensions(readOnly = false) {
+  return [
+    markdown(),
+    lineNumbers(),
+    EditorView.lineWrapping,
+    keymap.of(defaultKeymap),
+    EditorView.theme({
+      '&': { height: '100%' },
+      '.cm-scroller': { overflow: 'auto' }
+    }),
+    ...(readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [])
+  ];
+}
+
+function getAiReviewChunkSignature(mergeView, chunk) {
+  const before = mergeView.a.state.sliceDoc(
+    chunk.fromA,
+    Math.min(chunk.toA, mergeView.a.state.doc.length)
+  );
+  const after = mergeView.b.state.sliceDoc(
+    chunk.fromB,
+    Math.min(chunk.toB, mergeView.b.state.doc.length)
+  );
+  return crypto.createHash('sha256')
+    .update(`${chunk.fromA}:${chunk.toA}\0${before}\0${after}`)
+    .digest('hex');
+}
+
+function getPendingAiReviewChunkIndexes() {
+  const mergeView = aiReviewState.mergeView;
+  if (!mergeView) return [];
+  return mergeView.chunks.flatMap((chunk, index) => (
+    aiReviewState.acceptedSignatures.has(getAiReviewChunkSignature(mergeView, chunk))
+      ? []
+      : [index]
+  ));
+}
+
+function renderAcceptedAiReviewChunks() {
+  const mergeView = aiReviewState.mergeView;
+  const compartment = aiReviewState.acceptedDecorations;
+  if (!mergeView || !compartment) return;
+  const marks = [];
+  mergeView.chunks.forEach(chunk => {
+    if (!aiReviewState.acceptedSignatures.has(getAiReviewChunkSignature(mergeView, chunk))) return;
+    const start = Math.min(chunk.fromB, mergeView.b.state.doc.length);
+    const end = Math.min(Math.max(chunk.toB, start), mergeView.b.state.doc.length);
+    let line = mergeView.b.state.doc.lineAt(start);
+    while (line.from <= end) {
+      marks.push(Decoration.line({ class: 'cm-ai-review-accepted' }).range(line.from));
+      if (line.to >= end || line.number >= mergeView.b.state.doc.lines) break;
+      line = mergeView.b.state.doc.line(line.number + 1);
+    }
+  });
+  mergeView.b.dispatch({
+    effects: compartment.reconfigure(EditorView.decorations.of(Decoration.set(marks, true)))
+  });
+}
+
+function getAiReviewSessionPayload() {
+  if (!aiReviewState.mergeView || !aiReviewState.targetNotePath) return null;
+  return {
+    notePath: aiReviewState.targetNotePath,
+    originalEditorContent: aiReviewState.originalEditorContent,
+    originalContent: aiReviewState.originalContent,
+    candidateContent: aiReviewState.mergeView.b.state.doc.toString(),
+    selectionOnly: aiReviewState.selectionOnly,
+    selectionStart: aiReviewState.selectionStart,
+    selectionEnd: aiReviewState.selectionEnd,
+    acceptedSignatures: [...aiReviewState.acceptedSignatures],
+    createdAt: aiReviewState.createdAt || Date.now()
+  };
+}
+
+async function persistAiReviewSession() {
+  const session = getAiReviewSessionPayload();
+  if (!session) return;
+  const result = await ipcRenderer.invoke('set-ai-review-session', session);
+  if (!result.success) aiReviewStatus.textContent = result.error || '保存审阅进度失败';
+}
+
+function showAiReviewPending(targetEditor, pendingCount = null) {
+  const panel = targetEditor === editorRight ? rightPanel : leftPanel;
+  const container = targetEditor === editorRight ? editorContainerRight : editorContainer;
+  panel.insertBefore(aiReviewPending, container);
+  aiReviewPendingText.textContent = pendingCount === null
+    ? 'AI 排版结果等待审阅'
+    : `AI 排版结果等待审阅 · ${pendingCount} 处未处理`;
+  aiReviewPending.hidden = false;
+}
+
+function hideAiReviewPending() {
+  aiReviewPending.hidden = true;
+}
+
+function updateAiReviewState() {
+  const chunks = aiReviewState.mergeView?.chunks || [];
+  aiReviewState.currentChunk = Math.max(
+    0,
+    Math.min(aiReviewState.currentChunk, Math.max(0, chunks.length - 1))
+  );
+  const pending = getPendingAiReviewChunkIndexes();
+  const accepted = Math.max(0, chunks.length - pending.length);
+  const current = chunks.length ? aiReviewState.currentChunk + 1 : 0;
+  aiReviewSummary.textContent = chunks.length
+    ? `${pending.length} 处待处理 · ${accepted} 处已采纳 · 当前第 ${current} 处`
+    : '没有待处理的修改';
+  aiReviewStatus.textContent = pending.length
+    ? '关闭后可从 AI 菜单继续审阅'
+    : '所有修改均已处理，可以应用结果';
+  const disabled = chunks.length === 0;
+  const currentAccepted = chunks[aiReviewState.currentChunk]
+    && aiReviewState.acceptedSignatures.has(
+      getAiReviewChunkSignature(aiReviewState.mergeView, chunks[aiReviewState.currentChunk])
+    );
+  aiReviewPrevious.disabled = disabled || pending.length === 0;
+  aiReviewNext.disabled = disabled || pending.length === 0;
+  aiReviewAcceptChange.disabled = disabled || currentAccepted;
+  aiReviewRejectChange.disabled = disabled || currentAccepted;
+  aiReviewAcceptChange.textContent = currentAccepted ? '已采纳' : '采纳此处';
+  aiReviewAcceptAll.disabled = false;
+  renderAcceptedAiReviewChunks();
+}
+
+function revealAiReviewChunk(index) {
+  const mergeView = aiReviewState.mergeView;
+  if (!mergeView?.chunks.length) return;
+  const pending = getPendingAiReviewChunkIndexes();
+  if (pending.length) {
+    const direction = index < aiReviewState.currentChunk ? -1 : 1;
+    let candidate = (index + mergeView.chunks.length) % mergeView.chunks.length;
+    while (!pending.includes(candidate)) {
+      candidate = (candidate + direction + mergeView.chunks.length) % mergeView.chunks.length;
+    }
+    aiReviewState.currentChunk = candidate;
+  } else {
+    aiReviewState.currentChunk = Math.max(
+      0,
+      Math.min(aiReviewState.currentChunk, mergeView.chunks.length - 1)
+    );
+  }
+  const chunk = mergeView.chunks[aiReviewState.currentChunk];
+  const position = Math.min(chunk.fromB, mergeView.b.state.doc.length);
+  mergeView.b.dispatch({
+    selection: { anchor: position },
+    effects: EditorView.scrollIntoView(position, { y: 'center' })
+  });
+  updateAiReviewState();
+}
+
+function closeAiReview({ persist = true } = {}) {
+  const targetEditor = aiReviewState.targetEditor;
+  const pendingCount = getPendingAiReviewChunkIndexes().length;
+  if (aiReviewState.persistTimer) clearTimeout(aiReviewState.persistTimer);
+  aiReviewState.persistTimer = null;
+  if (persist && aiReviewState.mergeView) {
+    persistAiReviewSession().catch(() => {});
+    showAiReviewPending(targetEditor, pendingCount);
+  }
+  aiReviewModal.classList.remove('active');
+  aiReviewState.mergeView?.destroy();
+  aiReviewState.mergeView = null;
+  aiReviewEditor.replaceChildren();
+  aiReviewState.targetEditor = null;
+  targetEditor?.focus();
+}
+
+function showAiReview({ targetEditor, targetNote, originalEditorContent, originalContent,
+  optimizedContent, selectionOnly, selectionStart, selectionEnd, acceptedSignatures = [],
+  createdAt = Date.now() }) {
+  closeAiReview({ persist: false });
+  hideAiReviewPending();
+  Object.assign(aiReviewState, {
+    targetEditor,
+    targetNotePath: targetNote.path,
+    originalEditorContent,
+    originalContent,
+    selectionOnly,
+    selectionStart,
+    selectionEnd,
+    acceptedSignatures: new Set(acceptedSignatures),
+    acceptedDecorations: new Compartment(),
+    currentChunk: 0,
+    createdAt
+  });
+  aiReviewNoteName.textContent = targetNote.name;
+  aiReviewStatus.textContent = '';
+  const scheduleUpdate = EditorView.updateListener.of(update => {
+    if (!update.docChanged) return;
+    requestAnimationFrame(updateAiReviewState);
+    if (aiReviewState.persistTimer) clearTimeout(aiReviewState.persistTimer);
+    aiReviewState.persistTimer = setTimeout(() => {
+      aiReviewState.persistTimer = null;
+      persistAiReviewSession().catch(() => {});
+    }, 400);
+  });
+  aiReviewState.mergeView = new MergeView({
+    a: {
+      doc: originalContent,
+      extensions: getAiReviewEditorExtensions(true)
+    },
+    b: {
+      doc: optimizedContent,
+      extensions: [
+        ...getAiReviewEditorExtensions(),
+        aiReviewState.acceptedDecorations.of([]),
+        scheduleUpdate
+      ]
+    },
+    parent: aiReviewEditor,
+    orientation: 'a-b',
+    highlightChanges: true,
+    gutter: true,
+    collapseUnchanged: { margin: 3, minSize: 8 },
+    diffConfig: { scanLimit: 1000, timeout: 1500 }
+  });
+  aiReviewModal.classList.add('active');
+  updateAiReviewState();
+  persistAiReviewSession().catch(() => {});
+  requestAnimationFrame(() => revealAiReviewChunk(0));
+}
+
+function rejectCurrentAiReviewChunk() {
+  const mergeView = aiReviewState.mergeView;
+  const chunk = mergeView?.chunks[aiReviewState.currentChunk];
+  if (!mergeView || !chunk) return;
+  const sourceEnd = Math.min(chunk.toA, mergeView.a.state.doc.length);
+  const targetEnd = Math.min(chunk.toB, mergeView.b.state.doc.length);
+  aiReviewState.acceptedSignatures.delete(getAiReviewChunkSignature(mergeView, chunk));
+  const replacement = mergeView.a.state.sliceDoc(chunk.fromA, sourceEnd);
+  mergeView.b.dispatch({
+    changes: { from: chunk.fromB, to: targetEnd, insert: replacement },
+    userEvent: 'ai-review.ignore'
+  });
+  requestAnimationFrame(() => {
+    updateAiReviewState();
+    persistAiReviewSession().catch(() => {});
+    revealAiReviewChunk(aiReviewState.currentChunk);
+  });
+}
+
+async function applyAiReviewResult() {
+  const targetEditor = aiReviewState.targetEditor;
+  const currentNoteForEditor = targetEditor === editorRight ? currentNoteRight : currentNote;
+  if (
+    !targetEditor
+    || !currentNoteForEditor
+    || currentNoteForEditor.path !== aiReviewState.targetNotePath
+    || targetEditor.value !== aiReviewState.originalEditorContent
+  ) {
+    closeAiReview();
+    showConfirm(
+      '未应用优化结果',
+      '审阅期间笔记内容或当前笔记已改变，请重新执行 AI 排版。',
+      () => {}
+    );
+    return;
+  }
+  const optimizedContent = aiReviewState.mergeView.b.state.doc.toString();
+  if (aiReviewState.selectionOnly) {
+    targetEditor.setRangeText(
+      optimizedContent,
+      aiReviewState.selectionStart,
+      aiReviewState.selectionEnd,
+      'end',
+      'AI 排版'
+    );
+  } else {
+    targetEditor.replaceContent(optimizedContent, 'AI 排版');
+  }
+  if (targetEditor === editorRight) {
+    updatePreviewRight(true);
+    await saveCurrentNoteRight();
+  } else {
+    updatePreview(true);
+    await saveCurrentNote();
+  }
+  const optimizedState = await ipcRenderer.invoke('set-ai-optimized-state', {
+    notePath: currentNoteForEditor.path,
+    optimized: true
+  });
+  if (!optimizedState.success) {
+    showConfirm('保存排版状态失败', optimizedState.error || '无法保存 AI 排版状态', () => {});
+  } else {
+    const targetPanel = targetEditor === editorRight ? rightPanel : leftPanel;
+    targetPanel.classList.add('ai-layout-optimized');
+  }
+  await ipcRenderer.invoke('delete-ai-review-session', currentNoteForEditor.path);
+  hideAiReviewPending();
+  closeAiReview({ persist: false });
+}
+
+async function resumeAiReview() {
+  const targetEditor = lastActiveEditor === editorRight ? editorRight : editor;
+  const targetNote = targetEditor === editorRight ? currentNoteRight : currentNote;
+  if (!targetNote) {
+    showConfirm('无法继续审阅', '请先选择一篇笔记。', () => {});
+    return;
+  }
+  const result = await ipcRenderer.invoke('get-ai-review-session', targetNote.path);
+  if (!result.success || !result.session) {
+    hideAiReviewPending();
+    showConfirm('没有待审阅结果', '当前笔记没有未完成的 AI 排版审阅。', () => {});
+    return;
+  }
+  const session = result.session;
+  if (targetEditor.value !== session.originalEditorContent) {
+    showConfirm(
+      '正文已发生变化',
+      '关闭审阅后正文已被修改。为避免覆盖新内容，请放弃旧结果并重新执行 AI 排版。',
+      () => {}
+    );
+    return;
+  }
+  showAiReview({
+    targetEditor,
+    targetNote,
+    originalEditorContent: session.originalEditorContent,
+    originalContent: session.originalContent,
+    optimizedContent: session.candidateContent,
+    selectionOnly: session.selectionOnly,
+    selectionStart: session.selectionStart,
+    selectionEnd: session.selectionEnd,
+    acceptedSignatures: session.acceptedSignatures,
+    createdAt: session.createdAt
+  });
+}
+
+async function discardAiReview() {
+  const targetEditor = aiReviewState.targetEditor
+    || (lastActiveEditor === editorRight ? editorRight : editor);
+  const targetNote = targetEditor === editorRight ? currentNoteRight : currentNote;
+  if (!targetNote) return;
+  await ipcRenderer.invoke('delete-ai-review-session', targetNote.path);
+  hideAiReviewPending();
+  closeAiReview({ persist: false });
+}
+
 async function optimizeActiveNoteLayout(options = {}) {
   if (aiLayoutBusy) {
     showConfirm('AI 正在处理', '请等待当前排版优化完成。', () => {});
@@ -2576,35 +2950,21 @@ async function optimizeActiveNoteLayout(options = {}) {
       showConfirm('未应用优化结果', '等待 AI 响应期间选中内容已改变，请重新执行。', () => {});
       return;
     }
+    if (!selectionOnly && targetEditor.value !== originalContent) {
+      showConfirm('未应用优化结果', '等待 AI 响应期间正文已改变，请重新执行。', () => {});
+      return;
+    }
     const optimizedContent = normalizeAiMarkdownResponse(result.content);
-    if (selectionOnly) {
-      targetEditor.setRangeText(
-        optimizedContent,
-        selectionStart,
-        selectionEnd,
-        'end',
-        'AI 排版'
-      );
-    } else {
-      targetEditor.replaceContent(optimizedContent, 'AI 排版');
-    }
-    if (targetEditor === editorRight) {
-      updatePreviewRight(true);
-      await saveCurrentNoteRight();
-    } else {
-      updatePreview(true);
-      await saveCurrentNote();
-    }
-    const optimizedState = await ipcRenderer.invoke('set-ai-optimized-state', {
-      notePath: currentTargetNote.path,
-      optimized: true
+    showAiReview({
+      targetEditor,
+      targetNote: currentTargetNote,
+      originalEditorContent: targetEditor.value,
+      originalContent,
+      optimizedContent,
+      selectionOnly,
+      selectionStart,
+      selectionEnd
     });
-    if (!optimizedState.success) {
-      throw new Error(optimizedState.error || '无法保存 AI 排版状态');
-    }
-    const targetPanel = targetEditor === editorRight ? rightPanel : leftPanel;
-    targetPanel.classList.add('ai-layout-optimized');
-    targetEditor.focus();
     completed = true;
   } catch (error) {
     showConfirm(
@@ -3156,11 +3516,13 @@ async function selectNote(note) {
   }
   
   closeSlashCommandMenu();
+  hideAiReviewPending();
   currentNote = note;
   noteTitle.value = note.name;
-  const [content, optimizedState] = await Promise.all([
+  const [content, optimizedState, reviewSession] = await Promise.all([
     ipcRenderer.invoke('read-note', note.path),
-    ipcRenderer.invoke('get-ai-optimized-state', note.path)
+    ipcRenderer.invoke('get-ai-optimized-state', note.path),
+    ipcRenderer.invoke('get-ai-review-session', note.path)
   ]);
   if (!currentNote || currentNote.path !== note.path) return;
   loadPaneDocument(leftPanePersistence, editor, note.path, content);
@@ -3170,6 +3532,7 @@ async function selectNote(note) {
   );
   updatePreview(true);
   resetPaneScrollToTop(editor, preview);
+  if (reviewSession.success && reviewSession.session) showAiReviewPending(editor);
   renderTree();
   saveWorkspaceSession();
 }
@@ -6445,6 +6808,45 @@ noteHistoryVersions.addEventListener('keydown', event => {
   });
 });
 
+aiReviewPrevious.addEventListener('click', () => {
+  revealAiReviewChunk(aiReviewState.currentChunk - 1);
+});
+aiReviewNext.addEventListener('click', () => {
+  revealAiReviewChunk(aiReviewState.currentChunk + 1);
+});
+aiReviewAcceptChange.addEventListener('click', () => {
+  const mergeView = aiReviewState.mergeView;
+  const chunk = mergeView?.chunks[aiReviewState.currentChunk];
+  if (!mergeView || !chunk) return;
+  aiReviewState.acceptedSignatures.add(getAiReviewChunkSignature(mergeView, chunk));
+  updateAiReviewState();
+  persistAiReviewSession().catch(() => {});
+  revealAiReviewChunk(aiReviewState.currentChunk + 1);
+});
+aiReviewRejectChange.addEventListener('click', rejectCurrentAiReviewChunk);
+aiReviewAcceptAll.addEventListener('click', () => {
+  applyAiReviewResult().catch(error => {
+    showConfirm('应用排版失败', error.message || '无法保存 AI 排版结果', () => {});
+  });
+});
+aiReviewRejectAll.addEventListener('click', () => {
+  showConfirm('放弃 AI 排版结果', '确定放弃本次 AI 排版结果吗？原文不会改变。', () => {
+    discardAiReview().catch(() => {});
+  });
+});
+aiReviewCancel.addEventListener('click', closeAiReview);
+aiReviewModal.addEventListener('click', event => {
+  if (event.target === aiReviewModal) closeAiReview();
+});
+aiReviewPendingOpen.addEventListener('click', () => resumeAiReview().catch(error => {
+  showConfirm('继续审阅失败', error.message, () => {});
+}));
+aiReviewPendingDiscard.addEventListener('click', () => {
+  showConfirm('放弃 AI 排版结果', '确定放弃暂存的 AI 排版结果吗？', () => {
+    discardAiReview().catch(() => {});
+  });
+});
+
 let saveTimeout = null;
 
 editor.addEventListener('input', () => {
@@ -6736,6 +7138,8 @@ function closeTopmostModal() {
     closeImageViewer();
   } else if (mermaidViewer.classList.contains('active')) {
     closeMermaidViewer();
+  } else if (aiReviewModal.classList.contains('active')) {
+    closeAiReview();
   } else if (noteHistoryModal.classList.contains('active')) {
     hideNoteHistory();
   } else if (quickOpenModal.classList.contains('active')) {
@@ -6856,6 +7260,9 @@ ipcRenderer.on('insert-table', insertMarkdownTable);
 ipcRenderer.on('insert-code-block', insertMarkdownCodeFence);
 ipcRenderer.on('insert-template', showTemplateDialog);
 ipcRenderer.on('ai-optimize-layout', () => optimizeActiveNoteLayout());
+ipcRenderer.on('ai-resume-layout-review', () => resumeAiReview().catch(error => {
+  showConfirm('继续审阅失败', error.message || '无法读取 AI 排版审阅', () => {});
+}));
 ipcRenderer.on('ai-optimize-layout-selection', () => {
   optimizeActiveNoteLayout({ selectionOnly: true });
 });
@@ -6908,12 +7315,14 @@ ipcRenderer.on('context-menu-new-folder', (event, data) => {
 async function openInRightPanel(note) {
   if (currentNote && currentNote.path === note.path) return;
   closeSlashCommandMenu();
+  hideAiReviewPending();
   currentNoteRight = note;
   noteTitleRight.value = note.name;
   loadPaneDocument(rightPanePersistence, editorRight, note.path, '');
-  const [content, optimizedState] = await Promise.all([
+  const [content, optimizedState, reviewSession] = await Promise.all([
     ipcRenderer.invoke('read-note', note.path),
-    ipcRenderer.invoke('get-ai-optimized-state', note.path)
+    ipcRenderer.invoke('get-ai-optimized-state', note.path),
+    ipcRenderer.invoke('get-ai-review-session', note.path)
   ]);
   if (!currentNoteRight || currentNoteRight.path !== note.path) return;
   loadPaneDocument(rightPanePersistence, editorRight, note.path, content);
@@ -6925,6 +7334,7 @@ async function openInRightPanel(note) {
   rightPanel.style.display = 'flex';
   panelDivider.classList.remove('hidden');
   resetPaneScrollToTop(editorRight, previewRight);
+  if (reviewSession.success && reviewSession.session) showAiReviewPending(editorRight);
   renderTree();
   saveWorkspaceSession();
 }

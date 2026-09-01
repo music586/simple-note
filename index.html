@@ -21,6 +21,11 @@
         <span id="aiProgressBar" class="ai-progress-bar"></span>
       </span>
     </div>
+    <div id="aiReviewPending" class="ai-review-pending" hidden>
+      <span id="aiReviewPendingText">AI 排版结果等待审阅</span>
+      <button id="aiReviewPendingOpen" class="btn btn-secondary" type="button">继续审阅</button>
+      <button id="aiReviewPendingDiscard" class="btn btn-secondary" type="button">放弃</button>
+    </div>
     <aside class="sidebar">
       <div class="sidebar-header">
       </div>
@@ -281,6 +286,41 @@
         <span id="noteHistoryError" class="note-history-error" role="status"></span>
         <button id="noteHistoryCancel" class="btn btn-secondary">关闭</button>
         <button id="noteHistoryRestore" class="btn" disabled>恢复此版本</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="aiReviewModal" class="modal" role="dialog" aria-modal="true"
+    aria-labelledby="aiReviewTitle">
+    <div class="modal-content ai-review-modal-content">
+      <div class="modal-header ai-review-header">
+        <div>
+          <span id="aiReviewTitle" class="modal-title">AI 排版审阅</span>
+          <span id="aiReviewNoteName" class="ai-review-note-name"></span>
+        </div>
+        <span id="aiReviewSummary" class="ai-review-summary"></span>
+      </div>
+      <div class="ai-review-toolbar">
+        <div class="ai-review-labels" aria-hidden="true">
+          <span>原文（只读）</span><span>AI 排版结果</span>
+        </div>
+        <div class="ai-review-navigation">
+          <button id="aiReviewPrevious" class="btn btn-secondary" type="button">上一处</button>
+          <button id="aiReviewNext" class="btn btn-secondary" type="button">下一处</button>
+          <button id="aiReviewAcceptChange" class="btn btn-secondary" type="button">
+            采纳此处
+          </button>
+          <button id="aiReviewRejectChange" class="btn btn-secondary" type="button">
+            忽略此处
+          </button>
+        </div>
+      </div>
+      <div id="aiReviewEditor" class="ai-review-editor"></div>
+      <div class="modal-footer ai-review-footer">
+        <span id="aiReviewStatus" class="ai-review-status" role="status"></span>
+        <button id="aiReviewRejectAll" class="btn btn-secondary" type="button">全部忽略</button>
+        <button id="aiReviewCancel" class="btn btn-secondary" type="button">取消</button>
+        <button id="aiReviewAcceptAll" class="btn" type="button">全部采纳</button>
       </div>
     </div>
   </div>
