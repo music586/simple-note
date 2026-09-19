@@ -200,7 +200,9 @@ class DocumentOutline {
       }
     }
     this.container.hidden = this.group.active !== this || !this.getNote();
-    this.launcher.hidden = this.container.hidden || app.classList.contains('outline-hidden');
+    this.launcher.hidden = this.container.hidden
+      || app.classList.contains('outline-hidden')
+      || app.classList.contains('zen-mode');
     if (this.group.active !== this) return;
     const zen = app.classList.contains('zen-mode');
     if (zen && !this.group.wasZen) {
