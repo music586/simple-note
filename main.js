@@ -25,7 +25,8 @@ const {
 } = require('./note-path-security');
 const {
   normalizeHiddenDirectory,
-  getHiddenDirectories: resolveHiddenDirectories,
+  getLibraryHiddenDirectories,
+  saveLibraryHiddenDirectories,
   isHiddenDirectory
 } = require('./hidden-directory');
 
@@ -40,6 +41,7 @@ const windowColorThemes = new WeakMap();
 const windowSidebarStates = new WeakMap();
 const windowPreviewStates = new WeakMap();
 const windowEditorHistoryStates = new WeakMap();
+const windowAiReviewNotePaths = new WeakMap();
 const windowWorkspaces = new Map();
 let nextWorkspaceId = 1;
 let windowSessionSaveTimer = null;
@@ -65,6 +67,7 @@ const appName = '简记';
 process.title = appName;
 app.setName(appName);
 const configPath = path.join(app.getPath('userData'), 'config.json');
+let isFirstLaunch = !fs.existsSync(configPath);
 
 function getActiveWindow(preferredWindow = null) {
   if (preferredWindow && !preferredWindow.isDestroyed()) return preferredWindow;
@@ -209,8 +212,21 @@ function scheduleWindowSessionSave() {
   }, 200);
 }
 
-function getHiddenDirectories(config = getConfig()) {
-  return resolveHiddenDirectories(config);
+function getHiddenDirectories(source = null) {
+  const config = getConfig();
+  const notesDir = getNotesDir(source);
+  const existingLocation = config.notesLocations.some(location => (
+    path.resolve(location.path) === path.resolve(notesDir)
+  ));
+  return getLibraryHiddenDirectories(notesDir, existingLocation ? config : {});
+}
+
+function notifyHiddenDirectoriesChanged(notesDir) {
+  BrowserWindow.getAllWindows().forEach(window => {
+    if (!windowWorkspaces.has(window) || path.resolve(getNotesDir(window)) !== notesDir) return;
+    notifyNotesTreeChanged(window);
+    sendToWindow(window, 'hidden-directories-changed');
+  });
 }
 
 function getAiOptimizedNotePaths(config) {
@@ -668,7 +684,17 @@ function watchNotesDirectory(source) {
       getNotesDir(targetWindow),
       { recursive: true },
       (eventType, fileName) => {
-      if (isHiddenDirectory(fileName, getHiddenDirectories())) return;
+      const changedPath = String(fileName || '').replaceAll('\\', '/');
+      if (!fileName || changedPath === '.simple-note' ||
+          changedPath === '.simple-note/settings.json') {
+        notifyHiddenDirectoriesChanged(path.resolve(getNotesDir(targetWindow)));
+        return;
+      }
+      try {
+        if (isHiddenDirectory(fileName, getHiddenDirectories(targetWindow))) return;
+      } catch (error) {
+        // Let the renderer report invalid library settings when it refreshes.
+      }
       notifyNotesTreeChanged(targetWindow);
     });
     workspace.watcher.on('error', () => {
@@ -966,9 +992,22 @@ function updateEditorHistoryMenu(state = {}) {
   }
 }
 
+function updateAiReviewMenu() {
+  const notePath = windowAiReviewNotePaths.get(getActiveWindow());
+  const session = notePath && getAiReviewSessions(getConfig())[notePath];
+  const visible = Boolean(session && fs.existsSync(notePath)
+    && session.originalContent !== session.candidateContent);
+  const menu = Menu.getApplicationMenu();
+  for (const id of ['ai-resume-layout-review', 'ai-review-separator']) {
+    const item = menu?.getMenuItemById(id);
+    if (item) item.visible = visible;
+  }
+}
+
 function syncActiveWindowEditorHistoryMenu(window) {
   if (!window || window.isDestroyed()) return;
   updateEditorHistoryMenu(windowEditorHistoryStates.get(window));
+  updateAiReviewMenu();
   sendToWindow(window, 'request-editor-history-state');
 }
 
@@ -1021,9 +1060,10 @@ function createWindow(session = {}) {
   const workspace = getWindowWorkspace(newWindow);
   if (session.notesDir) workspace.notesDir = path.resolve(session.notesDir);
   mainWindow = newWindow;
-  newWindow.loadFile(path.join(__dirname, 'index.html'), session.showWelcome ? {
-    query: { welcome: '1' }
+  newWindow.loadFile(path.join(__dirname, 'index.html'), session.showWelcome || isFirstLaunch ? {
+    query: { welcome: isFirstLaunch ? 'first' : '1' }
   } : undefined);
+  isFirstLaunch = false;
   newWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   newWindow.webContents.on('will-navigate', event => event.preventDefault());
   newWindow.webContents.on('before-input-event', (event, input) => {
@@ -1280,10 +1320,12 @@ function rebuildApplicationMenu() {
       label: 'AI',
       submenu: [
         {
+          id: 'ai-resume-layout-review',
           label: '继续审阅 AI 排版…',
+          visible: false,
           click: () => sendToActiveWindow('ai-resume-layout-review')
         },
-        { type: 'separator' },
+        { id: 'ai-review-separator', type: 'separator', visible: false },
         {
           label: '优化排版',
           click: () => sendToActiveWindow('ai-optimize-layout')
@@ -1417,6 +1459,7 @@ function rebuildApplicationMenu() {
   Menu.setApplicationMenu(menu);
   const activeWindow = getActiveWindow();
   updateEditorHistoryMenu(activeWindow && windowEditorHistoryStates.get(activeWindow));
+  updateAiReviewMenu();
 }
 
 app.whenReady().then(() => {
@@ -1490,6 +1533,24 @@ ipcMain.on('sidebar-visibility-changed', (event, visible) => {
   const sourceWindow = BrowserWindow.fromWebContents(event.sender);
   if (sourceWindow) windowSidebarStates.set(sourceWindow, visible);
   if (sourceWindow && getActiveWindow() === sourceWindow) updateSidebarMenu(visible);
+});
+
+ipcMain.on('ai-review-active-note-changed', (event, notePath) => {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!sourceWindow || sourceWindow.isDestroyed()) return;
+  let resolvedPath = null;
+  if (typeof notePath === 'string') {
+    try {
+      resolvedPath = resolveNotesPath(event, notePath, {
+        expectedType: 'file',
+        markdownOnly: true
+      });
+    } catch (err) {
+      resolvedPath = null;
+    }
+  }
+  windowAiReviewNotePaths.set(sourceWindow, resolvedPath);
+  if (getActiveWindow() === sourceWindow) updateAiReviewMenu();
 });
 
 ipcMain.on('editor-history-state-changed', (event, state) => {
@@ -1572,9 +1633,9 @@ ipcMain.handle('clear-template-directory', async () => {
   }
 });
 
-ipcMain.handle('get-hidden-directories', async () => {
+ipcMain.handle('get-hidden-directories', async event => {
   try {
-    return { success: true, directories: getHiddenDirectories() };
+    return { success: true, directories: getHiddenDirectories(event) };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -1591,7 +1652,11 @@ ipcMain.handle('select-hidden-directory', async event => {
       defaultPath: notesDir
     });
     if (result.canceled || result.filePaths.length === 0) {
-      return { success: true, canceled: true, directories: getHiddenDirectories() };
+      return { success: true, canceled: true, directories: getHiddenDirectories(event) };
+    }
+
+    if (path.resolve(getNotesDir(event)) !== notesDir) {
+      throw new Error('笔记库已切换，请重新选择要隐藏的目录');
     }
 
     const selectedPath = path.resolve(result.filePaths[0]);
@@ -1605,14 +1670,15 @@ ipcMain.handle('select-hidden-directory', async event => {
 
     const config = getConfig();
     const directory = normalizeHiddenDirectory(relativePath);
-    config.hiddenDirectories = [...new Set([...getHiddenDirectories(config), directory])];
-    saveConfig(config);
-    notifyNotesTreeChanged();
+    const directories = saveLibraryHiddenDirectories(notesDir, [
+      ...getLibraryHiddenDirectories(notesDir, config), directory
+    ]);
+    notifyHiddenDirectoriesChanged(notesDir);
     return {
       success: true,
       canceled: false,
       directory,
-      directories: config.hiddenDirectories
+      directories
     };
   } catch (err) {
     return { success: false, error: err.message };
@@ -1624,15 +1690,14 @@ ipcMain.handle('update-hidden-directory', async (event, data) => {
     if (!data || typeof data !== 'object') throw new Error('隐藏目录参数无效');
     const previousDirectory = normalizeHiddenDirectory(data.previousDirectory);
     const nextDirectory = normalizeHiddenDirectory(data.nextDirectory);
-    const config = getConfig();
-    const directories = getHiddenDirectories(config);
+    const notesDir = path.resolve(getNotesDir(event));
+    const directories = getHiddenDirectories(event);
     const index = directories.indexOf(previousDirectory);
     if (index < 0) throw new Error('隐藏目录不存在');
     directories[index] = nextDirectory;
-    config.hiddenDirectories = [...new Set(directories)];
-    saveConfig(config);
-    notifyNotesTreeChanged();
-    return { success: true, directories: config.hiddenDirectories };
+    const savedDirectories = saveLibraryHiddenDirectories(notesDir, directories);
+    notifyHiddenDirectoriesChanged(notesDir);
+    return { success: true, directories: savedDirectories };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -1641,12 +1706,11 @@ ipcMain.handle('update-hidden-directory', async (event, data) => {
 ipcMain.handle('remove-hidden-directory', async (event, directoryPath) => {
   try {
     const directory = normalizeHiddenDirectory(directoryPath);
-    const config = getConfig();
-    config.hiddenDirectories = getHiddenDirectories(config)
-      .filter(item => item !== directory);
-    saveConfig(config);
-    notifyNotesTreeChanged();
-    return { success: true, directories: config.hiddenDirectories };
+    const notesDir = path.resolve(getNotesDir(event));
+    const directories = saveLibraryHiddenDirectories(notesDir, getHiddenDirectories(event)
+      .filter(item => item !== directory));
+    notifyHiddenDirectoriesChanged(notesDir);
+    return { success: true, directories };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -2011,6 +2075,7 @@ ipcMain.handle('set-ai-review-session', async (event, session) => {
       updatedAt: Date.now()
     };
     saveConfig(config);
+    updateAiReviewMenu();
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -2028,6 +2093,7 @@ ipcMain.handle('delete-ai-review-session', async (event, notePath) => {
     delete sessions[resolvedPath];
     config.aiReviewSessions = sessions;
     saveConfig(config);
+    updateAiReviewMenu();
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -2162,6 +2228,7 @@ ipcMain.handle('select-notes-dir', async event => {
     config.notesDir = selectedPath;
     let location = config.notesLocations.find(item => item.path === selectedPath);
     if (!location) {
+      getLibraryHiddenDirectories(selectedPath);
       location = { path: selectedPath, alias: '' };
       config.notesLocations.push(location);
     }
@@ -2220,7 +2287,7 @@ ipcMain.handle('get-tree', async event => {
   return getTree(
     notesDir,
     '',
-    getHiddenDirectories(),
+    getHiddenDirectories(event),
     getFolderOrder(getConfig(), notesDir)
   );
 });
@@ -2692,7 +2759,7 @@ ipcMain.handle('reorder-folder', async (event, { sourcePath, targetPath, placeme
 
     const notesDir = fs.realpathSync(getNotesDir(event));
     const parentRelativePath = path.relative(notesDir, parentPath);
-    const hiddenDirectories = getHiddenDirectories();
+    const hiddenDirectories = getHiddenDirectories(event);
     const folderEntries = fs.readdirSync(parentPath, { withFileTypes: true })
       .filter(entry => entry.isDirectory())
       .filter(entry => {

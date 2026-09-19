@@ -15,8 +15,6 @@ test('settings include a persistent document outline switch', () => {
   assert.match(renderer, /outlineToggle\.setAttribute\('aria-checked', String\(outlineEnabled\)\)/);
 });
 
-test('outline switch adds only an extra hiding condition', () => {
-  assert.match(styles, /@container \(min-width: 1180px\)/);
-  assert.match(styles, /\.editor-container\.preview-hidden \.document-outline/);
+test('outline switch hides both docked and floating navigation', () => {
   assert.match(styles, /\.app\.outline-hidden \.document-outline\s*\{[^}]*display: none !important;/s);
 });

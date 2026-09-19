@@ -234,7 +234,7 @@ test('鼠标点击源码行后恢复原滚动位置', () => {
 test('目录点击仍会主动定位标题', () => {
   assert.match(
     renderer,
-    /item\.addEventListener\('click',[\s\S]{0,240}navigateDocumentOutlineHeading\(codeMirror, heading\.line\)/
+    /navigate: navigateDocumentOutlineHeading/
   );
   assert.match(
     renderer,

@@ -1,3 +1,4 @@
+const { DocumentOutline } = require('./document-outline');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -705,6 +706,7 @@ function createReleaseNotesView(currentVersion) {
 }
 
 function showReleaseNotes(event, currentVersion) {
+  if (!restoringWorkspaceSession) hideNewWindowWelcome(false);
   const editorAdapter = lastActiveEditor || editor;
   const pane = editorAdapter === editorRight ? editorPaneRight : editorPane;
   const existingView = pane.querySelector('.editor-release-notes');
@@ -743,6 +745,7 @@ function getTreeFolderPaths(items, paths = new Set()) {
 }
 
 function saveWorkspaceSession() {
+  syncAiReviewMenuNote();
   if (restoringWorkspaceSession) return;
   const releasePane = editorPane.classList.contains('release-notes-open')
     ? 'left'
@@ -1312,9 +1315,15 @@ function preserveEditorScrollOnClick(editorAdapter) {
 preserveEditorScrollOnClick(editor);
 preserveEditorScrollOnClick(editorRight);
 
+function syncAiReviewMenuNote() {
+  const note = lastActiveEditor === editorRight ? currentNoteRight : currentNote;
+  ipcRenderer.send('ai-review-active-note-changed', note?.path || null);
+}
+
 function syncEditorHistoryState(editorAdapter = lastActiveEditor) {
   if (!editorAdapter || editorAdapter !== lastActiveEditor) return;
   ipcRenderer.send('editor-history-state-changed', editorAdapter.getHistoryState());
+  syncAiReviewMenuNote();
 }
 
 function runActiveEditorHistory(direction) {
@@ -1338,6 +1347,7 @@ editorRight.codeMirror.on('historyChange', () => syncEditorHistoryState(editorRi
 
 editor.codeMirror.on('cursorActivity', () => {
   lastActiveEditor = editor;
+  syncAiReviewMenuNote();
   if (slashCommandState.editor && slashCommandState.editor !== editor) {
     slashCommandMenu.close();
   }
@@ -1358,6 +1368,7 @@ editor.codeMirror.on('viewportChange', () => {
 });
 editorRight.codeMirror.on('cursorActivity', () => {
   lastActiveEditor = editorRight;
+  syncAiReviewMenuNote();
   if (slashCommandState.editor && slashCommandState.editor !== editorRight) {
     slashCommandMenu.close();
   }
@@ -2103,7 +2114,7 @@ const aiProviderNames = { deepseek: 'DeepSeek', mimo: 'MiMo', custom: '自定义
 let activeAiProviderName = 'DeepSeek';
 let aiStampRequestId = 0;
 let outlineEnabled = localStorage.getItem('outline-enabled') !== 'false';
-let outlineCollapsed = localStorage.getItem('outline-collapsed') === 'true';
+const documentOutlineControllers = new WeakMap();
 const outlineHighlightStates = new WeakMap();
 
 function syncAccentThemeControls() {
@@ -2147,37 +2158,22 @@ function applyLineNumbersSetting() {
   editorRight.codeMirror.setLineNumbers(lineNumbersEnabled);
 }
 
-function applyDocumentOutlineCollapsedState() {
-  [documentOutline, documentOutlineRight].forEach(container => {
-    container.classList.toggle('collapsed', outlineCollapsed);
-    const button = container.querySelector('.document-outline-collapse');
-    if (!button) return;
-    button.setAttribute('aria-expanded', String(!outlineCollapsed));
-    button.setAttribute('aria-label', outlineCollapsed ? '展开文档大纲' : '折叠文档大纲');
-    button.title = outlineCollapsed ? '展开大纲' : '折叠大纲';
-    button.textContent = outlineCollapsed ? '‹' : '›';
-  });
-}
-
-function syncDocumentOutlineWindowSpacing(container) {
-  const outlineTop = container.getBoundingClientRect().top;
-  if (outlineTop <= 0) return;
-  const outlineHeight = Math.max(38, window.innerHeight - outlineTop * 2);
-  container.style.setProperty('--document-outline-max-height', `${outlineHeight}px`);
+function getDocumentOutlineController(editorAdapter, container) {
+  if (!documentOutlineControllers.has(container)) {
+    documentOutlineControllers.set(container, new DocumentOutline({
+      container,
+      adapter: editorAdapter,
+      preview: editorAdapter === editor ? preview : previewRight,
+      getNote: () => editorAdapter === editor ? currentNote : currentNoteRight,
+      onActivate: () => { lastActiveEditor = editorAdapter; },
+      navigate: navigateDocumentOutlineHeading
+    }));
+  }
+  return documentOutlineControllers.get(container);
 }
 
 applyOutlineSetting();
 applyLineNumbersSetting();
-applyDocumentOutlineCollapsedState();
-[documentOutline, documentOutlineRight].forEach(container => {
-  const observer = new ResizeObserver(() => {
-    requestAnimationFrame(() => syncDocumentOutlineWindowSpacing(container));
-  });
-  observer.observe(container.parentElement);
-});
-window.addEventListener('resize', () => {
-  [documentOutline, documentOutlineRight].forEach(syncDocumentOutlineWindowSpacing);
-});
 ipcRenderer.invoke('get-ai-settings').then(result => {
   if (!result.success) return;
   applyAiStampPosition(result.stampPosition);
@@ -3501,6 +3497,7 @@ function createFileElement(file, level) {
 }
 
 async function selectNote(note) {
+  if (!restoringWorkspaceSession) hideNewWindowWelcome(false);
   const closedLeftReleaseNotes = closeReleaseNotes(editorPane, editor, false);
   closeReleaseNotes(editorPaneRight, editorRight, false);
 
@@ -3855,67 +3852,14 @@ function bindPreviewTaskCheckboxes(container, editorAdapter) {
 }
 
 function renderDocumentOutline(editorAdapter, container) {
-  syncDocumentOutlineWindowSpacing(container);
-  const headings = getDocumentOutline(editorAdapter.value.split('\n'));
-  const topHeadingLevel = headings.length
-    ? Math.min(...headings.map(heading => heading.level))
-    : null;
-  const cursorLine = editorAdapter.codeMirror.getCursor().line;
-  const activeHeading = headings.findLast(heading => heading.line <= cursorLine);
-  container.replaceChildren();
-  const title = document.createElement('div');
-  title.className = 'document-outline-title';
-  const titleLabel = document.createElement('span');
-  titleLabel.textContent = '大纲';
-  const titleCount = document.createElement('span');
-  titleCount.className = 'document-outline-count';
-  titleCount.textContent = String(headings.length);
-  const collapseButton = document.createElement('button');
-  collapseButton.type = 'button';
-  collapseButton.className = 'document-outline-collapse';
-  collapseButton.setAttribute('aria-controls', container.id);
-  collapseButton.setAttribute('aria-expanded', String(!outlineCollapsed));
-  collapseButton.addEventListener('click', () => {
-    outlineCollapsed = !outlineCollapsed;
-    localStorage.setItem('outline-collapsed', String(outlineCollapsed));
-    applyDocumentOutlineCollapsedState();
-  });
-  title.append(titleLabel, titleCount, collapseButton);
-  container.appendChild(title);
-  applyDocumentOutlineCollapsedState();
-  if (!headings.length) {
-    const empty = document.createElement('div');
-    empty.className = 'document-outline-empty';
-    empty.textContent = '暂无标题';
-    container.appendChild(empty);
-    return;
-  }
-  headings.forEach(heading => {
-    const outlineText = heading.text.replace(/\*/g, '').trim();
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'document-outline-item';
-    item.dataset.level = String(heading.level);
-    item.classList.toggle('top-level', heading.level === topHeadingLevel);
-    item.dataset.line = String(heading.line);
-    item.classList.toggle('active', heading === activeHeading);
-    if (heading === activeHeading) item.setAttribute('aria-current', 'location');
-    item.style.setProperty('--outline-level', heading.level - topHeadingLevel);
-    item.textContent = outlineText;
-    item.title = outlineText;
-    item.addEventListener('click', () => {
-      const codeMirror = editorAdapter.codeMirror;
-      navigateDocumentOutlineHeading(codeMirror, heading.line);
-    });
-    container.appendChild(item);
-  });
+  getDocumentOutlineController(editorAdapter, container).update();
 }
 
 function navigateDocumentOutlineHeading(codeMirror, lineNumber) {
   codeMirror.setCursor({ line: lineNumber, ch: 0 });
   codeMirror.focus();
   const scrollToHeading = () => {
-    codeMirror.scrollTo(null, codeMirror.heightAtLine(lineNumber, 'local'));
+    codeMirror.scrollTo(null, Math.max(0, codeMirror.heightAtLine(lineNumber, 'local') - 24));
   };
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
@@ -3941,18 +3885,7 @@ function highlightDocumentOutlineTarget(codeMirror, lineNumber) {
 }
 
 function updateDocumentOutlineSelection(editorAdapter, container) {
-  const cursorLine = editorAdapter.codeMirror.getCursor().line;
-  const items = Array.from(container.querySelectorAll('.document-outline-item'));
-  let activeItem = null;
-  items.forEach(item => {
-    if (Number(item.dataset.line) <= cursorLine) activeItem = item;
-  });
-  items.forEach(item => {
-    const active = item === activeItem;
-    item.classList.toggle('active', active);
-    if (active) item.setAttribute('aria-current', 'location');
-    else item.removeAttribute('aria-current');
-  });
+  documentOutlineControllers.get(container)?.select(editorAdapter.codeMirror.getCursor().line);
 }
 
 function updatePreview(immediate = false) {
@@ -6197,6 +6130,7 @@ async function createNewNote(folderPath = null) {
     return;
   }
 
+  hideNewWindowWelcome(false);
   currentNote = result.note;
   noteTitle.value = result.note.name;
   loadPaneDocument(leftPanePersistence, editor, result.note.path, '');
@@ -6345,7 +6279,7 @@ async function deleteItem(data) {
   });
 }
 
-async function changeNotesDir() {
+async function changeNotesDir(options = {}) {
   if (currentNote) await saveCurrentNote();
   if (currentNoteRight) await saveCurrentNoteRight();
   const newDir = await ipcRenderer.invoke('select-notes-dir');
@@ -6354,25 +6288,97 @@ async function changeNotesDir() {
     await loadTree();
     await restoreWorkspaceSession();
     await renderLocationsManager();
+    if (!options.keepWelcome) hideNewWindowWelcome(false);
     return true;
   }
   return false;
 }
 
-function hideNewWindowWelcome() {
+function hideNewWindowWelcome(focusEditor = true) {
   newWindowWelcome.hidden = true;
-  editor.focus();
+  if (focusEditor) editor.focus();
 }
 
-if (new URLSearchParams(window.location.search).get('welcome') === '1') {
+const welcomeMode = new URLSearchParams(window.location.search).get('welcome');
+let welcomeBusy = false;
+
+async function runWelcomeAction(action) {
+  if (welcomeBusy) return;
+  welcomeBusy = true;
+  const error = document.getElementById('welcomeError');
+  error.hidden = true;
+  const buttons = newWindowWelcome.querySelectorAll('button');
+  buttons.forEach(button => { button.disabled = true; });
+  try {
+    await action();
+  } catch (err) {
+    error.textContent = `无法打开笔记目录：${err.message}。请重新选择目录。`;
+    error.hidden = false;
+  } finally {
+    welcomeBusy = false;
+    buttons.forEach(button => { button.disabled = false; });
+  }
+}
+
+async function renderWelcomeLocations() {
+  const data = await ipcRenderer.invoke('get-notes-locations');
+  const active = data.locations.find(location => location.path === data.activePath);
+  const name = active ? active.alias || active.name : data.activePath;
+  document.getElementById('welcomeStoragePath').textContent = data.activePath;
+  document.getElementById('welcomeCurrentName').textContent = name;
+  document.getElementById('welcomeCurrentLabel').textContent = welcomeMode === 'first'
+    ? '开始写作' : `继续使用「${name}」`;
+  const list = document.getElementById('welcomeLocations');
+  list.replaceChildren();
+  const locations = data.locations.filter(location => location.path !== data.activePath);
+  document.getElementById('welcomeLocationsSection').hidden = locations.length === 0;
+  locations.forEach(location => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'welcome-location';
+    button.title = location.path;
+    button.innerHTML = `<span><strong>${escapeHtml(location.alias || location.name)}</strong>
+      <small>${escapeHtml(location.path)}</small></span><span aria-hidden="true">↗</span>`;
+    button.addEventListener('click', () => runWelcomeAction(async () => {
+      if (await switchNotesLocation(location.path)) hideNewWindowWelcome();
+    }));
+    list.appendChild(button);
+  });
+}
+
+if (welcomeMode) {
   newWindowWelcome.hidden = false;
-  requestAnimationFrame(() => welcomeChooseDirectory.focus());
+  if (welcomeMode === 'first') {
+    document.getElementById('welcomeSectionLabel').textContent = '你的第一篇，从这里开始';
+    document.getElementById('welcomeLead').textContent = '笔记以 Markdown 文件保存在本机。选好位置，就可以开始写作。';
+  } else {
+    document.getElementById('welcomeTitle').innerHTML = '打开笔记，<br>接着写吧。';
+    document.getElementById('welcomeLead').textContent = '每个窗口可以打开不同的笔记目录。';
+  }
+  runWelcomeAction(renderWelcomeLocations).then(() => {
+    if (!newWindowWelcome.hidden) welcomeUseCurrent.focus();
+  });
 }
 
-welcomeChooseDirectory.addEventListener('click', async () => {
-  if (await changeNotesDir()) hideNewWindowWelcome();
-});
-welcomeUseCurrent.addEventListener('click', hideNewWindowWelcome);
+welcomeChooseDirectory.addEventListener('click', () => runWelcomeAction(async () => {
+  if (await changeNotesDir({ keepWelcome: true })) {
+    await renderWelcomeLocations();
+    if (tree.length === 0) {
+      document.getElementById('welcomeCurrentLabel').textContent = '新建第一篇笔记';
+      welcomeUseCurrent.dataset.createNote = 'true';
+    } else {
+      hideNewWindowWelcome();
+    }
+  }
+}));
+welcomeUseCurrent.addEventListener('click', () => runWelcomeAction(async () => {
+  if (welcomeMode === 'first' || tree.length === 0
+      || welcomeUseCurrent.dataset.createNote === 'true') {
+    await createNewNote(null);
+    if (!currentNote) return;
+  }
+  hideNewWindowWelcome();
+}));
 welcomeCloseWindow.addEventListener('click', () => {
   ipcRenderer.invoke('close-current-window');
 });
@@ -6391,6 +6397,7 @@ function resetCurrentLibrary() {
   rightPanel.style.display = 'none';
   updatePreview(true);
   expandedFolders.clear();
+  syncAiReviewMenuNote();
 }
 
 async function switchNotesLocation(locationPath) {
@@ -6398,13 +6405,18 @@ async function switchNotesLocation(locationPath) {
   if (currentNoteRight) await saveCurrentNoteRight();
   const result = await ipcRenderer.invoke('switch-notes-dir', locationPath);
   if (!result.success) {
+    if (!newWindowWelcome.hidden && !locationsModal.classList.contains('active')) {
+      throw new Error(result.error);
+    }
     showConfirm('切换失败', result.error, () => {});
-    return;
+    return false;
   }
   resetCurrentLibrary();
   await loadTree();
   await restoreWorkspaceSession();
   locationsModal.classList.remove('active');
+  hideNewWindowWelcome(false);
+  return true;
 }
 
 async function renderLocationsManager() {
@@ -7275,6 +7287,19 @@ ipcRenderer.on('ai-translate-selection', (event, targetLanguage) => {
   if (!selection) return;
   translateActiveNote(targetLanguage, selection);
 });
+ipcRenderer.on('hidden-directories-changed', async () => {
+  if (!settingsModal.classList.contains('active') || settingsBusy) return;
+  const requestId = settingsRequestId;
+  try {
+    const result = await ipcRenderer.invoke('get-hidden-directories');
+    if (requestId !== settingsRequestId || settingsBusy) return;
+    if (result.success) renderHiddenDirectorySettings(result.directories);
+    else settingsError.textContent = getSettingsErrorMessage('隐藏目录加载失败', result.error);
+  } catch (error) {
+    if (requestId !== settingsRequestId) return;
+    settingsError.textContent = getSettingsErrorMessage('隐藏目录加载失败', error);
+  }
+});
 ipcRenderer.on('notes-tree-changed', scheduleTreeRefresh);
 window.addEventListener('focus', scheduleTreeRefresh);
 ipcRenderer.on('format-markdown', (event, format) => formatActiveMarkdown(format));
@@ -7313,6 +7338,7 @@ ipcRenderer.on('context-menu-new-folder', (event, data) => {
 });
 
 async function openInRightPanel(note) {
+  if (!restoringWorkspaceSession) hideNewWindowWelcome(false);
   if (currentNote && currentNote.path === note.path) return;
   closeSlashCommandMenu();
   hideAiReviewPending();

@@ -46,30 +46,41 @@
       <section id="newWindowWelcome" class="new-window-welcome" aria-labelledby="welcomeTitle"
         hidden>
         <div class="welcome-surface">
-          <div class="welcome-mark" aria-hidden="true">
-            <svg viewBox="0 0 48 48"><path d="M13 7h17l7 7v27H13z"/>
-              <path d="M30 7v8h7M19 23h12M19 29h12M19 35h8"/></svg>
+          <div class="welcome-intro">
+            <span class="welcome-brand">简记 <span> / 本地 Markdown 笔记</span></span>
+            <div class="welcome-paper" aria-hidden="true">
+              <span>简</span><i></i><i></i><i></i>
+              <small>一页，新的开始。</small>
+            </div>
+            <p class="welcome-kicker">给想法，一个落脚的地方</p>
+            <h1 id="welcomeTitle">从这里，<br>开始记录。</h1>
+            <p class="welcome-lead" id="welcomeLead">选择一个笔记目录，让想法慢慢成篇。</p>
           </div>
-          <p class="welcome-kicker">新建工作空间</p>
-          <h1 id="welcomeTitle">从一个目录开始写作</h1>
-          <p class="welcome-lead">每个窗口使用独立的笔记目录，不会影响其他窗口。</p>
-          <div class="welcome-actions">
-            <button id="welcomeChooseDirectory" class="btn welcome-primary" type="button">
-              打开笔记目录
+          <div class="welcome-start">
+            <p class="welcome-section-label" id="welcomeSectionLabel">打开你的笔记</p>
+            <button id="welcomeUseCurrent" class="welcome-action welcome-primary" type="button">
+              <span><strong id="welcomeCurrentLabel">继续使用当前目录</strong>
+                <small id="welcomeCurrentName">正在读取目录…</small></span><span aria-hidden="true">↗</span>
             </button>
-            <button id="welcomeUseCurrent" class="btn btn-secondary" type="button">
-              使用当前目录
+            <button id="welcomeChooseDirectory" class="welcome-action" type="button">
+              <span><strong>打开笔记目录</strong><small>选择已有文件夹，或创建一个新文件夹</small></span>
+              <span aria-hidden="true">＋</span>
             </button>
+            <div class="welcome-storage"><span>保存位置</span><p id="welcomeStoragePath"></p></div>
+            <div id="welcomeLocationsSection" class="welcome-locations" hidden>
+              <p class="welcome-section-label">已保存的目录</p>
+              <div id="welcomeLocations"></div>
+            </div>
+            <p id="welcomeError" class="welcome-error" role="alert" hidden></p>
+            <details class="welcome-help">
+              <summary>一分钟入门 <span aria-hidden="true">＋</span></summary>
+              <p>用 # 写标题，用 - 写列表，用 **文字** 加粗。笔记以 Markdown 文件保存在所选目录。</p>
+              <p><kbd>⌘ N</kbd> 新建笔记　 <kbd>⌘ O</kbd> 按名称查找笔记</p>
+            </details>
           </div>
-          <div class="welcome-guides" aria-label="快速入门">
-            <div><kbd>⌘ O</kbd><span><strong>快速打开</strong><small>按名称搜索笔记</small></span></div>
-            <div><kbd>⌘ N</kbd><span><strong>新建笔记</strong><small>立即开始 Markdown 写作</small></span></div>
-            <div><span class="welcome-guide-icon">↺</span><span><strong>自动留存</strong>
-              <small>历史版本可随时恢复</small></span></div>
-          </div>
-          <button id="welcomeCloseWindow" class="welcome-close" type="button">
-            关闭此窗口
-          </button>
+          <footer class="welcome-footer"><span>本地文件 · 自由书写</span>
+            <button id="welcomeCloseWindow" class="welcome-close" type="button">关闭此窗口 ↗</button>
+          </footer>
         </div>
       </section>
       <div class="editors-wrapper" id="editorsWrapper">
@@ -423,7 +434,7 @@
                   <strong>隐藏目录</strong>
                   <span id="hiddenDirectoryCount" class="settings-status">0 项</span>
                 </div>
-                <p>目录树不会展示这些目录，但不会删除磁盘文件。</p>
+                <p>仅对当前笔记库生效，配置随笔记库保存和同步。隐藏目录不会删除磁盘文件。</p>
               </div>
             </div>
             <div id="hiddenDirectoryList" class="hidden-directory-list"></div>

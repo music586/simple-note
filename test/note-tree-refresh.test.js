@@ -20,7 +20,7 @@ test('tree entries are sorted by newest modification time within their type', ()
 });
 
 test('configured hidden folders do not render or trigger tree refreshes', () => {
-  assert.match(main, /isHiddenDirectory\(fileName, getHiddenDirectories\(\)\)/);
+  assert.match(main, /isHiddenDirectory\(fileName, getHiddenDirectories\(targetWindow\)\)/);
   assert.match(main, /isHiddenDirectory\(relativePath, hiddenDirectories\)/);
 });
 
